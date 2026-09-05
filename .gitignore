@@ -1,0 +1,7 @@
+# Nix build result symlinks (recreated by `nix build`)
+result*
+
+# Vendored source tarballs — too large for git; see kernel/README.md
+# and mesa/README.md (regenerate with bin/snapshot-kernel.sh /
+# bin/snapshot-mesa.sh)
+*.tar.gz

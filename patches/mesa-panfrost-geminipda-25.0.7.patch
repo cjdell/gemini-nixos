@@ -1,0 +1,272 @@
+diff --git a/src/panfrost/lib/pan_desc.c b/src/panfrost/lib/pan_desc.c
+index bef36b0..13ccbe0 100644
+--- a/src/panfrost/lib/pan_desc.c
++++ b/src/panfrost/lib/pan_desc.c
+@@ -25,6 +25,9 @@
+  *   Boris Brezillon <boris.brezillon@collabora.com>
+  */
+ 
++#include <stdio.h>
++#include <stdlib.h>
++
+ #include "util/macros.h"
+ 
+ #include "genxml/gen_macros.h"
+@@ -684,6 +687,20 @@ pan_emit_midgard_tiler(const struct pan_fb_info *fb,
+             fb->width, fb->height, cfg.hierarchy_mask, hierarchy);
+          cfg.heap_start = tiler_ctx->midgard.heap.start;
+          cfg.heap_end = cfg.heap_start + tiler_ctx->midgard.heap.size;
++
++         /* EXPERIMENT (geminipda 2026-09-02): log the per-batch tiler
++          * config so we can correlate the T880 tiler-clip bands against
++          * hierarchy_mask / polygon_list_size / vertex_count / heap.
++          * Gated 2026-09-03 behind PAN_TILERDBG=1 (silent default — the
++          * per-batch fprintf perturbed timing in the clean baseline). */
++         if (getenv("PAN_TILERDBG"))
++            fprintf(stderr,
++                 "TILERDBG fb=%ux%u vtx=%u mask=0x%x hdr=%u pls=%u "
++                 "heap=0x%llx..0x%llx\n",
++                 fb->width, fb->height, tiler_ctx->midgard.vertex_count,
++                 cfg.hierarchy_mask, header_size, cfg.polygon_list_size,
++                 (unsigned long long)cfg.heap_start,
++                 (unsigned long long)cfg.heap_end);
+       }
+ 
+       cfg.polygon_list = tiler_ctx->midgard.polygon_list;
+diff --git a/src/panfrost/lib/pan_tiler.c b/src/panfrost/lib/pan_tiler.c
+index f7bc490..ae89ebd 100644
+--- a/src/panfrost/lib/pan_tiler.c
++++ b/src/panfrost/lib/pan_tiler.c
+@@ -24,6 +24,8 @@
+  *   Alyssa Rosenzweig <alyssa.rosenzweig@collabora.com>
+  */
+ 
++#include <stdlib.h>
++
+ #include "util/macros.h"
+ #include "util/u_math.h"
+ #include "pan_encoder.h"
+@@ -323,6 +325,19 @@ unsigned
+ panfrost_choose_hierarchy_mask(unsigned width, unsigned height,
+                                unsigned vertex_count, bool hierarchy)
+ {
++   /* geminipda oracle (2026-09-03): PAN_TILER_MASK=<hex> forces the
++    * hierarchy mask (e.g. 0x1ff = full mask — legal on T880 but observed
++    * to render 0 %, see gpu-deep-dive-plan.md O2). Read here so the
++    * polygon-list BO size (pan_encoder.h) and the TILER_CONTEXT
++    * descriptor (pan_desc.c) always agree; 0 falls through to the
++    * heuristic. */
++   const char *mask_env = getenv("PAN_TILER_MASK");
++   if (mask_env) {
++      unsigned forced = strtoul(mask_env, NULL, 0);
++      if (forced)
++         return forced;
++   }
++
+    /* If there is no geometry, we don't bother enabling anything */
+ 
+    if (!vertex_count)
+diff --git a/src/gallium/drivers/panfrost/pan_cmdstream.c b/src/gallium/drivers/panfrost/pan_cmdstream.c
+index 2ef5af4..f87b16d 100644
+--- a/src/gallium/drivers/panfrost/pan_cmdstream.c
++++ b/src/gallium/drivers/panfrost/pan_cmdstream.c
+@@ -24,6 +24,8 @@
+  * SOFTWARE.
+  */
+ 
++#include <stdio.h>
++#include <stdlib.h>
+ #include "gallium/auxiliary/util/u_blend.h"
+ #include "pipe/p_defines.h"
+ #include "pipe/p_state.h"
+@@ -4096,6 +4098,60 @@ context_cleanup(struct panfrost_context *ctx)
+ 
+ #if PAN_ARCH <= 5
+ 
++/* geminipda debug (2026-09-02): dump the PREVIOUS batch's final tiler
++ * state — the polygon-list BO (before this batch's memset) and the start
++ * of the tiler heap (the tile list the tiler wrote).  Correlating these
++ * across a clipped vs a clean batch localises where the T880 tiler clip
++ * loses data.  Enable: PAN_DUMP_POLYLIST=/dir  (and
++ * PAN_MESA_TILER_HEAP_CPU=1 for the heap to be CPU-mapped). */
++static void
++gemini_dump_tiler_state(struct panfrost_batch *batch, unsigned size)
++{
++   const char *dir = getenv("PAN_DUMP_POLYLIST");
++   if (!dir)
++      return;
++
++   static unsigned seq;
++   char path[512];
++   struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
++   FILE *f;
++
++   if (batch->polygon_list_bo && batch->polygon_list_bo->ptr.cpu) {
++      snprintf(path, sizeof(path), "%s/poly_%04u_%u.bin", dir, seq, size);
++      f = fopen(path, "wb");
++      if (f) {
++         fwrite(batch->polygon_list_bo->ptr.cpu, 1, size, f);
++         fclose(f);
++      }
++   }
++   if (dev->tiler_heap && dev->tiler_heap->ptr.cpu) {
++      /* Sparse dump: the tile list can be anywhere in the 128 MB heap,
++       * so scan for non-zero 4 KB pages and dump only those, naming them
++       * by offset. */
++      const unsigned char *h = (const unsigned char *)dev->tiler_heap->ptr.cpu;
++      unsigned size = panfrost_bo_size(dev->tiler_heap);
++      for (unsigned off = 0; off + 4096 <= size; off += 4096) {
++         const unsigned char *p = h + off;
++         int nz = 0;
++         for (int i = 0; i < 4096; i += 16)
++            if (p[i] || p[i+1] || p[i+2] || p[i+3]) { nz = 1; break; }
++         if (!nz)
++            continue;
++         snprintf(path, sizeof(path), "%s/heap_%04u_%06x.bin", dir, seq, off);
++         f = fopen(path, "wb");
++         if (f) {
++            fwrite(p, 1, 4096, f);
++            fclose(f);
++         }
++         fprintf(stderr, "HEAPDUMP seq=%u off=%06x first=%08x %08x %08x %08x\n",
++                 seq, off,
++                 *(const uint32_t *)(h + off), *(const uint32_t *)(h + off + 4),
++                 *(const uint32_t *)(h + off + 8), *(const uint32_t *)(h + off + 12));
++      }
++   }
++   seq++;
++}
++
+ /* Returns the polygon list's GPU address if available, or otherwise allocates
+  * the polygon list.  It's perfectly fast to use allocate/free BO directly,
+  * since we'll hit the BO cache and this is one-per-batch anyway. */
+@@ -4111,20 +4167,59 @@ batch_get_polygon_list(struct panfrost_batch *batch)
+          batch->key.width, batch->key.height, batch->vertex_count,
+          !dev->model->quirks.no_hierarchical_tiling);
+ 
+-      /* Create the BO as invisible if we can. If there are no draws,
+-       * we need to write the polygon list manually because there's
+-       * no WRITE_VALUE job in the chain
+-       */
++      /* geminipda debug (2026-09-02): PAN_POLYLIST_FRESH forces a fresh
++       * (unique-size => cache-miss) polygon-list BO every batch. If a
++       * fresh BO in a WARM context also clips, the trigger is BO
++       * freshness, not first-batch-of-context. */
++      if (getenv("PAN_POLYLIST_FRESH")) {
++         static unsigned fresh_seq;
++         size += 4096 * (fresh_seq + 1);
++         fresh_seq++;
++      }
++
++      /* EXPERIMENT (geminipda 2026-09-02): create the polygon-list BO
++       * CPU-mapped and zero the WHOLE list each batch (not just the first
++       * word via the WRITE_VALUE job). Hypothesis: the T880 tiler leaves
++       * empty-bin headers/body stale across BO-cache reuse, which drops
++       * far bins (the sequence-dependent clip).
++       * PAN_NO_POLYLIST_MEMSET=1 (geminipda 2026-09-03, oracle O6):
++       * restore upstream semantics — BO invisible (GPU-only) for batches
++       * with draws, no whole-list CPU zero — to reproduce the M2
++       * deterministic bands as an oracle. */
+       bool init_polygon_list = !has_draws;
++      bool no_polygon_list_memset = getenv("PAN_NO_POLYLIST_MEMSET") != NULL;
++      unsigned poly_list_flags =
++         (init_polygon_list || !no_polygon_list_memset)
++            ? 0
++            : PAN_BO_INVISIBLE;
+       batch->polygon_list_bo = panfrost_batch_create_bo(
+-         batch, size, init_polygon_list ? 0 : PAN_BO_INVISIBLE,
+-         PIPE_SHADER_VERTEX, "Polygon list");
++         batch, size, poly_list_flags, PIPE_SHADER_VERTEX,
++         "Polygon list");
+ 
+       if (!batch->polygon_list_bo) {
+          mesa_loge("failed to allocate memory for polygon-list");
+          return 0;
+       }
+ 
++      gemini_dump_tiler_state(batch, size);
++
++      if (!no_polygon_list_memset && batch->polygon_list_bo->ptr.cpu)
++         memset(batch->polygon_list_bo->ptr.cpu, 0, size);
++
++      /* geminipda debug (2026-09-02): PAN_FLUSH_POLYLIST cleans the whole
++       * BO out of the CPU caches to the PoU (dc civac per 64 B line) so
++       * the zeros are guaranteed visible to the GPU in DRAM. Tests
++       * whether the tiler's fresh-vs-warm behaviour tracks CPU-cache
++       * visibility (coherence) of the memset. */
++      if (batch->polygon_list_bo->ptr.cpu && getenv("PAN_FLUSH_POLYLIST")) {
++         char *p = (char *)batch->polygon_list_bo->ptr.cpu;
++         for (unsigned off = 0; off < size; off += 64) {
++            __asm__ __volatile__("dc civac, %0" : : "r"(p + off)
++                                 : "memory");
++         }
++         __asm__ __volatile__("dsb ish" : : : "memory");
++      }
++
+       batch->tiler_ctx.midgard.polygon_list = batch->polygon_list_bo->ptr.gpu;
+       panfrost_batch_add_bo(batch, batch->polygon_list_bo,
+                             PIPE_SHADER_FRAGMENT);
+diff --git a/src/gallium/drivers/panfrost/pan_device.c b/src/gallium/drivers/panfrost/pan_device.c
+index 7bd310d..5741e89 100644
+--- a/src/gallium/drivers/panfrost/pan_device.c
++++ b/src/gallium/drivers/panfrost/pan_device.c
+@@ -118,8 +118,19 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
+     */
+ 
+    if (dev->arch < 10) {
++      /* geminipda debug (2026-09-02): PAN_MESA_TILER_HEAP_CPU=1 makes the
++       * tiler heap CPU-mappable so the tile list can be dumped after each
++       * batch (see gemini_dump_tiler_state in pan_cmdstream.c). The kernel
++       * refuses to CPU-mmap GROWABLE (heap) BOs ("pages are not pinned",
++       * panfrost_ioctl_mmap_bo), so the debug mode pre-maps the full 128 MB
++       * as a normal BO — session 23 measured this as clip-identical. */
++      unsigned heap_flags;
++      if (getenv("PAN_MESA_TILER_HEAP_CPU"))
++         heap_flags = 0;
++      else
++         heap_flags = PAN_BO_INVISIBLE | PAN_BO_GROWABLE;
+       dev->tiler_heap = panfrost_bo_create(
+-         dev, 128 * 1024 * 1024, PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");
++         dev, 128 * 1024 * 1024, heap_flags, "Tiler heap");
+       if (!dev->tiler_heap)
+          goto err_free_kmod_dev;
+    }
+diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
+index 8567ac2..80fa5e3 100644
+--- a/src/gallium/drivers/panfrost/pan_screen.c
++++ b/src/gallium/drivers/panfrost/pan_screen.c
+@@ -557,6 +557,11 @@ panfrost_get_compute_param(struct pipe_screen *pscreen,
+    return 0;
+ }
+ 
++/* Standard DRM prime caps (the vendored drm-uapi/drm.h omits them). */
++#ifndef DRM_PRIME_CAP_IMPORT
++#define DRM_PRIME_CAP_IMPORT (1 << 0)
++#endif
++
+ static void
+ panfrost_init_screen_caps(struct panfrost_screen *screen)
+ {
+@@ -564,6 +569,22 @@ panfrost_init_screen_caps(struct panfrost_screen *screen)
+ 
+    u_init_pipe_screen_caps(&screen->base, 1);
+ 
++   /*
++    * geminipda local patch (2026-08-31): enable dma-buf import+export so
++    * that EGL_EXT_image_dma_buf_import works with this driver, and gbm
++    * buffer allocation works. The kernel panfrost driver supports prime
++    * fd-to-handle import (gem_prime_import_sg_table) and handle-to-fd
++    * export (panfrost_gem_prime_export). Without the IMPORT cap the
++    * generic DRI frontend (dri2_from_dma_bufs) rejects every dma-buf
++    * image (spin60/gemwl rendering into the LK framebuffer). Without the
++    * EXPORT cap, gbm's dri backend thinks the driver can't export
++    * (has_dmabuf_export=false) and gbm_bo_create falls back to dumb
++    * buffers, which EACCES on a render node — breaking KWin's Wayland
++    * backend (EglSwapchain via gbm) and Xwayland glamor.
++    * [corrected 2026-08-31 (12th): added DRM_PRIME_CAP_EXPORT]
++    */
++   caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
++
+    struct panfrost_device *dev = &screen->dev;
+ 
+    /* Our GL 3.x implementation is WIP */

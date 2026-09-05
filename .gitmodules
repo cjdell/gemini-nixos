@@ -1,0 +1,3 @@
+[submodule "repos/mobile-nixos"]
+	path = repos/mobile-nixos
+	url = https://github.com/mobile-nixos/mobile-nixos.git

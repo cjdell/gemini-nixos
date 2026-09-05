@@ -1,0 +1,28 @@
+#!/bin/sh
+# gemini-boot-recovery — graceful reboot into TWRP from the running Linux.
+#
+# LK boots RECOVERY whenever the MISC command at offset 0 of the `para`
+# partition is "boot-recovery" (docs/boot-chain.md §8c). This script
+# writes that command and reboots, so the next power-on lands in TWRP
+# (root adbd) — no preloader-mode escape hatch needed.
+#
+# Also demonstrates the general pattern: any boot target can be chosen
+# from userspace by writing `para` and rebooting. Normal reboot (no para
+# write) boots the `boot` partition via the kernel's TOPRGU restart.
+#
+# Usage: gemini-boot-recovery
+set -e
+
+# para = mmcblk0p2 on the stock GPT (session-log + GPT dump 2026-08-30)
+for p in \
+    /dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/para \
+    /dev/block/by-name/para \
+    /dev/mmcblk0p2; do
+    [ -b "$p" ] && PARA="$p" && break
+done
+[ -n "${PARA:-}" ] || { echo "gemini-boot-recovery: para partition not found" >&2; exit 1; }
+
+printf 'boot-recovery\0' | dd of="$PARA" bs=32 count=1 conv=fsync 2>/dev/null
+echo "gemini-boot-recovery: para=boot-recovery ($PARA) — rebooting into TWRP"
+sync
+reboot

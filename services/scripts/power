@@ -1,0 +1,142 @@
+#!/bin/bash
+# power — Gemini PDA power-management CLI (battery + backlight).
+#
+# One tool for the two knobs that matter on this device:
+#   * battery: is it charging, at what real current (BQ25896 raw ADC),
+#     at what voltage, and what does the safety guard say?
+#   * backlight: the display LED boost is the single biggest load. At
+#     full brightness from a 500 mA USB port the battery cannot charge
+#     (ICHGR=0, power path covers the load) — dim it and the battery
+#     starts charging again. This is the BQ25896 power-path behaviour
+#     (datasheet RevC; live-verified 2026-09-01).
+#
+# Subcommands:
+#   power status        one-shot: battery + backlight + charge direction
+#   power watch [N]     poll every N s (default 10) until Ctrl-C
+#   power dim-to-charge [target_ma] [min_pct]
+#                       step the backlight down until raw ICHGR >= target
+#                       (default 100 mA) or min_pct (default 5) is reached.
+#                       Solves "backlight on full = battery cannot charge".
+#   power charge        print net charge current (mA) from raw ADC
+#
+# Depends on: battstat, bq25896-raw.sh (battery-guard package),
+# backlight (this package). Exit codes: 0 ok, 1 error.
+set -u
+
+# This tool shells out to its siblings (backlight, battstat, bq25896-raw.sh),
+# which live in the same directory. Put that directory first in PATH so the
+# calls resolve regardless of how `power` itself was found.
+export PATH="$(dirname "$(readlink -f "$0")"):$PATH"
+
+# --- helpers ---------------------------------------------------------------
+backlight_pct() { backlight get 2>/dev/null || echo "?"; }
+
+# raw battery snapshot via bq25896-raw.sh's single-sample line, e.g.
+# "19:50:00 chg=fast vbus_stat=1 vbat=3904mV vsys=3904mV ichgr=150mA ..."
+raw_line() { bq25896-raw.sh 1 0 2>/dev/null || echo "raw-unavailable"; }
+
+raw_field() { # raw_field KEY "line"
+    echo "$2" | sed -n "s/.* $1=\([^ ]*\).*/\1/p"
+}
+
+# --- status ----------------------------------------------------------------
+status() {
+    local line ichgr vbat st chg bl
+    line=$(raw_line)
+    ichgr=$(raw_field ichgr "$line")
+    [ -z "$ichgr" ] && ichgr="?"
+    st=$(battstat 2>/dev/null || true)
+    bl=$(backlight_pct)
+
+    echo "== battery =="
+    echo "$st"
+    echo "raw: $line"
+    echo
+    echo "== backlight =="
+    echo "brightness=${bl}%"
+    echo
+    echo "== verdict =="
+    case "$ichgr" in
+        *mA)
+            ichgr_n=${ichgr%mA}
+            if [ "$ichgr_n" -gt 0 ]; then
+                echo "CHARGING: battery receiving ${ichgr} (dimming helped)"
+            elif [ "$ichgr_n" -lt 0 ]; then
+                echo "DISCHARGING: battery supplies ${ichgr#-}mA — backlight is stealing the budget"
+            else
+                echo "NEUTRAL: charge current 0 — load == input power"
+            fi
+            ;;
+        *)
+            echo "cannot determine charge current (bq25896-raw.sh unavailable?)"
+            ;;
+    esac
+}
+
+# --- watch -----------------------------------------------------------------
+watch() {
+    local n=${1:-10}
+    while true; do
+        echo "--- $(date '+%F %T') ---"
+        bq25896-raw.sh 1 0
+        echo "backlight=$(backlight_pct)%  guard=$(awk -F= '/^guard=/{print $2}' /run/battery-guard/state 2>/dev/null)"
+        sleep "$n"
+    done
+}
+
+# --- charge -----------------------------------------------------------------
+charge() {
+    local line ichgr
+    line=$(raw_line)
+    ichgr=$(raw_field ichgr "$line")
+    [ -z "$ichgr" ] && { echo "?"; exit 1; }
+    echo "$ichgr"
+}
+
+# --- dim-to-charge -----------------------------------------------------------
+# Step backlight down until the raw charge current is >= target (positive =
+# battery actually charging). If the screen is already dim and it still
+# can't charge (load > input), report it.
+dim_to_charge() {
+    local target=${1:-100} min_pct=${2:-5}
+    local pct ichgr_n line ichgr
+    pct=$(backlight_pct)
+    case "$pct" in *[!0-9]*) echo "cannot read backlight %" >&2; exit 1 ;; esac
+
+    echo "aiming for ICHGR >= ${target} mA (backlight floor ${min_pct}%)"
+    for ((i=0; i<40; i++)); do
+        line=$(raw_line)
+        ichgr=$(raw_field ichgr "$line")
+        ichgr_n=${ichgr%mA}
+        case "$ichgr_n" in *[!0-9-]*|'') echo "raw read failed: $line" >&2; return 1 ;; esac
+        printf '  backlight=%s%%  ICHGR=%s\n' "$pct" "$ichgr"
+        if [ "$ichgr_n" -ge "$target" ]; then
+            echo "OK: charging at ${ichgr} with backlight at ${pct}%"
+            return 0
+        fi
+        if [ "$pct" -le "$min_pct" ]; then
+            echo "FLOOR: backlight at ${pct}% (min) but ICHGR=${ichgr} — input power insufficient, use a 2 A charger"
+            return 2
+        fi
+        # step down 10 % at a time, allow the ADC + power path to settle
+        pct=$((pct - 10))
+        [ "$pct" -lt "$min_pct" ] && pct=$min_pct
+        backlight set "$pct" >/dev/null 2>&1 || { echo "backlight set failed" >&2; return 1; }
+        sleep 3
+    done
+    echo "TIMEOUT: no stable charge after 40 steps" >&2
+    return 1
+}
+
+# --- main -------------------------------------------------------------------
+case "${1:-}" in
+    status)      status ;;
+    watch)       watch "${2:-10}" ;;
+    dim-to-charge) dim_to_charge "${2:-100}" "${3:-5}" ;;
+    charge)      charge ;;
+    *)
+        echo "usage: power status|watch [N]|dim-to-charge [target_ma] [min_pct]|charge" >&2
+        exit 1
+        ;;
+esac
+exit 0

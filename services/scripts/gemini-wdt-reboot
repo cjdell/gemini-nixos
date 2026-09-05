@@ -1,0 +1,36 @@
+#!/bin/sh
+# gemini-wdt-reboot — device-side reboot that actually comes back on.
+#
+# On this unit, a plain software reset (reboot(2)/TOPRGU, or a WDT
+# soft-reset) POWERS THE PDA OFF and it stays off — only the MTK WDT
+# external-reset (EXRST) path configured by LK self-boots: when the WDT
+# expires, the PMIC power-cycles and LK boots the `boot` partition
+# (verified 2026-08-31; see the GeminiPDA project's build/device-reboot.sh,
+# which arms the same register remotely for 2 s).
+#
+# Usage: gemini-wdt-reboot [SECS]    (2..31, default 20)
+#
+# Arms the WDT for SECS seconds (WDT_LENGTH = (SECS<<5)|0x8 at
+# 0x10007004 — 1 count = 1 s on this SoC, key bit 0x8; field-verified
+# encoding from cl2-up.sh's 15 s guard and device-reboot.sh's 0x48/2 s)
+# and sleeps. The WDT is a free-running hardware timer — it fires at
+# ~SECS regardless of whether this process is still alive.
+set -u
+
+SECS=${1:-20}
+case "$SECS" in
+    ''|*[!0-9]*) echo "usage: gemini-wdt-reboot [2..31]" >&2; exit 1 ;;
+esac
+[ "$SECS" -ge 2 ] && [ "$SECS" -le 31 ] || { echo "SECS must be 2..31" >&2; exit 1; }
+
+echo "gemini-wdt-reboot: arming WDT for ${SECS}s (EXRST) — device power-cycles in ~$((SECS + 2))s"
+# 0x10007004 = WDT_LENGTH: bits[9:5] = seconds, bit3 = key/enable.
+busybox devmem 0x10007004 32 $(( (SECS << 5) | 8 )) || {
+    echo "gemini-wdt-reboot: WDT arm failed" >&2; exit 1;
+}
+sync
+sleep "$SECS"
+# Should be unreachable: the WDT fires first. If it is (wrong encoding /
+# register write ignored), say so loudly instead of looking idle.
+echo "gemini-wdt-reboot: WARNING — WDT did not fire after ${SECS}s; no reboot happened" >&2
+exit 1

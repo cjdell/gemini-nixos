@@ -1,0 +1,175 @@
+#!/bin/bash
+# backlight — Gemini PDA display backlight control.
+#
+# Controls DISP_PWM0 @ 0x1100f000 (the LCD LED-boost PWM; see
+# docs/hardware.md "Backlight"). On this kernel there is NO
+# /sys/class/backlight yet (CONFIG_PWM_MTK_DISP not built), so this
+# tool drives the hardware directly via /dev/mem, using the exact
+# sequence LK uses (repos/gemini-lk/lk/platform/mt6797/ddp_pwm.c
+# disp_pwm_set_backlight).
+#
+# Registers (mt8173-compatible layout, verified live 2026-09-01):
+#   EN     0x00  bit0  PWM enable
+#   COMMIT 0x08  bit0  double-buffer commit
+#   CON0   0x10  CLKDIV [26:16]  (we keep LK's 0)
+#   CON1   0x14  PERIOD [11:0] = 0x3ff (1024 steps), DUTY [30:16]
+#   duty 0..1023, duty=1023 -> 100 %
+#
+# Clocks (MTK gates are ACTIVE-LOW, CLK_GATE_SET_TO_DISABLE — a set
+# bit means DISABLED; this bit us in the 2026-09-01 session where the
+# "phantom block" was actually just a wrongly-set gate):
+#   pwm_sel        topckgen 0x10000050 bit7 (mux bits 0-2 = clk26m)
+#   infra_disp_pwm infracfg ICG1: set 0x10001088 / clr 0x1000108c /
+#                  sta 0x10001094, bit17
+# Both are normally left enabled by LK + clk_ignore_unused. If a gate
+# is found disabled this tool re-enables it (preserving other bits).
+#
+# Usage:
+#   backlight get              print brightness % (0-100)
+#   backlight set <0-100>      set brightness %
+#   backlight max|min          udev-style aliases for 100 / 0
+#   backlight off              disable the PWM entirely (EN=0, saves power)
+#   backlight on               re-enable at the last duty
+#   backlight status           regs + clock gate state
+#   backlight raw              CON1 value (hex) — for debugging
+#
+# Exit codes: 0 ok, 1 usage, 2 cannot access /dev/mem, 3 bad value.
+set -u
+
+BASE=0x1100f000
+REG_EN=$((BASE + 0x00))
+REG_COMMIT=$((BASE + 0x08))
+REG_CON1=$((BASE + 0x14))
+
+TOP_PWM_SEL=0x10000050        # pwm_sel mux+gate; bit7 = gate (SET=disabled)
+ICG1_CLR=0x1000108c           # infra_disp_pwm enable: write bit17 here
+ICG1_STA=0x10001094           # gate state; bit17 SET = disabled
+
+dm() {  # read: devmem addr 32 ; write: devmem addr 32 val
+    if [ $# -ge 2 ]; then busybox devmem "$1" 32 "$2"; else busybox devmem "$1" 32; fi
+}
+
+# ensure_clocks — make sure both PWM clocks are running (idempotent).
+ensure_clocks() {
+    local v
+    v=$(dm $TOP_PWM_SEL) || return 1
+    # bit7 SET = disabled (CLK_GATE_SET_TO_DISABLE) -> clear it, keep mux + others
+    if [ $((v & 0x80)) -ne 0 ]; then
+        dm $TOP_PWM_SEL $((v & ~0x80)) || return 1
+    fi
+    v=$(dm $ICG1_STA) || return 1
+    # bit17 SET = disabled -> write 1 to the CLR reg to enable
+    if [ $((v & 0x20000)) -ne 0 ]; then
+        dm $ICG1_CLR 0x00020000 || return 1
+    fi
+    return 0
+}
+
+# con1_to_pct — parse CON1, print 0-100
+con1_to_pct() {
+    local duty
+    duty=$(( ($1 >> 16) & 0x1fff ))
+    [ "$duty" -gt 1023 ] && duty=1023
+    echo $(( duty * 100 / 1023 ))
+}
+
+# write_duty DUTY — LK sequence: COMMIT=0, CON1, EN, COMMIT=1, COMMIT=0
+write_duty() {
+    local duty=$1
+    dm $REG_COMMIT 0 || return 1
+    dm $REG_CON1   $(( (duty << 16) | 0x3ff )) || return 1
+    if [ "$duty" -gt 0 ]; then
+        dm $REG_EN 1 || return 1
+    else
+        dm $REG_EN 0 || return 1
+    fi
+    dm $REG_COMMIT 1 || return 1
+    dm $REG_COMMIT 0 || return 1
+    return 0
+}
+
+devmem_ok() {
+    dm $REG_CON1 >/dev/null 2>&1
+}
+
+case "${1:-}" in
+    get)
+        if [ -d /sys/class/backlight ] && ls /sys/class/backlight/*/brightness >/dev/null 2>&1; then
+            bl=$(ls -d /sys/class/backlight/* | head -1)
+            max=$(cat "$bl/max_brightness")
+            cur=$(cat "$bl/brightness")
+            echo $(( cur * 100 / max ))
+        else
+            ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+            en=$(dm $REG_EN) || { echo "cannot read DISP_PWM0" >&2; exit 2; }
+            if [ $((en & 1)) -eq 0 ]; then
+                echo 0   # PWM disabled (EN=0): effective brightness 0
+            else
+                v=$(dm $REG_CON1) || { echo "cannot read DISP_PWM0" >&2; exit 2; }
+                con1_to_pct "$v"
+            fi
+        fi
+        ;;
+    set)
+        [ $# -eq 2 ] || { echo "usage: backlight set <0-100>" >&2; exit 1; }
+        pct=$2
+        case "$pct" in
+            *[!0-9]*) echo "brightness must be 0-100" >&2; exit 3 ;;
+        esac
+        [ "$pct" -le 100 ] || { echo "brightness must be 0-100" >&2; exit 3; }
+        if [ -d /sys/class/backlight ] && ls /sys/class/backlight/*/brightness >/dev/null 2>&1; then
+            bl=$(ls -d /sys/class/backlight/* | head -1)
+            max=$(cat "$bl/max_brightness")
+            echo $(( pct * max / 100 )) > "$bl/brightness"
+        else
+            ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+            duty=$(( pct * 1023 / 100 ))
+            write_duty "$duty" || { echo "write failed" >&2; exit 2; }
+        fi
+        ;;
+    max)  bash "$0" set 100 ;;
+    min)  bash "$0" set 0 ;;
+    off)
+        if [ -d /sys/class/backlight ] && ls /sys/class/backlight/*/brightness >/dev/null 2>&1; then
+            bl=$(ls -d /sys/class/backlight/* | head -1)
+            # bl_power=4 (FB_BLANK_POWERDOWN): PWM off, brightness value kept
+            echo 4 > "$bl/bl_power"
+        else
+            ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+            dm $REG_EN 0 || { echo "write failed" >&2; exit 2; }
+        fi
+        ;;
+    on)
+        # re-enable at the last duty (LK: EN=0 at level 0 "to save power",
+        # re-enabling restores the previous CON1 value)
+        if [ -d /sys/class/backlight ] && ls /sys/class/backlight/*/brightness >/dev/null 2>&1; then
+            bl=$(ls -d /sys/class/backlight/* | head -1)
+            max=$(cat "$bl/max_brightness")
+            # driver keeps the last brightness; just re-enable via bl_power
+            echo 0 > "$bl/bl_power"
+        else
+            ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+            dm $REG_EN 1 || { echo "write failed" >&2; exit 2; }
+        fi
+        ;;
+    raw)
+        ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+        dm $REG_CON1
+        ;;
+    status)
+        ensure_clocks || { echo "cannot enable PWM clocks" >&2; exit 2; }
+        v=$(dm $REG_CON1)
+        echo "DISP_PWM0 @ $BASE"
+        echo "  EN     = $(dm $REG_EN)"
+        echo "  COMMIT = $(dm $REG_COMMIT)"
+        echo "  CON1   = $v  (duty=$(( (v >> 16) & 0x1fff ))/1023 = $(con1_to_pct "$v")%)"
+        echo "clocks:"
+        echo "  pwm_sel        0x$(printf %08x "$(dm $TOP_PWM_SEL)")  (bit7=0 enabled)"
+        echo "  infra_disp_pwm 0x$(printf %08x "$(dm $ICG1_STA)")  (bit17=0 enabled)"
+        ;;
+    *)
+        echo "usage: backlight get|set <0-100>|max|min|off|on|status|raw" >&2
+        exit 1
+        ;;
+esac
+exit 0

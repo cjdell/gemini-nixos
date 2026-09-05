@@ -1,0 +1,58 @@
+#!/bin/bash
+# battstat — one-shot battery status for humans and experiment harnesses.
+#
+# Prints key=value lines from the BQ25896 power supply (see
+# battery-guard.sh header for property semantics).
+#
+# Exit codes:
+#   0  OK (charging, full, or healthy on battery)
+#   2  low battery (on battery power, < 3650 mV)
+#   3  USB present but NOT charging
+#   4  critical (on battery power, < 3500 mV)
+#   5  no bq25890 power supply present (driver missing)
+set -u
+
+PSY=""
+for d in /sys/class/power_supply/bq25890-charger-*; do
+    [ -e "$d/status" ] && { PSY=$d; break; }
+done
+if [ -z "$PSY" ]; then
+    echo "error=no_bq25890_power_supply"
+    exit 5
+fi
+
+ONLINE=$(cat "$PSY/online" 2>/dev/null || echo 0)
+STATUS=$(cat "$PSY/status" 2>/dev/null || echo Unknown)
+CHGT=$(cat "$PSY/charge_type" 2>/dev/null || echo None)
+VBAT=$(cat "$PSY/voltage_now" 2>/dev/null || echo 0)
+IBAT=$(cat "$PSY/current_now" 2>/dev/null || echo 0)
+TEMP=$(cat "$PSY/temp" 2>/dev/null || echo 0)
+
+case "$VBAT" in (*[!0-9]*|'') VBAT_MV=? ;; (*) VBAT_MV=$((VBAT / 1000)) ;; esac
+case "$IBAT" in (*[!0-9-]*|'') IBAT_MA=? ;; (*) IBAT_MA=$((IBAT / 1000)) ;; esac
+
+echo "supply=${PSY##*/}"
+echo "online=$ONLINE"
+echo "status=$STATUS"
+echo "charge_type=$CHGT"
+echo "vbat_mV=$VBAT_MV"
+echo "ibat_mA=$IBAT_MA"
+echo "temp_10c=$TEMP"
+if [ -f /run/battery-guard/state ]; then
+    echo "guard=$(awk -F= '$1=="guard"{print $2}' /run/battery-guard/state)"
+fi
+
+rc=0
+case "$STATUS" in
+    Full|Charging) rc=0 ;;
+    Discharging|"Not charging")
+        if [ "$ONLINE" = 1 ]; then
+            rc=3
+        elif [ "$VBAT_MV" != ? ]; then
+            if [ "$VBAT_MV" -lt 3500 ]; then rc=4
+            elif [ "$VBAT_MV" -lt 3650 ]; then rc=2
+            else rc=0; fi
+        fi
+        ;;
+esac
+exit $rc
