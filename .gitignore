@@ -2,10 +2,15 @@
 result*
 
 # Vendored source tarballs — too large for git; see kernel/README.md
-# and mesa/README.md (regenerate with bin/snapshot-kernel.sh /
-# bin/snapshot-mesa.sh). The snapshot scripts register the files with
-# `git add -Nf` (intent-to-add) so nix 2.34's tracked-files-only source
-# export sees them WITHOUT the content ever being committed.
+# (regenerate with bin/snapshot-kernel.sh). The snapshot script registers
+# the file with `git add -Nf` (intent-to-add) so nix 2.34's
+# tracked-files-only source export sees it WITHOUT the content ever being
+# committed.
+#
+# Mesa used to be vendored here too (mesa/mesa-25.0.7.tar.gz +
+# bin/snapshot-mesa.sh); since 2026-09-07 the mesa base is fetched by
+# hash from the published upstream archive instead (docs/library-deltas.md)
+# — only the delta patch is tracked.
 #
 # EXCEPTION: kernel/borrowed/ is tracked (small, ~14 MB: the working
 # bring-up kernel payload + DTB + module tree + sramldo-smc.ko + config

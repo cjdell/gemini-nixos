@@ -21,7 +21,7 @@ adb.
 | `devices/planet-geminipda/kernel/` | Kernel derivation (mobile-nixos kernel-builder) + the working bring-up `.config`; `postInstall` builds the out-of-tree `sramldo-smc.ko` (A72 bring-up SMC) against the same tree |
 | `modules/hardware-soc-mediatek-mt6797.nix` | Out-of-tree MT6797 SoC fragment (upstreaming = phase 6) |
 | `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
-| `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview) |
+| `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview). Base = published upstream 25.0.7 archive fetched by hash + the tracked fork patch — nothing vendored (see `docs/library-deltas.md`) |
 | `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp), cross-compiled |
 | `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
 | `patches/` | The geminipda Mesa fork patch (byte-for-byte the GeminiPDA submodule commit `ac19be0`) |
@@ -30,8 +30,7 @@ adb.
 | `kernel/borrowed/` | The working bring-up kernel #329 artifacts, vendored + tracked (payload, DTB, module tree, sramldo-smc.ko, .config) |
 | `kernel/geminipda-bringup-733c0c7ea.tar.gz` | `git archive` snapshot of the in-repo kernel pin (future self-contained build; see “Kernel phase”) |
 | `bin/snapshot-kernel.sh` | Regenerates the kernel snapshot (and registers it for nix visibility) |
-| `mesa/mesa-25.0.7.tar.gz` | Vendored Mesa 25.0.7 tarball (the GitLab API archive endpoint is byte-unstable, so `fetchFromGitLab` is unusable here) |
-| `bin/snapshot-mesa.sh` | Regenerates the Mesa tarball (and registers it for nix visibility) |
+| `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 
 ## Pins
@@ -77,12 +76,16 @@ self-contained phase; it must first be re-synced to the #329+ kernel
 line (it lacks the CONSYS Wi-Fi, audio S16 and sidekey commits).
 
 **Tarball visibility**: nix 2.34 flake exports contain only git-tracked
-files, and the host runs `pure-eval = true`. The large source tarballs
-(`kernel/*.tar.gz`, `mesa/*.tar.gz`) stay gitignored but are registered
-with `git add -Nf` (intent-to-add — path only, content never committed)
-by the snapshot scripts, which makes them visible to nix. A fresh
-clone must run `bash bin/snapshot-kernel.sh && bash bin/snapshot-mesa.sh`
-before building. (Do not `git add .` — it would commit the tarballs.)
+files, and the host runs `pure-eval = true`. The large kernel source
+tarball (`kernel/*.tar.gz`) stays gitignored but is registered with
+`git add -Nf` (intent-to-add — path only, content never committed) by
+`bin/snapshot-kernel.sh`, which makes it visible to nix. A fresh clone
+must run `bash bin/snapshot-kernel.sh` before building. (Do not
+`git add .` — it would commit the tarball.)
+
+Mesa no longer needs this: since 2026-09-07 its source is fetched by
+hash from the published upstream archive by `pkgs/mesa-geminipda.nix`
+(byte-stable canonical `/-/archive/` URL; see `docs/library-deltas.md`).
 
 ## Build
 

@@ -1,10 +1,17 @@
 # Mesa 25.0.7 + the geminipda panfrost fork (Mali-T880 / MT6797).
 #
-# Why a standalone derivation instead of nixpkgs' `mesa` (26.1.4 in this
-# pin): the fork patch (patches/mesa-panfrost-geminipda-25.0.7.patch,
-# byte-for-byte the GeminiPDA project's submodule commit ac19be0) is
-# written against 25.0.7 panfrost and applies cleanly to the vanilla
-# 25.0.7 tarball only. The fork is what makes
+# Self-hosting pattern (long-standing goal; docs/library-deltas.md):
+# published base + in-repo delta. The base is the published upstream
+# mesa 25.0.7 archive (fetched by hash below); the delta is the single
+# git-tracked fork patch. Nothing mesa is vendored in this repo.
+#
+# Why this standalone derivation rather than nixpkgs' `mesa` (26.1.4 in
+# the system pin): the fork patch (patches/mesa-panfrost-geminipda-
+# 25.0.7.patch, byte-for-byte the GeminiPDA project's submodule commit
+# ac19be0 = mesa-25.0.7-1-gac19be0) is written against 25.0.7 panfrost
+# and applies cleanly to the vanilla 25.0.7 tree only (different major
+# from the pin's 26.x, and the 26.x recipe also drags in the desktop
+# rusticl/LLVM stack). The fork is what makes
 # EGL_EXT_image_dma_buf_import work on panfrost (rendering straight into
 # the LK framebuffer) plus the polygon-list memset fix.
 #
@@ -39,6 +46,7 @@
 { lib
 , stdenv
 , buildPackages
+, fetchurl
 , meson
 , ninja
 , pkg-config
@@ -53,15 +61,24 @@ stdenv.mkDerivation (finalAttrs: {
   pname = "mesa-geminipda";
   inherit version;
 
-  # Vendored tarball (bin/snapshot-mesa.sh), same pattern as the kernel
-  # snapshot: the GitLab *API* archive endpoint used by fetchFromGitLab
-  # is byte-unstable (three fetches produced three different tar bytes
-  # on 2026-09-05), so the source is pinned locally. This copy is the
-  # canonical `/-/archive/` tarball of tag mesa-25.0.7
-  # (sha256 a0c8a2dbf99bf639bd9d42a0f4a749906b76df8371e11fdbc2858918a3e8cf93),
-  # whose contents + the fork patch below are byte-identical to the
-  # verified on-glass fork tree.
-  src = ../mesa/mesa-${version}.tar.gz;
+  # Published base, fetched by hash (self-hosting pattern, docs/library-
+  # deltas.md): the byte-stable canonical `/-/archive/` tarball of the
+  # upstream tag mesa-25.0.7 — NOT nixpkgs' fetchFromGitLab, which hits
+  # the GitLab *API* archive endpoint (/api/v4/...) that is byte-unstable
+  # on gitlab.freedesktop.org (three fetches produced three different tar
+  # bytes on 2026-09-05, breaking fixed-output hashes). This URL's bytes
+  # are what was previously vendored in mesa/mesa-25.0.7.tar.gz (same
+  # sha256 a0c8a2db...), so contents + the fork patch below stay
+  # byte-identical to the verified on-glass fork tree.
+  #
+  # The delta on top of the base is ONLY the git-tracked fork patch
+  # (patches/mesa-panfrost-geminipda-25.0.7.patch, byte-for-byte the
+  # GeminiPDA submodule commit ac19be0, itself exactly one commit on the
+  # mesa-25.0.7 tag). No mesa source is copied into this repo.
+  src = fetchurl {
+    url = "https://gitlab.freedesktop.org/mesa/mesa/-/archive/mesa-${version}/mesa-mesa-${version}.tar.gz";
+    hash = "sha256-oMii2/mb9jm9nUKg9KdJkGt234Nx4R/bwoWJGKPoz5M=";
+  };
 
   patches = [
     # geminipda panfrost fork: dma-buf import/export caps, polygon-list

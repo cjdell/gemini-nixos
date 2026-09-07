@@ -419,18 +419,22 @@ simplify, but re-validate on glass.
 
 Mesa is now an in-tree derivation (`pkgs/mesa-geminipda.nix`): vanilla
 25.0.7 + the 272-line fork patch (verified byte-identical to the
-on-glass fork tree, submodule commit `ac19be0`), surfaceless
-EGL/glavnd-ICD-only build with the exact verified meson flag set,
-installed alongside `libglvnd` in the system closure. Build quirks
-documented in the derivation:
+on-glass fork tree, submodule commit `ac19be0` = `mesa-25.0.7-1-gac19be0`),
+surfaceless EGL/glavnd-ICD-only build with the exact verified meson
+flag set, installed alongside `libglvnd` in the system closure. Since
+2026-09-07 the base is the **published** upstream 25.0.7 archive
+fetched by hash (no vendored tarball — the first library on the
+“published base + in-repo delta” pattern, `docs/library-deltas.md`;
+the kernel snapshot is next). Build quirks documented in the
+derivation:
 
 - the nixpkgs pin's Mesa (26.1.4) cannot take the 25.0.7 patch
   (standalone 25.0.7 is correct);
 - the GitLab **API** archive endpoint (`fetchFromGitLab`) is
   byte-unstable (three fetches → three different tar bytes on
-  2026-09-05), so the source is a vendored tarball of the canonical
-  `/-/archive/` URL (`bin/snapshot-mesa.sh`), same pattern as the
-  kernel snapshot;
+  2026-09-05), so the source is a `fetchurl` of the byte-stable
+  canonical `/-/archive/` URL of tag `mesa-25.0.7` (hash-pinned,
+  same bytes as the previously vendored tarball);
 - nixpkgs' meson setup hook passes `-Dauto_features=enabled` by
   default. The verified reference build ran plain meson (auto
   features stay `auto`), so the derivation sets
