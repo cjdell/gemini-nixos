@@ -20,10 +20,12 @@ stdenv.mkDerivation rec {
 
   src = ./speaker-amp;
 
-  # Cross stdenv: the gcc wrapper only exposes the prefixed binary name
-  # (aarch64-unknown-linux-gnu-cc); there is no bare `cc` on PATH. This
-  # repo is a single-device (aarch64) tree, so the prefix is explicit.
-  ccCmd = "${stdenv.cc}/bin/aarch64-unknown-linux-gnu-cc";
+  # [native-aarch64 branch] Resolve the compiler through the stdenv
+  # instead of the hardcoded cross prefix: `stdenv.cc.targetPrefix` is
+  # "aarch64-unknown-linux-gnu-" on the cross main branch and "" on
+  # this native-aarch64 branch (where no aarch64-* prefixed cc exists on
+  # the builder's PATH). Same pattern as pkgs/gemwl.nix.
+  ccCmd = "${stdenv.cc}/bin/${stdenv.cc.targetPrefix}cc";
 
   buildPhase = ''
     runHook preBuild
