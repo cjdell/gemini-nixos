@@ -5,6 +5,69 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 — boot-process explainer doc (from the Q&A session; repo-only)
+
+Saved the bootstrapping Q&A (kernel identity / cmdline / rootfs selection /
+initramfs builds) as **NEW `docs/boot-process.md`** — a plain-language
+explainer layered over the receipt docs. Contents: the one NORMAL boot
+slot (only `boot` p22 / `recovery` p1 are loadable by LK), boot.img =
+kernel+DTB+ramdisk, the shared borrowed #329 kernel (byte-identity
+verified: kernel payload sha256 `3a2a7f3a…822` matches between the
+sibling's new_kali_boot.img and `kernel/borrowed/`), the ramdisk `/init`
+as the rootfs selector (content markers; NixOS store-only vs Debian
+`/etc/os-release`), the four cmdline locations + `CMDLINE_FORCE` (both
+OSes boot the identical forced cmdline today; per-OS cmdlines only with
+per-OS kernels), the para-marker selector table, the two initramfs builds
+vs the one proposed dual-boot initrd, and the size constraints shaping it
+all. README layout table got a row for the doc. Nothing flashed; no code
+changes.
+
+Next action: unchanged — §10 decisions of `docs/repartition-android-space.md`,
+then the §9 implementation.
+
+## 2026-09-07 — Android-space repurpose + dual-boot investigation (repo-only; no device interaction, nothing flashed)
+
+Investigated (per the user, no device changes): can the NixOS rootfs go
+where Android currently is, keeping the GeminiPDA Debian rootfs (p29) for
+testing, ideally bootable without reflashing `boot`? Also: the 16 MiB
+`boot` size-constraint risks + workarounds. Outcome = a proposal doc, no
+code changes:
+
+- **NEW `docs/repartition-android-space.md`** — full write-up with
+  receipts: partition map + LK boot truth (`boot`/`recovery` are the only
+  partitions LK loads — `mt_boot.c:1484/1527`; boot2/boot3 never), the
+  p32 `userdata` (27.33 GiB) recommendation over p27/GPT surgery, the
+  para-command dual-boot selector (`boot-recovery` reserved for LK→TWRP,
+  `boot-debian` → p29, zeros → p32 NixOS default), the Debian handoff to
+  replicate from the GeminiPDA initramfs (fstab `/` fix, A72 opt-in
+  enforcement), boot-budget measurements (boot.img 14.72 MiB of 16 MiB =
+  1.28 MiB headroom; kernel gz 13.45 MiB → 34.3 MiB decompressed; LK is
+  zlib/gzip-only; RD_* all =y for future initrd formats), the
+  shared-kernel constraint (§8), and the repo-side change list (§9) +
+  open decisions (§10).
+- **`docs/mobile-nixos-port-feasibility.md`**: two dated [superseded
+  2026-09-07] annotations — §7 Non-risks "Android partition layout" row
+  and §8 decision 4 (Android p27/p32 fate) — pointing at the new doc
+  (both previously assumed p29-only repurpose with Android untouched).
+- README not touched (nothing flashed/decided yet; its p29-target text
+  stays until §10 decisions land).
+
+Evidence gathered this session (facts for the record, all verified
+read-only): current on-device `boot` backup `stock-dump/boot-20260907-
+013541.img` carries kernel #328 (00047-g3b3a2b6 — the pre-#329 boot),
+#329 is what the device runs now (sibling log 2026-09-07); the repo's
+borrowed `kernel/borrowed/Image.gz` = the same #329 payload
+(00048-g188aade698dd, version string verified); #329 `.config` has
+`CONFIG_CMDLINE_FORCE=y` (boot.img cmdline inert for both OSes); store
+build artifacts measured: boot.img 15,433,728 B (kernel 14,108,276 B +
+ramdisk 1,321,716 B, 2048 pages) + system.img 1,849,479,168 B; para env
+window @ 0x20000 (env.h:36-44) — offset-0 command writes never touch it.
+
+Next action: user decides §10 (default OS, marker location, kernel
+phase), then implement §9 (initrd dual-boot branch, flash/boot-switch
+re-target to p32, boot-debian verb/unit) — still nothing flashed until
+the phase-2 on-glass cycle.
+
 ## 2026-09-07 — outstanding.md worked: SSH/logind/keymap/DRM-race/udev/backlight/NAT + R10 shebang fix (build-level; nothing flashed)
 
 Worked the `outstanding.md` rootfs-viability list (§13 order). **No

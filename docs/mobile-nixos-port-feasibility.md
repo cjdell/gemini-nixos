@@ -615,6 +615,9 @@ package needs the same treatment.
 - **eMMC numbering quirk**: by-label mount sidesteps it.
 - **No fuel gauge**: distro-independent (kernel + scripts already done).
 - **Android partition layout**: untouched by the plan except p29.
+  [superseded 2026-09-07 — under review: the repurpose target is now
+  Android's p32 `userdata` instead of p29, keeping Debian on p29 for
+  testing; see `docs/repartition-android-space.md`]
 - **Touch/keyboard**: kernel-side + xkb config; nothing Mobile NixOS
   specific.
 - **Flashing**: TWRP pipeline unchanged.
@@ -633,7 +636,10 @@ package needs the same treatment.
    later) vs forking `repos/mobile-nixos` and adding the device +
    SoC fragment in-tree immediately.
 4. **Android p27/p32 fate** — keep untouched (assumed yes) → p29-only
-   repurpose.
+   repurpose. [superseded 2026-09-07 — investigation done, decision open:
+   NixOS rootfs on p32 `userdata` (Android erased), Debian stays on p29,
+   dual-boot single boot.img + para marker — see
+   `docs/repartition-android-space.md` §10]
 5. **Scope of the first milestone** — see §9 phase 2 (headless NixOS
    over g_ether SSH) is the natural "definition of done" for the
    port's foundation.
