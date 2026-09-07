@@ -141,6 +141,7 @@ rules, the 10 % backlight-default unit, and hand-started
 |---|---|
 | `gemini-gpu-poweron.service` | Powers the Mali-T880 (MFG MTCMOS domains via SPM devmem + VGPU rails via i2c RT5735) before anything uses the GPU |
 | `gemini-a72-up.service` | Brings cpu8/cpu9 (A72) online: DA9214 BUCKB enable, SPM pre-sequence, SRAM-LDO SMC (`sramldo-smc.ko`, built into the kernel tree), PSCI CPU_ON, WDT-guarded with retry/backoff |
+| `cl2-down.sh [cpu9\|cpu8\|both]` | A72 power-DOWN (hand-run CLI, in `gemini-pda-utils`): per-core PSCI offline (safe) + full cluster teardown → cold-boot power state (ISO re-asserted, DA9214 BUCKB rail dropped); WDT-armed 20 s. Re-enable = `cl2-up.sh`. Proven on #329 2026-09-07 (sibling) |
 | `gemini-battery-guard.service` | Battery safety daemon: low/critical VBAT alerts + orderly poweroff, USB-present-but-not-charging detection, history CSV |
 | `gemini-backlight-default.service` | Boot-time backlight = 10 % (power-saving default; DISP_PWM0 via sysfs on #329, devmem fallback) — outstanding.md item 6 |
 | `backlight`, `power` | DISP_PWM0 backlight control (no sysfs backlight on this kernel; drives the LED-boost PWM via devmem) + charge CLI (`power dim-to-charge` solves full-brightness-cannot-charge) |

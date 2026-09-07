@@ -1,7 +1,8 @@
 # Gemini PDA userspace helpers, as a single package.
 #
 # The scripts are the verified bring-up utilities from the GeminiPDA
-# project (build/gpu-poweron.sh, build/a72-bringup/cl2-up.sh,
+# project (build/gpu-poweron.sh, build/a72-bringup/cl2-up.sh +
+# cl2-down.sh,
 # build/rootfs-files/{backlight,battery-guard,gemini-boot-recovery,
 # pipewire,speaker-amp,wifi,wifi-consys}), copied verbatim except for
 # the `__GEMINI_UTILS__` placeholder (each script's own bin dir, so the

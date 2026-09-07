@@ -6,6 +6,8 @@
 #
 #   gemini-gpu-poweron   Mali-T880 MFG MTCMOS power-on + VGPU rails
 #   gemini-a72-up        A72 cluster (cpu8/cpu9) bring-up via sramldo-smc.ko
+#   cl2-down.sh          A72 cluster power-DOWN (hand-run CLI, NOT a unit —
+#                        the reverse of a72-up, see the service below)
 #   gemini-battery-guard battery safety daemon (level + USB-charge checks)
 #   backlight / power    display LED-boost + charge CLI
 #   battstat / bq25896-raw  BQ25896 status / raw ADC readers
@@ -90,6 +92,15 @@ in
     };
   };
 
+  # The REVERSE path ships as the hand-run `cl2-down.sh` CLI in the same
+  # utils package (2026-09-07, sibling commit 738d19f): per-core PSCI
+  # offline is safe, and the last-A72 teardown (secure power_off_cl3 —
+  # CCI/snoop/SPM/ISO + external DA9214 BUCKB rail drop) is proven on
+  # #329, returning the box to the cold-boot state cl2-up was built for.
+  # Deliberately NOT a unit: the power-saving down is on-demand only — a
+  # boot-time auto-down would fight this service. Usage on the device:
+  # `cl2-down.sh [cpu9|cpu8|both]` (both = full cluster off); re-enable
+  # with `cl2-up.sh`. WDT-armed (20 s) inside the script.
   systemd.services.gemini-a72-up = {
     description = "Gemini PDA A72 cluster bring-up (cpu8/cpu9 online)";
     # The reference service runs After=multi-user.target: the DA9214 i2c6

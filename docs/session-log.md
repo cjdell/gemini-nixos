@@ -5,6 +5,48 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 — A72 cluster power-DOWN brought over (cl2-down.sh, verbatim; build-level)
+
+Ported the sibling's proven A72 power-down path (GeminiPDA @ 738d19f,
+2026-09-07) into this repo's script set:
+
+- **NEW `services/scripts/cl2-down.sh`** — byte-identical copy of the
+  sibling's `build/a72-bringup/cl2-down.sh` (md5
+  `3b70536b79cee74ee156762e09a6a002`), exec bit set. What it does
+  (receipts live in the sibling's session-log/hardware.md): per-core
+  PSCI offline is safe (cpu9 while cpu8 up; "psci: CPU9 killed (polled
+  0 ms)"); the LAST-A72 branch runs the secure power_off_cl3 teardown
+  inside the controller's AFFINITY_INFO SMC (UNBOUNDED waits — WDT 20 s
+  armed is the recovery), then — only after B_EXT_BUCK_ISO re-assert
+  (0x10006290 bit1) + 0x10006218 bit0 clear are confirmed — drops the
+  external DA9214 BUCKB rail (vendor cpu_power_off_buck). Post-down
+  state = cold-boot state; re-enable = the existing `cl2-up.sh`
+  (verified ×2 cycles on the sibling unit).
+- **`services/scripts/cl2-up.sh`** — already carried the sibling's
+  bus-wait hardening (diff vs 738d19f: empty).
+- **Packaging**: no Nix changes needed — `gemini-utils.nix` copies the
+  whole `scripts/` dir, so `cl2-down.sh` now ships in `gemini-pda-utils`
+  (on-device PATH via `environment.systemPackages`) and gets the R10
+  store-bash shebang rewrite automatically. It is a hand-run CLI only
+  (`cl2-down.sh [cpu9|cpu8|both]`), deliberately NOT a systemd unit —
+  the down is on-demand and must not race `gemini-a72-up` at boot
+  (documented in `services/gemini-pda.nix`). Uses only busybox devmem /
+  i2c-tools i2cset / coreutils+gnused+util-linux — all already in the
+  service/system PATHs or the base closure.
+- **Docs**: README unit/CLI table row, `services/gemini-pda.nix` +
+  `gemini-utils.nix` headers, feasibility doc R5 addendum + phase-3
+  row (2026-09-07 fragment). No stale "never offline" language existed
+  in this repo (sibling corrected its own hardware.md).
+
+Versions: unchanged — kernel still the borrowed #329 (pin
+`733c0c7ea74195bd30734f599f37e69febfd38e0`); nothing flashed (still
+build-level; device untouched). Kernel tree unchanged in the sibling
+commit too.
+
+Next action: unchanged — phase 2 on-glass verification; when the NixOS
+rootfs is live, `cl2-down.sh both` then `cl2-up.sh` is the on-device
+round-trip to prove the pair on this stack.
+
 ## 2026-09-07 — boot-process explainer doc (from the Q&A session; repo-only)
 
 Saved the bootstrapping Q&A (kernel identity / cmdline / rootfs selection /

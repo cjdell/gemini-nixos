@@ -524,6 +524,22 @@ then does the PSCI CPU_ON via sysfs. The pinned kernel
 (`733c0c7ea`) already carries the required late-cpufeature fix. Do
 not raise `maxcpus` or hotplug the A72s outside that service.
 
+**2026-09-07 addendum (sibling commit 738d19f):** the REVERSE path is
+now proven on the same #329 kernel — per-core PSCI offline is clean
+("psci: CPU9 killed (polled 0 ms)"), and the last-A72 teardown (secure
+power_off_cl3 inside the controller's AFFINITY_INFO SMC: CCI/snoop
+withdrawal, B mux/PLL, SPM MP2 power-down, B_EXT_BUCK_ISO re-assert
+0x10006290 bit1, 0x10006218 bit0 clear) completes on mainline, after
+which the external DA9214 BUCKB rail is dropped (vendor
+cpu_power_off_buck) — the box returns to the byte-identical cold-boot
+state `cl2-up.sh` was built for (re-enable ×2 cycles verified).
+`services/scripts/cl2-down.sh` (verbatim port, WDT-armed 20 s) ships in
+the same utils package as a hand-run CLI (`cl2-down.sh [cpu9|cpu8|
+both]`) — deliberately NOT a unit: the power-saving down is on-demand
+and must not race `gemini-a72-up` at boot. On-hardware exit for the
+down path: same milestone-11/12 cycle as everything else (still nothing
+flashed in this repo).
+
 ### R6 — first-boot store re-hydration on p29
 
 `rootfs.img` is populated with the system closure and registers the
@@ -656,7 +672,7 @@ working style):
 | 0 | Repo scaffolding: `gemini-nixos` flake/pins importing Mobile NixOS; out-of-tree device skeleton; kernel derivation for `geminipda-bringup` + config; boot.img geometry §3.1/§3.2 | 1–2 sessions | **DONE (2026-09-05).** `android-bootimg` header fields match `cleanup-boot.img` (kernel/ramdisk/second/tags addrs, 2048 pages, `ANDROID!` v0); kernel payload is Image.gz + appended DTB; eval clean |
 | 1 | Stage-1 sizing (R1): build minimal initrd, measure, trim kernel config and stage-1 options to fit 16 MiB | 2–4 sessions | **DONE (2026-09-05) — see R1/R8.** Minimal busybox initrd (1.26 MiB gz) replaces stage-1 in the boot image; boot.img = 14.72 MiB (headroom 1.3 MiB); rootfs generation lookup + by-label symlink handled in the initrd; systemd-BPF cross-build fixed via overlay |
 | 2 | Rootfs bring-up: flash `rootfs.img` to p29 (label `NIXOS_SYSTEM`), g_ether networking, sshd, serial/fbcon console, WDT-reboot unit, boot-switch/flash docs | 1–2 sessions | SSH over g_ether to a NixOS shell on hardware; `nixos-rebuild` round-trip works. **2026-09-07 note:** the outstanding.md rootfs blockers are now fixed at the build level (root ssh key + hostname, logind side keys, console keymap, DRM-module ordering, USB-PM udev rules, backlight-default unit, wdt/boot-recovery units, R10 shebang) — the flash + on-glass checks are all that remain |
-| 3 | Kernel-adjacent services: gpu-poweron, a72-up, battery-guard, backlight/power CLIs, watchdog-reboot | 1–2 sessions | **DONE (build level, 2026-09-05).** Units + verbatim scripts in `services/`; sramldo-smc built in the kernel derivation; kernel depmod bug fixed (R9). **2026-09-07:** R10 added — bash shebang rewrite in `gemini-pda-utils` (see §7 R10). Exit on hardware: same as current milestone-11/12 behaviour |
+| 3 | Kernel-adjacent services: gpu-poweron, a72-up, battery-guard, backlight/power CLIs, watchdog-reboot | 1–2 sessions | **DONE (build level, 2026-09-05).** Units + verbatim scripts in `services/`; sramldo-smc built in the kernel derivation; kernel depmod bug fixed (R9). **2026-09-07:** R10 added — bash shebang rewrite in `gemini-pda-utils` (see §7 R10); + `cl2-down.sh` verbatim (A72 cluster power-down CLI — see R5). Exit on hardware: same as current milestone-11/12 behaviour |
 | 4 | Graphics port (R2/R3): ~~package Mesa fork~~ (done in-tree, R2) + ~~wlroots 0.18.x + gemwl~~ (in-tree 2026-09-07: `pkgs/wlroots-geminipda.nix` = pinned 0.18.2 from source, `pkgs/gemwl.nix` + `services/desktop.nix`; Mesa fork now also builds libgbm for wlroots' gles2), Plasma 6 nested (or labwc/LXQt first), gltests suite as package | 2–5 sessions | GPU desktop on glass from a pure `nixos-rebuild`-deployed system |
 | 5 | Input polish + docs: xkb layout, touch/libinput quirks, device README, TWRP zip artifacts | 1 session | user-verified desktop incl. keyboard/touch |
 | 6 | Optional upstreaming: `mediatek-mt6797` SoC fragment, `planet-geminipda` device, `flashingMethod = "manual"`; kernel upstream watch (mtk_drm) | ongoing | PRs merged or presented |
