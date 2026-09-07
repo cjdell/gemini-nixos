@@ -127,17 +127,23 @@ attrs, so the drv hash does change).
 The verified bring-up utilities are ported as systemd services + CLIs
 (`services/`; scripts verbatim from the GeminiPDA project except the
 `power` PATH shim, the `__GEMINI_UTILS__` bin-dir placeholder in the
-audio/wifi CLIs, and the new `gemini-wdt-reboot`):
+audio/wifi CLIs, `gemini-wdt-reboot` (new), and the R10 bash-shebang
+rewrite — see feasibility §7 R10). Beyond the bring-up CLIs, the
+services carry the rootfs-side deltas from the outstanding.md audit:
+the DRM/panfrost early-load (major-226 race), the USB host-PM udev
+rules, the 10 % backlight-default unit, and hand-started
+`gemini-wdt-reboot` / `gemini-boot-recovery` units (see the header of
+`services/gemini-pda.nix`).
 
 | Unit / CLI | What it does |
 |---|---|
 | `gemini-gpu-poweron.service` | Powers the Mali-T880 (MFG MTCMOS domains via SPM devmem + VGPU rails via i2c RT5735) before anything uses the GPU |
 | `gemini-a72-up.service` | Brings cpu8/cpu9 (A72) online: DA9214 BUCKB enable, SPM pre-sequence, SRAM-LDO SMC (`sramldo-smc.ko`, built into the kernel tree), PSCI CPU_ON, WDT-guarded with retry/backoff |
 | `gemini-battery-guard.service` | Battery safety daemon: low/critical VBAT alerts + orderly poweroff, USB-present-but-not-charging detection, history CSV |
+| `gemini-backlight-default.service` | Boot-time backlight = 10 % (power-saving default; DISP_PWM0 via sysfs on #329, devmem fallback) — outstanding.md item 6 |
 | `backlight`, `power` | DISP_PWM0 backlight control (no sysfs backlight on this kernel; drives the LED-boost PWM via devmem) + charge CLI (`power dim-to-charge` solves full-brightness-cannot-charge) |
 | `battstat`, `bq25896-raw.sh` | BQ25896 status reader; raw ADC reads (bypasses the driver's stale latches) |
-| `gemini-boot-recovery` | Writes `boot-recovery` to the `para` partition and reboots into TWRP |
-| `gemini-wdt-reboot [s]` | Device-side reboot that self-boots (WDT EXRST — plain `systemctl reboot` powers this unit off) |
+| `gemini-boot-recovery` / `gemini-wdt-reboot [s]` | CLIs (in `gemini-pda-utils`) + hand-started systemd units (outstanding.md item 9): boot into TWRP via sticky para, and device-side WDT EXRST self-boot (plain `systemctl reboot` powers this unit off) |
 | `pipewire` / `wireplumber` / `pipewire-pulse` | PipeWire media stack as ONE root system session (`/run/gemwl-audio`); the WirePlumber rule opens the MT6351 card through `pcm.gemini16` (`/etc/asound.conf`), which pins the S16-only analog path to S16_LE at the alsa-lib boundary (S32 plays as white noise, S24 is refused — verified) |
 | `gemini-audio-defaults` | Applies the DL1→ADDA→HPL/HPR playback route + the persisted speaker/headphone output mode at boot (after `alsa-restore`) |
 | `speaker` / `audio-output` | Built-in-speaker vs headphone output (speaker-amp pads 243/244 via the gpio chardev; no jack detection yet, so manual) |
@@ -151,6 +157,16 @@ borrowed module tree ships it under `extra/`, depmod-indexed; the
 in-repo kernel derivation would build it in `postInstall` instead);
 `busybox` + `i2c-tools` are system packages for the scripts and hand
 use on the serial console.
+
+Beyond the bring-up units above, the rootfs carries the
+`outstanding.md` audit deltas: `boot.kernelModules` also loads the DRM
+chain (`drm`/`drm_shmem_helper`/`gpu-sched`/`panfrost`) + `mt6351-keys`
+early (major-226 race with `wlan_gen3`), the B-19 USB host-PM udev
+rules keep USB autosuspend off, and `gemini-backlight-default` dims the
+display to 10 % at boot. `gemini-wdt-reboot` / `gemini-boot-recovery`
+exist as CLIs *and* hand-started systemd units. The bash-shebang
+rewrite (feasibility §7 R10) is applied at package time so the verbatim
+Debian scripts exec on the NixOS rootfs.
 
 **Mesa ICD runtime wiring** (phase 4 preview, verified in the rootfs
 2026-09-05): the glvnd client libs (`pkgs.libglvnd`) scan the

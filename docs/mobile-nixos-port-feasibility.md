@@ -586,6 +586,27 @@ Related traps hit in the same step:
   path here), not the cwd — "../sramldo-smc-src/Makefile: No such
   file". `M="$PWD/sramldo-smc-src"` (cwd = the O= build dir) works.
 
+### R10 — verbatim Debian service scripts shebang `#!/bin/bash` (no /bin/bash on NixOS)
+**RESOLVED (2026-09-07) — package-level shebang rewrite.** The ported
+bring-up scripts (`services/scripts/*`) keep the Debian-rootfs shebang
+`#!/bin/bash` (`#!/usr/bin/env bash` in two), but a NixOS stage-2 only
+creates `/bin/sh` (via `environment.binsh`) — never `/bin/bash`.
+systemd `ExecStart=` execs the script **directly** (no shell), the
+kernel resolves the `#!` interpreter by absolute path, so every
+bash-shebanged unit (`gemini-gpu-poweron`, `gemini-a72-up`/`cl2-up.sh`,
+`gemini-battery-guard`, `gemini-audio-defaults`, and the new
+`gemini-backlight-default`) would fail on glass with status=203/EXEC
+(ENOENT). Found while auditing the outstanding.md items (their closure
+inspection read the units, not their execution). Fix:
+`services/gemini-utils.nix` rewrites bash/env-bash shebangs to the store
+bash (`#!${bash}/bin/bash`, the aarch64 one in the package set) at
+package time — the NixOS-idiomatic `patchShebangs` equivalent.
+`#!/bin/sh` scripts are untouched (/bin/sh exists).
+
+Related latent issue (same root cause, still OPEN): any *other*
+verbatim bash script that ends up executed outside the gemini-pda-utils
+package needs the same treatment.
+
 ### Non-risks (checked, no action needed)
 
 - **Serial/console**: ttyS0 921600 via kernel params; `earlycon` OK.
@@ -628,8 +649,8 @@ working style):
 |---|---|---|---|
 | 0 | Repo scaffolding: `gemini-nixos` flake/pins importing Mobile NixOS; out-of-tree device skeleton; kernel derivation for `geminipda-bringup` + config; boot.img geometry §3.1/§3.2 | 1–2 sessions | **DONE (2026-09-05).** `android-bootimg` header fields match `cleanup-boot.img` (kernel/ramdisk/second/tags addrs, 2048 pages, `ANDROID!` v0); kernel payload is Image.gz + appended DTB; eval clean |
 | 1 | Stage-1 sizing (R1): build minimal initrd, measure, trim kernel config and stage-1 options to fit 16 MiB | 2–4 sessions | **DONE (2026-09-05) — see R1/R8.** Minimal busybox initrd (1.26 MiB gz) replaces stage-1 in the boot image; boot.img = 14.72 MiB (headroom 1.3 MiB); rootfs generation lookup + by-label symlink handled in the initrd; systemd-BPF cross-build fixed via overlay |
-| 2 | Rootfs bring-up: flash `rootfs.img` to p29 (label `NIXOS_SYSTEM`), g_ether networking, sshd, serial/fbcon console, WDT-reboot unit, boot-switch/flash docs | 1–2 sessions | SSH over g_ether to a NixOS shell on hardware; `nixos-rebuild` round-trip works |
-| 3 | Kernel-adjacent services: gpu-poweron, a72-up, battery-guard, backlight/power CLIs, watchdog-reboot | 1–2 sessions | **DONE (build level, 2026-09-05).** Units + verbatim scripts in `services/`; sramldo-smc built in the kernel derivation; kernel depmod bug fixed (R9). Exit on hardware: same as current milestone-11/12 behaviour |
+| 2 | Rootfs bring-up: flash `rootfs.img` to p29 (label `NIXOS_SYSTEM`), g_ether networking, sshd, serial/fbcon console, WDT-reboot unit, boot-switch/flash docs | 1–2 sessions | SSH over g_ether to a NixOS shell on hardware; `nixos-rebuild` round-trip works. **2026-09-07 note:** the outstanding.md rootfs blockers are now fixed at the build level (root ssh key + hostname, logind side keys, console keymap, DRM-module ordering, USB-PM udev rules, backlight-default unit, wdt/boot-recovery units, R10 shebang) — the flash + on-glass checks are all that remain |
+| 3 | Kernel-adjacent services: gpu-poweron, a72-up, battery-guard, backlight/power CLIs, watchdog-reboot | 1–2 sessions | **DONE (build level, 2026-09-05).** Units + verbatim scripts in `services/`; sramldo-smc built in the kernel derivation; kernel depmod bug fixed (R9). **2026-09-07:** R10 added — bash shebang rewrite in `gemini-pda-utils` (see §7 R10). Exit on hardware: same as current milestone-11/12 behaviour |
 | 4 | Graphics port (R2/R3): ~~package Mesa fork~~ (done in-tree, R2) + ~~wlroots 0.18.x + gemwl~~ (in-tree 2026-09-07: `pkgs/wlroots-geminipda.nix` = pinned 0.18.2 from source, `pkgs/gemwl.nix` + `services/desktop.nix`; Mesa fork now also builds libgbm for wlroots' gles2), Plasma 6 nested (or labwc/LXQt first), gltests suite as package | 2–5 sessions | GPU desktop on glass from a pure `nixos-rebuild`-deployed system |
 | 5 | Input polish + docs: xkb layout, touch/libinput quirks, device README, TWRP zip artifacts | 1 session | user-verified desktop incl. keyboard/touch |
 | 6 | Optional upstreaming: `mediatek-mt6797` SoC fragment, `planet-geminipda` device, `flashingMethod = "manual"`; kernel upstream watch (mtk_drm) | ongoing | PRs merged or presented |

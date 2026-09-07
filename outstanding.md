@@ -4,6 +4,15 @@ Produced: 2026-09-07 (rootfs-viability audit session). Statuses: 🔴 blocking
 for the next milestone · 🟡 should fix before first glass boot · 🟢 nice /
 follow-up. **Nothing here has been flashed** — the device still runs the
 GeminiPDA Debian rootfs on borrowed kernel #329 (`6.6.0-00048-g188aade698dd`).
+
+**WORKED 2026-09-07 (same-day session; see docs/session-log.md).** Items 1–7
+and 9–10 (buildable parts) are fixed at the BUILD level in the working
+tree — verified by rebuilding the toplevel and inspecting the closure
+(`/nix/store/pscdi0fn9lan4rcnh2c4g9ksvhd3kh58-nixos-system-gemini-…`, see the
+per-item ✅ notes below). Item 8 (GPU warmup) is documented in-tree
+(`services/desktop.nix`) but its wiring decision needs the first gemwl boot
+on glass — the #329 banding question is unresolved. Item 10's
+serial-getty + wifi-DNS checks remain on-glass. **Still nothing flashed.**
 See §7 for how each item was verified and how to re-check.
 
 This is a **gap list**, not a plan rewrite: every item below exists on the
@@ -37,18 +46,18 @@ missing from the built NixOS rootfs. The built closure that was audited is
 
 ## 1. TL;DR
 
-| # | Item | Sev | Where to change |
+| # | Item | Sev (audit) | Where to change |
 |---|---|---|---|
-| 1 | No SSH login possible on the built rootfs (phase-2 blocker) | 🔴 | `config/gemini.nix` |
-| 2 | No logind side-key policy (silver key → suspend attempt) | 🔴 | `config/gemini.nix` |
-| 3 | No Gemini console keymap (Fn/UK layer) — `KEYMAP=us` today | 🔴 | `config/gemini.nix` + vendored map |
-| 4 | DRM/panfrost vs wlan_gen3 chrdev-major-226 race not made deterministic | 🔴 | `services/gemini-pda.nix` |
-| 5 | udev USB-host-PM rule not ported (dongle autosuspend kills connect detect) | 🟡 | `services/gemini-pda.nix` |
-| 6 | No boot-time backlight default (10 %) | 🟡 | `services/gemini-pda.nix` |
-| 7 | Host-NAT tooling for g_ether internet absent | 🟡 | new `bin/` script |
-| 8 | No GPU-warmup before gemwl (desktop preview banding risk) | 🟢 | `services/desktop.nix` + pkgs |
-| 9 | `AGENTS.md` claims a `gemini-wdt-reboot` unit that doesn't exist | 🟢 | doc or unit |
-| 10 | Minor: hostname, mt6351-keys pin, serial-getty verify, wifi DNS | 🟢 | `config/gemini.nix` |
+| 1 | No SSH login possible on the built rootfs (phase-2 blocker) | 🔴 ✅ built | `config/gemini.nix` |
+| 2 | No logind side-key policy (silver key → suspend attempt) | 🔴 ✅ built | `config/gemini.nix` |
+| 3 | No Gemini console keymap (Fn/UK layer) — `KEYMAP=us` today | 🔴 ✅ built | `config/gemini.nix` + vendored map |
+| 4 | DRM/panfrost vs wlan_gen3 chrdev-major-226 race not made deterministic | 🔴 ✅ built | `services/gemini-pda.nix` |
+| 5 | udev USB-host-PM rule not ported (dongle autosuspend kills connect detect) | 🟡 ✅ built | `services/gemini-pda.nix` |
+| 6 | No boot-time backlight default (10 %) | 🟡 ✅ built | `services/gemini-pda.nix` |
+| 7 | Host-NAT tooling for g_ether internet absent | 🟡 ✅ built + host-verified | new `bin/` script |
+| 8 | No GPU-warmup before gemwl (desktop preview banding risk) | 🟢 ⏳ on-glass | `services/desktop.nix` + pkgs |
+| 9 | `AGENTS.md` claims a `gemini-wdt-reboot` unit that doesn't exist | 🟢 ✅ units added | doc or unit |
+| 10 | Minor: hostname, mt6351-keys pin, serial-getty verify, wifi DNS | 🟢 🔸 partial | `config/gemini.nix` |
 
 ## 2. 🔴 1 — No SSH login path on the built rootfs
 
@@ -83,6 +92,12 @@ rootfs currently has in `/root/.ssh/authorized_keys`). Consider also
 closure; then on glass: `bash bin/device-ssh.sh 'uname -r'` → the NixOS
 kernel banner.
 
+**RESOLVED (build level, 2026-09-07).** Key added + hostname set; closure
+`/etc/ssh/authorized_keys.d/root` carries the pubkey and
+`/etc/hostname` = `gemini` (toplevel now `nixos-system-gemini-…`). On-glass
+check still owed: `bash bin/device-ssh.sh 'uname -r'` against the NixOS
+rootfs after the phase-2 flash.
+
 ## 3. 🔴 2 — No logind side-key policy
 
 **Why it matters.** The kernel driver `mt6351-keys` (`CONFIG_KEYBOARD_MTK_PMIC=m`,
@@ -107,11 +122,13 @@ env only — no key handling.
 
 **Fix sketch** (`config/gemini.nix`):
 ```nix
-services.logind.extraConfig = ''
-  HandleSuspendKey=ignore
-  HandleHibernateKey=ignore
-  HandlePowerKey=ignore
-'';
+# CORRECTED 2026-09-07: `services.logind.extraConfig` is REMOVED in this
+# nixpkgs pin (26.11) — the module now exposes `services.logind.settings.Login`.
+services.logind.settings.Login = {
+  HandleSuspendKey = "ignore";
+  HandleHibernateKey = "ignore";
+  HandlePowerKey = "ignore";
+};
 ```
 `mt6351-keys` autoloads via udev modalias (`platform:mt6351-keys`) — if
 you want it deterministic, add `"mt6351-keys"` to `boot.kernelModules`
@@ -119,6 +136,11 @@ you want it deterministic, add `"mt6351-keys"` to `boot.kernelModules`
 
 **Verify.** On glass press the silver button → nothing (no journal
 suspend attempt). Confirm `/dev/input/eventN` named `mt6351-keys` exists.
+
+**RESOLVED (build level, 2026-09-07).** `logind.conf` `[Login]` section
+renders all three `Handle*Key=ignore`; `mt6351-keys` is in
+`/etc/modules-load.d/nixos.conf` (see §5). On-glass silver-button press
+still owed.
 
 ## 4. 🔴 3 — No Gemini console keymap (Fn/UK layer)
 
@@ -151,6 +173,12 @@ Desktop companion (phase-4, not blocking): xkb layout for gemwl — sibling
 
 **Verify.** On glass, fbcon terminal: type UK chars + a few Fn combos
 (e.g. Fn+number symbols) and compare with the map's intent.
+
+**RESOLVED (build level, 2026-09-07).** Map vendored verbatim at
+`config/keymaps/gemini-uk.map` (+ provenance README);
+`console.keyMap = ./keymaps/gemini-uk.map` (NixOS accepts the path —
+`KEYMAP=<store-path>` in the closure's `/etc/vconsole.conf`);
+`loadkeys --validate` passes on the map. On-glass typing check owed.
 
 ## 5. 🔴 4 — DRM/panfrost vs wlan_gen3 chrdev race not made deterministic
 
@@ -196,6 +224,14 @@ status` still yields wlan0; `dmesg | grep -i "register_chrdev\|226\|EBUSY"`.
 (Note: gemwl opens `renderD129` first with a `renderD128` fallback —
 `pkgs/gemwl/gemwl.c:1377`.)
 
+**RESOLVED (build level, 2026-09-07).** `boot.kernelModules` now lists
+`drm drm_shmem_helper gpu-sched panfrost` (plus `sramldo-smc` and
+`mt6351-keys`); closure `/etc/modules-load.d/nixos.conf` carries all of
+them in load order; systemd-modules-load runs before
+`gemini-wifi-internal` (which already declares `After=`). All four `.ko`s
+verified present in the borrowed module tree. On-glass `ls /dev/dri`
+check owed.
+
 ## 6. 🟡 5 — udev USB-host-PM rule not ported
 
 **Why it matters.** B-19 (sibling docs): runtime-PM autosuspend on the
@@ -229,6 +265,12 @@ services.udev.extraRules = ''
 **Verify.** On glass, plug the RTL8821CU dongle after boot; it must be
 detected (`dmesg`, `wifi scan`). Re-plug after idle ≥ 2 s.
 
+**RESOLVED (build level, 2026-09-07).** Rules ported to
+`services.udev.extraRules`; closure
+`/etc/udev/rules.d/99-local.rules` contains all three lines (also
+captured verbatim from the live device before the rootfs wipe — see the
+file in this doc). On-glass dongle-plug check owed.
+
 ## 7. 🟡 6 — No boot-time backlight default (10 %)
 
 **Why it matters.** DISP_PWM0 backlight is the single biggest power draw;
@@ -254,6 +296,13 @@ like the sibling units.
 **Verify.** Boot, `backlight get` → 10. Full-brightness-while-charging
 check: `power dim-to-charge` still works.
 
+**RESOLVED (build level, 2026-09-07).** Unit `gemini-backlight-default`
+added to `services/gemini-pda.nix` (oneshot, `After=systemd-udevd`,
+`ExecStart=${utils}/bin/backlight set 10`, `wantedBy=multi-user.target`);
+present in the closure + `multi-user.target.wants`. Shebang rewrite (R10)
+applies so the bash script execs. On-glass `backlight get` → 10 check
+owed.
+
 ## 8. 🟡 7 — Host-NAT tooling for g_ether internet absent
 
 **Why it matters.** The NixOS rootfs already declares the g_ether link's
@@ -276,6 +325,11 @@ Nix form). `bin/net-up.sh` in THIS repo brings the link up but has no NAT.
 
 **Verify.** From the device: `ping 1.1.1.1` with the link up + NAT
 enabled.
+
+**RESOLVED (2026-09-07).** Ported to `bin/usb-tether-nat.sh` (usage
+header, tool checks, auto-detected upstream with explicit-iface
+override). Host + device verified LIVE this session: the device's
+`ping -c1 1.1.1.1` succeeds (rtt ~3 ms) with the NAT rule in place.
 
 ## 9. 🟢 8 — No GPU-warmup before gemwl (desktop preview banding)
 
@@ -307,6 +361,13 @@ workaround must stay).
 with no banded region on glass (judge by eyes / TWRP, NOT fbcap — fb
 buffer ≠ panel state, LCD rule).
 
+**DECISION 2026-09-07 (deferred to glass).** The banding question on
+kernel #329 cannot be answered without a gemwl boot on glass, so no
+warmup unit was wired. The risk is now documented in-tree
+(`services/desktop.nix` header: "KNOWN RISK (gpu-warmup)") with both fix
+options + the PAN_MESA_DEBUG=noafbc requirement, ready to implement at
+the first gemwl boot if it bands.
+
 ## 10. 🟢 9 — `gemini-wdt-reboot`/`gemini-boot-recovery` units exist only as CLIs
 
 **Why it matters.** `AGENTS.md` (this repo) says "Device-side (NixOS
@@ -325,11 +386,18 @@ device and match the README/AGENTS claims.
 **Verify.** `bash bin/device-reboot.sh` (host) still works; device-side
 unit, when started, WDT-EXRST self-boots into the current para target.
 
+**RESOLVED (2026-09-07) — units added.** Both `gemini-wdt-reboot.service`
+and `gemini-boot-recovery.service` now exist in `services/gemini-pda.nix`
+as hand-started oneshots (no `wantedBy` — never at boot) and appear in
+the closure. AGENTS.md/README claims are now accurate (wdt unit
+self-boots; boot-recovery writes sticky para then powers off — the next
+power-on lands in TWRP). On-glass hand-start check owed.
+
 ## 11. 🟢 10 — Minor / verify-on-glass
 
 - **hostname** is `nixos` (`/etc/hostname` in the closure); the device is
   `gemini` on Debian. Cosmetic but cheap: `networking.hostName = "gemini";`
-  (do with §2).
+  (do with §2). → **DONE (build level)**: `/etc/hostname` = `gemini`.
 - **serial getty**: the toplevel does not statically enable
   `serial-getty@ttyS0`, but systemd-getty-generator instantiates it at
   boot from the (kernel-forced) `console=ttyS0,921600n1` cmdline — verify
@@ -337,6 +405,7 @@ unit, when started, WDT-EXRST self-boots into the current para target.
   is inert while the borrowed kernel enforces `CONFIG_CMDLINE_FORCE`).
 - **`mt6351-keys` determinism**: udev autoload is *expected* to work; pin
   it in `boot.kernelModules` while doing §5 if you want zero doubt.
+  → **DONE (build level)**: in `/etc/modules-load.d/nixos.conf`.
 - **Wi-Fi DNS / resolv.conf**: the `wifi` CLI runs `dhcpcd` per-interface
   (verbatim from Debian, where dhcpcd owns `/etc/resolv.conf`); on NixOS
   `/etc/resolv.conf` is system-managed (static 1.1.1.1 for the g_ether
@@ -347,6 +416,8 @@ unit, when started, WDT-EXRST self-boots into the current para target.
   back to `renderD128` (`pkgs/gemwl/gemwl.c:1377`); the device exposes
   only `renderD128`. Harmless, but the fallback order and comments
   (`services/desktop.nix`) should be reconciled with reality.
+  → **DONE (docs)**: `services/desktop.nix` comments now say renderD128
+  (with the D129-first fallback noted as harmless).
 
 ## 12. How this audit was produced (re-run it)
 
@@ -375,16 +446,19 @@ Device-only files (no sibling-repo copy — inline above): the udev rule
 `backlight-default.service` (§7). Capture them from the device
 (`bash bin/device-ssh.sh 'cat …'`) before the NixOS rootfs flash wipes p29.
 
-## 13. Suggested commit order for the next agent
+## 13. Commit order the 2026-09-07 session followed (all landed)
 
 1. `config/gemini.nix`: SSH root key (§2) + logind §3 + hostname §11 —
    one config commit, rebuild toplevel, verify closure contents.
 2. `services/gemini-pda.nix`: boot.kernelModules (§5) + udev rule (§6) +
-   backlight-default unit (§7).
+   backlight-default unit (§7) + wdt/boot-recovery units (§10).
 3. Vendor the keymap + `console.keyMap` (§4).
 4. `bin/usb-tether-nat.sh` (§8).
-5. Decide §9/§10 (warmup unit or doc fix; wdt unit or doc fix) — needs an
-   on-glass window.
-Then the phase-2 flash cycle per README ("Flashing") + `bin/flash-nixos.sh`
-safety model (para = boot-recovery sticky until the image is verified), and
-a dated `docs/session-log.md` entry with image hashes.
+5. §9 decision deferred to glass (risk documented in `services/desktop.nix`);
+   §10 resolved with units.
+   Also landed: R10 shebang fix (`services/gemini-utils.nix`; new port
+delta found while working the list — see feasibility doc §7 R10).
+Remaining: the phase-2 flash cycle per README ("Flashing") +
+`bin/flash-nixos.sh` safety model (para = boot-recovery sticky until the
+image is verified), the on-glass checks noted per item above, and a dated
+`docs/session-log.md` entry with image hashes.

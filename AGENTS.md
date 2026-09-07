@@ -94,6 +94,13 @@ next milestone.
    the loop spins until the tool timeout. Job state: `logs/jobs/<name>/`
    (gitignored); `wait-file LOG END_REGEX` salvages already-running ops.
    Long flash ops (rootfs push+dd, p29 backup) MUST run under run-job.
+8b. **Poll, never long-sleep (agent rule).** While a job/build runs,
+   poll with `bash bin/run-job.sh wait NAME` (it returns immediately with
+   rc=2 while running) — do NOT `sleep 60`/`sleep 90` between checks
+   (wasted wall-clock + stalled tool calls). If a tool needs a short
+   settle between polls, cap sleeps at ~5–10 s. The `run-job.sh wait`
+   rc protocol is the poll primitive: rc=0 done-ok, rc=1 done-failed,
+   rc=2 still-running → re-run wait.
 
 ## Where things live
 

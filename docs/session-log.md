@@ -5,6 +5,86 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 — outstanding.md worked: SSH/logind/keymap/DRM-race/udev/backlight/NAT + R10 shebang fix (build-level; nothing flashed)
+
+Worked the `outstanding.md` rootfs-viability list (§13 order). **No
+flash** — device still on the GeminiPDA Debian rootfs / kernel #329; it
+was reachable over g_ether for read-only captures + one host-NAT test.
+
+Fixes landed (all build-level, toplevel rebuilt + closure-inspected):
+
+- **§2 SSH root key + §11 hostname** (`config/gemini.nix`):
+  `users.users.root.openssh.authorizedKeys.keys` = the
+  `id_ed25519_gemini.pub` key; `networking.hostName = "gemini"`.
+  Closure: `/etc/ssh/authorized_keys.d/root` carries the key;
+  `/etc/hostname` = `gemini`. Toplevel now `nixos-system-gemini-…`.
+- **§3 logind side-key policy** (`config/gemini.nix`):
+  `services.logind.settings.Login.{HandleSuspendKey,HandleHibernateKey,
+  HandlePowerKey} = "ignore"` — CORRECTED the audit's fix sketch:
+  `services.logind.extraConfig` is **removed** in this nixpkgs pin
+  (module now exposes `settings.Login`). Closure `logind.conf` has the
+  `[Login]` section.
+- **§4 keymap** (vendor + config): `config/keymaps/gemini-uk.map`
+  copied verbatim from GeminiPDA `build/rootfs-files/keyboard/` (+ a
+  provenance README); `console.keyMap = ./keymaps/gemini-uk.map`.
+  Closure `/etc/vconsole.conf` = `KEYMAP=<store path>`;
+  `loadkeys --validate` passes.
+- **§5 DRM/panfrost race** (`services/gemini-pda.nix`):
+  `boot.kernelModules` += `drm drm_shmem_helper gpu-sched panfrost`
+  (+ `mt6351-keys` for §11 determinism). Closure
+  `/etc/modules-load.d/nixos.conf` lists them; all four .ko verified
+  present in the borrowed #329 module tree.
+- **§6 udev USB host-PM rule** (`services/gemini-pda.nix`):
+  `services.udev.extraRules` with the B-19 three lines; closure
+  `99-local.rules` carries them. Device-only rule captured verbatim
+  from the live Debian rootfs first.
+- **§7 backlight-default** (`services/gemini-pda.nix`):
+  `gemini-backlight-default` oneshot unit (10 %, after udevd); in the
+  closure + `multi-user.target.wants`.
+- **§8 host NAT** (`bin/usb-tether-nat.sh`, NEW): port of the sibling
+  `build/usb-tether-nat.sh` — auto-detected upstream iface + tool
+  checks. **Verified live** this session: device `ping -c1 1.1.1.1`
+  succeeds (~3 ms) with the NAT rule up.
+- **§10 wdt/boot-recovery units** (`services/gemini-pda.nix`):
+  `gemini-wdt-reboot.service` + `gemini-boot-recovery.service` as
+  hand-started oneshots (no `wantedBy`); both in the closure. AGENTS/
+  README unit claims now accurate. boot-recovery comment clarified:
+  plain reboot powers off → next power-on (sticky para) lands in TWRP.
+- **§11 minors**: hostname + mt6351-keys pin done (above);
+  renderD129→renderD128 comments fixed in `services/desktop.nix`;
+  serial-getty + wifi-DNS remain on-glass checks.
+- **§9 GPU warmup**: DECIDED deferred to the first gemwl boot on glass
+  (#329 banding question needs glass); risk + both fix options
+  documented in the `services/desktop.nix` header.
+
+**R10 — new port delta found while working the list** (feasibility doc
+§7 R10, `services/gemini-utils.nix`): the verbatim Debian scripts shebang
+`#!/bin/bash`, but a NixOS rootfs has NO `/bin/bash` (stage-2 only makes
+`/bin/sh` via `environment.binsh`) and systemd ExecStart execs scripts
+straight (kernel resolves `#!`) → every bash unit (gpu-poweron, a72-up/
+cl2-up, battery-guard, audio-defaults, backlight) would have failed on
+glass with status=203/EXEC. Fix: package-time shebang rewrite to the
+store bash. Verified: packaged scripts now `#!<store>/bin/bash`;
+`#!/bin/sh` scripts untouched.
+
+Closure inspected: `/nix/store/pscdi0fn9lan4rcnh2c4g9ksvhd3kh58-
+nixos-system-gemini-26.11pre1031299.0bb7ec54c848` (== current
+`.#packages.x86_64-linux.toplevel`). Rebuilt under `bin/run-job.sh`
+(toplevel-rebuild, rc=0). No image was built/flashed — the boot/rootfs
+artifacts are unchanged by this session (config/closure only).
+
+Device-only files captured from the live Debian rootfs (pre-flash
+insurance, per outstanding.md §0/§12): the udev rule, logind drop-in,
+`/etc/modules-load.d/99-gpu.conf`, `backlight-default.service`, root
+`authorized_keys` — all match the inline copies in outstanding.md.
+
+Next action (unchanged): phase 2 — on-glass verification. When the
+device is next on the bench: `bin/flash-nixos.sh status` → `boot` →
+`rootfs --yes` → verify serial/fbcon → `boot-nixos`; then the on-glass
+checks per outstanding.md items (ssh `uname -r`, silver button, keymap
+Fn combos, `ls /dev/dri`, backlight get, dongle plug, §9 banding watch).
+Log the outcome here with image hashes.
+
 ## 2026-09-07 — AGENTS.md + flash/recovery tooling imported (build-level; nothing flashed)
 
 What happened (repo-only; no device interaction — unit untouched, still
