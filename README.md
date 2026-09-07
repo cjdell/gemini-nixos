@@ -20,8 +20,10 @@ adb.
 | `devices/planet-geminipda/initrd.nix` | Minimal partition-scanning busybox initrd (R1; replaces Mobile NixOS stage-1 in the boot image) |
 | `devices/planet-geminipda/kernel/` | Kernel derivation (mobile-nixos kernel-builder) + the working bring-up `.config`; `postInstall` builds the out-of-tree `sramldo-smc.ko` (A72 bring-up SMC) against the same tree |
 | `modules/hardware-soc-mediatek-mt6797.nix` | Out-of-tree MT6797 SoC fragment (upstreaming = phase 6) |
-| `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
-| `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview). Base = published upstream 25.0.7 archive fetched by hash + the tracked fork patch — nothing vendored (see `docs/library-deltas.md`) |
+| `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `desktop.nix` (gemwl compositor unit, phase 4 preview), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
+| `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview). Base = published upstream 25.0.7 archive fetched by hash + the tracked fork patch — nothing vendored (see `docs/library-deltas.md`). Also builds `libgbm` (needed by wlroots 0.18's gles2 renderer) |
+| `pkgs/wlroots-geminipda.nix` | wlroots 0.18.2 pinned from source (the version the verified desktop used; nixpkgs in the pin floats 0.20.1) — libinput backend + gles2 renderer only (no DRM on this device), built against the mesa fork |
+| `pkgs/gemwl.nix` + `pkgs/gemwl/` | gemwl, the GPU-direct LK-framebuffer Wayland compositor (wlroots 0.18) + the tinytest xdg-shell smoke clients; sources byte-identical to the verified GeminiPDA `build/wayland/` files |
 | `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp), cross-compiled |
 | `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
 | `patches/` | The geminipda Mesa fork patch (byte-for-byte the GeminiPDA submodule commit `ac19be0`) |
@@ -230,8 +232,14 @@ booted on glass.
 - **R2 (partially resolved)**: the Mesa 25.0.7 fork now builds in-tree
   (`pkgs/mesa-geminipda.nix` — vanilla 25.0.7 + the fork patch,
   surfaceless EGL/glavnd ICD layout, in the system closure with
-  libglvnd). wlroots 0.18.2 / kwin 6.3.6 packaging is still phase-4
-  work; nixpkgs 26.11pre floats newer, unverified versions of those.
+  libglvnd). wlroots 0.18.2 is now packaged too
+  (`pkgs/wlroots-geminipda.nix` — pinned 0.18.2 from source, libinput
+  backend + gles2 only) and gemwl (the compositor, `pkgs/gemwl.nix` +
+  `services/desktop.nix`) is in the system closure as a phase-4
+  preview. The remaining phase-4 open item is the nested session
+  (kwin 6.3.6 / Plasma 6, or labwc/LXQt — nixpkgs 26.11pre floats
+  newer, unverified versions of those).
 - **R3**: no DRM — the desktop is `gemwl` (custom wlroots compositor)
   nested KWin/LXQt on the LK framebuffer; packaged as services, not a
-  display manager.
+  display manager (preview in-tree: `services/desktop.nix`, auto-start
+  at boot; console-only boot via `systemctl disable gemwl`).

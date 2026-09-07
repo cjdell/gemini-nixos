@@ -1,0 +1,29 @@
+From: gemini-nixos (phase-4 desktop port)
+Date: 2026-09-07
+Subject: backend/libinput: handle LIBINPUT_SWITCH_KEYPAD_SLIDE (libinput >= 1.28)
+
+wlroots 0.18.2 predates libinput 1.28, which added the
+LIBINPUT_SWITCH_KEYPAD_SLIDE switch type. Under the pin's libinput
+(1.31.x) the switch statement in handle_switch_toggle misses that
+enumeration value and wlroots' default -Werror turns it into a build
+failure (enumeration value not handled in switch). There is no
+WLR_SWITCH_TYPE for it in the 0.18 API, so drop the event instead of
+emitting a garbage-typed toggle.
+
+Only meaningful when built against libinput >= 1.28 (always the case in
+this repo: the nixpkgs pin carries libinput 1.31.3). Upstream wlroots
+fixed this the same way on later versions.
+
+--- a/backend/libinput/switch.c
++++ b/backend/libinput/switch.c
+@@ -23,6 +23,10 @@ void handle_switch_toggle(struct libinput_event *event,
+ 	case LIBINPUT_SWITCH_TABLET_MODE:
+ 		wlr_event.switch_type = WLR_SWITCH_TYPE_TABLET_MODE;
+ 		break;
++	case LIBINPUT_SWITCH_KEYPAD_SLIDE:
++		/* libinput >= 1.28 added this after wlroots 0.18 shipped;
++		 * no WLR_SWITCH_TYPE for it — drop the event. */
++		return;
+ 	}
+ 	switch (libinput_event_switch_get_switch_state(sevent)) {
+ 	case LIBINPUT_SWITCH_STATE_OFF:

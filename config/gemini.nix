@@ -1,8 +1,12 @@
 # System configuration for the Gemini PDA (stage-2).
 #
-# Phase 0/1 scope: a headless NixOS that boots from the `linux` partition
-# and is reachable over the g_ether USB network (10.15.19.82). The GPU
-# desktop port (gemwl / nested Plasma) comes in phase 4.
+# Phase 0/1/3 scope: a headless NixOS that boots from the `linux`
+# partition and is reachable over the g_ether USB network (10.15.19.82).
+# Phase 4 (preview): the GPU desktop is now in-tree too — gemwl (custom
+# wlroots 0.18 compositor, pkgs/gemwl.nix + pkgs/wlroots-geminipda.nix)
+# is wired as services/desktop.nix and auto-starts at boot (console-
+# less fb desktop; serial console unaffected). Nested KWin/Plasma or
+# labwc/LXQt sessions are still phase-4 follow-up work (see README R2).
 { config, lib, pkgs, ... }:
 let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
@@ -22,6 +26,12 @@ in
     # pwr-on) + USB RTL8821CU dongle auto-connect + factory NVRAM
     # (ported from the verified GeminiPDA bring-up).
     ../services/wifi.nix
+    # Phase 4 (preview): gemwl — the wlroots-0.18 compositor that owns
+    # the LK framebuffer (/dev/gemfb, GPU-direct), with tinytest smoke
+    # clients + the pinned wlroots 0.18.2 (pkgs/gemwl.nix,
+    # pkgs/wlroots-geminipda.nix). Auto-starts at boot; disable with
+    # `systemctl disable gemwl` for a console-only boot.
+    ../services/desktop.nix
   ];
 
   system.stateVersion = "26.11";

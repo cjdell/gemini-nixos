@@ -71,6 +71,17 @@
       # Mesa 25.0.7 + geminipda panfrost fork (also in the system closure
       # via config/gemini.nix; standalone here for size/iteration checks).
       mesa = eval.pkgs.callPackage ./pkgs/mesa-geminipda.nix { };
+
+      # Phase 4 desktop stack (wlroots 0.18.2 + gemwl + tinytest clients;
+      # in the system closure via services/desktop.nix — standalone here
+      # for standalone builds/checks). Same callPackage args as the
+      # service module, so the flake packages and the system share paths.
+      wlroots = eval.pkgs.callPackage ./pkgs/wlroots-geminipda.nix {
+        mesaGeminipda = mesa;
+      };
+      gemwl = eval.pkgs.callPackage ./pkgs/gemwl.nix {
+        inherit wlroots;
+      };
     in
     {
       packages.${buildSystem} = {
@@ -83,6 +94,8 @@
         initrd  = initrd; # minimal busybox initrd, for size measurement
         toplevel = outputs.toplevel;
         mesa    = mesa;   # geminipda panfrost fork (Mali-T880, dma-buf import)
+        wlroots = wlroots; # wlroots 0.18.2 pin (gemwl's library; R2)
+        gemwl   = gemwl;   # GPU-direct fb compositor + tinytest clients
       };
 
       devShells.${buildSystem}.default =

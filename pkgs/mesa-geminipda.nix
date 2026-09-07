@@ -29,6 +29,7 @@
 # $out/lib (same as nixpkgs' mesa derivation):
 #   $out/lib/libEGL_mesa.so.0        glvnd ICD (EGL+GLES)
 #   $out/lib/libgallium-25.0.7.so    DRI target with panfrost linked in
+#   $out/lib/libgbm.so.1.0.0   libgbm for wlroots 0.18's gles2 (see note below)
 #   $out/{etc,share}/glvnd/egl_vendor.d/50_mesa.json  ICD manifest
 #       (absolute library_path). The $out/etc copy is wired into the
 #       system /etc by config/gemini.nix (environment.etc — NixOS does
@@ -43,6 +44,18 @@
 # NEEDED entries are covered by its unmodified build-time RUNPATH.
 # The libglvnd CLIENT libs (libEGL.so.1, libGLESv2.so.2) come from
 # pkgs.libglvnd (added to the system by config/gemini.nix).
+#
+# gbm (added 2026-09-07 for the phase-4 desktop): wlroots 0.18's gles2
+# renderer hard-requires the `gbm` pkg-config module + gbm.h
+# (render/meson.build: gbm = dependency('gbm', required: 'gles2' in
+# renderers)) and libwlroots ends up with a DT_NEEDED on libgbm.so.1
+# (render/egl.c calls gbm_create_device). Building libgbm from THIS
+# derivation (mesa 25.0.7 -Dgbm=enabled) keeps the "one mesa in the
+# closure" property — the alternative is nixpkgs' mesa 26.1.4 (full
+# desktop driver set, a much larger cross-build). This is a library
+# addition only: no renderer code changes, and on the gemwl path gbm is
+# linked but never exercised (gemwl uses its own dma-buf allocator;
+# EGL_KHR_platform_gbm is absent on the surfaceless display).
 { lib
 , stdenv
 , buildPackages
@@ -142,7 +155,7 @@ stdenv.mkDerivation (finalAttrs: {
     "-Dgallium-drivers=panfrost"
     "-Dvulkan-drivers="
     "-Dgallium-opencl=disabled"
-    "-Dgbm=disabled"
+    "-Dgbm=enabled"   # libgbm.so.1 + gbm.h (wlroots 0.18 gles2; see header)
     # Vulkan X11 extension — irrelevant here (no vulkan, no X11).
     # Pinned explicitly as a second line of defense next to
     # mesonAutoFeatures = "auto" (see above); the verified

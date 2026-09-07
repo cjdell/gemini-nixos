@@ -403,7 +403,7 @@ Mitigations (in increasing order of invasiveness):
    (Not needed: options 2+3 in the bring-up form above suffice.)
 
 ### R2 — version drift vs the verified graphics stack
-**PARTIALLY RESOLVED (build level, 2026-09-05); wlroots/KDE still open.**
+**PARTIALLY RESOLVED (build level, 2026-09-05); nested-session stack (KDE) still open.**
 
 The GPU path that works was reached through dozens of A/B cycles with a
 specific combo: kernel 6.6 `geminipda-bringup`, **Mesa 25.0.7 fork**
@@ -630,7 +630,7 @@ working style):
 | 1 | Stage-1 sizing (R1): build minimal initrd, measure, trim kernel config and stage-1 options to fit 16 MiB | 2–4 sessions | **DONE (2026-09-05) — see R1/R8.** Minimal busybox initrd (1.26 MiB gz) replaces stage-1 in the boot image; boot.img = 14.72 MiB (headroom 1.3 MiB); rootfs generation lookup + by-label symlink handled in the initrd; systemd-BPF cross-build fixed via overlay |
 | 2 | Rootfs bring-up: flash `rootfs.img` to p29 (label `NIXOS_SYSTEM`), g_ether networking, sshd, serial/fbcon console, WDT-reboot unit, boot-switch/flash docs | 1–2 sessions | SSH over g_ether to a NixOS shell on hardware; `nixos-rebuild` round-trip works |
 | 3 | Kernel-adjacent services: gpu-poweron, a72-up, battery-guard, backlight/power CLIs, watchdog-reboot | 1–2 sessions | **DONE (build level, 2026-09-05).** Units + verbatim scripts in `services/`; sramldo-smc built in the kernel derivation; kernel depmod bug fixed (R9). Exit on hardware: same as current milestone-11/12 behaviour |
-| 4 | Graphics port (R2/R3): ~~package Mesa fork~~ (done in-tree, R2) + wlroots 0.18.x + gemwl, Plasma 6 nested (or labwc/LXQt first), gltests suite as package | 2–5 sessions | GPU desktop on glass from a pure `nixos-rebuild`-deployed system |
+| 4 | Graphics port (R2/R3): ~~package Mesa fork~~ (done in-tree, R2) + ~~wlroots 0.18.x + gemwl~~ (in-tree 2026-09-07: `pkgs/wlroots-geminipda.nix` = pinned 0.18.2 from source, `pkgs/gemwl.nix` + `services/desktop.nix`; Mesa fork now also builds libgbm for wlroots' gles2), Plasma 6 nested (or labwc/LXQt first), gltests suite as package | 2–5 sessions | GPU desktop on glass from a pure `nixos-rebuild`-deployed system |
 | 5 | Input polish + docs: xkb layout, touch/libinput quirks, device README, TWRP zip artifacts | 1 session | user-verified desktop incl. keyboard/touch |
 | 6 | Optional upstreaming: `mediatek-mt6797` SoC fragment, `planet-geminipda` device, `flashingMethod = "manual"`; kernel upstream watch (mtk_drm) | ongoing | PRs merged or presented |
 
