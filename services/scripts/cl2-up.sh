@@ -43,12 +43,17 @@ wdt_arm() { busybox devmem 0x10007004 32 $(( (WDT_SECS<<5)|8 )); }
 # (MTK_WDT_MODE_KEY 0x22000000, BSP mt_wdt.h) with enable bit clear.
 wdt_disarm() { busybox devmem 0x10007000 32 $(( 0x22000000 )); }
 
-B=$(bus 1100e000)
 log() { echo "cl2-up: $*"; logger -t cl2-up "$*"; }
 
 up_cold() { # $1=cpu — full cold-cluster sequence, retried with backoff
-  local cpu=$1 attempt i ok
+  local cpu=$1 attempt i ok B
   for attempt in 1 2 3 4 5 6; do
+    # Re-resolve the DA9214 bus EVERY attempt: the i2c6 controller can probe
+    # LATE (deferred probe), so a bus computed once at script start is empty
+    # when a72-up.service runs ~1 min after boot (observed 2026-09-07 on #329:
+    # service run = "bus i2c-" all 6 attempts; the same script by hand 2 min
+    # later found i2c-2 and brought cpu8/9 up on attempt 1).
+    B=$(bus 1100e000)
     log "[cpu$cpu] attempt $attempt (bus i2c-$B)"
     ok=0
     if [ -n "$B" ]; then
@@ -58,7 +63,11 @@ up_cold() { # $1=cpu — full cold-cluster sequence, retried with backoff
       done
     fi
     if [ "$ok" != 1 ]; then
-      log "[cpu$cpu] BUCKB write never ACKed — bus busy (SCP?), backing off 20s"
+      if [ -z "$B" ]; then
+        log "[cpu$cpu] DA9214 i2c adapter (0x1100e000) not probed yet — backing off 20s"
+      else
+        log "[cpu$cpu] BUCKB write never ACKed — bus busy (SCP?), backing off 20s"
+      fi
       sleep 20; continue
     fi
     busybox devmem 0x10006218 32 $(( $(busybox devmem 0x10006218 32) | 1 ))

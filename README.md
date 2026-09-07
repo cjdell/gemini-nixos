@@ -20,29 +20,69 @@ adb.
 | `devices/planet-geminipda/initrd.nix` | Minimal partition-scanning busybox initrd (R1; replaces Mobile NixOS stage-1 in the boot image) |
 | `devices/planet-geminipda/kernel/` | Kernel derivation (mobile-nixos kernel-builder) + the working bring-up `.config`; `postInstall` builds the out-of-tree `sramldo-smc.ko` (A72 bring-up SMC) against the same tree |
 | `modules/hardware-soc-mediatek-mt6797.nix` | Out-of-tree MT6797 SoC fragment (upstreaming = phase 6) |
-| `services/` | Phase 3 device services: `gemini-pda.nix` (systemd units) + `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
+| `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
 | `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview) |
+| `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp), cross-compiled |
+| `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
 | `patches/` | The geminipda Mesa fork patch (byte-for-byte the GeminiPDA submodule commit `ac19be0`) |
 | `config/gemini.nix` | Stage-2 system configuration (headless + g_ether SSH, device services, Mesa fork + libglvnd) |
-| `kernel/geminipda-bringup-733c0c7ea.tar.gz` | `git archive` snapshot of the pinned kernel commit |
-| `bin/snapshot-kernel.sh` | Regenerates the kernel snapshot |
+| `devices/planet-geminipda/kernel-borrowed.nix` | Borrowed-kernel package (see “Kernel phase” below) |
+| `kernel/borrowed/` | The working bring-up kernel #329 artifacts, vendored + tracked (payload, DTB, module tree, sramldo-smc.ko, .config) |
+| `kernel/geminipda-bringup-733c0c7ea.tar.gz` | `git archive` snapshot of the in-repo kernel pin (future self-contained build; see “Kernel phase”) |
+| `bin/snapshot-kernel.sh` | Regenerates the kernel snapshot (and registers it for nix visibility) |
 | `mesa/mesa-25.0.7.tar.gz` | Vendored Mesa 25.0.7 tarball (the GitLab API archive endpoint is byte-unstable, so `fetchFromGitLab` is unusable here) |
-| `bin/snapshot-mesa.sh` | Regenerates the Mesa tarball from the canonical `/-/archive/` URL |
+| `bin/snapshot-mesa.sh` | Regenerates the Mesa tarball (and registers it for nix visibility) |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 
 ## Pins
 
-- **Mobile NixOS**: `repos/mobile-nixos` at commit `2c132754`
-  (branch `development`). It is not a flake, so it is referenced by
-  path; pin the commit (submodule or recorded SHA) before relying on it.
+- **Mobile NixOS**: commit `2c132754` (branch `development`), fetched
+  as a pinned tarball by `flake.nix` (it is not a flake, so nix 2.34
+  cannot use it as a flake input). Bump the SHA in `flake.nix` to
+  update.
 - **Nixpkgs**: resolved by Mobile NixOS's own `npins` pin
   (`nixos-unstable` @ `nixos-26.11pre1031299.0bb7ec54c848`).
-- **Kernel**: `geminipda-bringup` @ `733c0c7ea74195bd30734f599f37e69febfd38e0`
-  (GeminiPDA `repos/linux-6.6`), snapshotted into `kernel/`. The
-  `.config` is the exact working bring-up config (still
-  `CONFIG_CMDLINE_FORCE=y`; switching to `boot.kernelParams` is the
-  docs-R4 A/B step on hardware — the matching params are already
-  declared in `config/gemini.nix`).
+- **Kernel (in-repo)**: `geminipda-bringup` @
+  `733c0c7ea74195bd30734f599f37e69febfd38e0` (GeminiPDA
+  `repos/linux-6.6`), snapshotted into `kernel/` — the pin for the
+  eventual self-contained kernel build. Its `.config` is the exact
+  working bring-up config (still `CONFIG_CMDLINE_FORCE=y`; switching
+  to `boot.kernelParams` is the docs-R4 A/B step on hardware — the
+  matching params are already declared in `config/gemini.nix`).
+
+## Kernel phase (rootfs port borrows kernel #329)
+
+The rootfs currently does **not** build the in-repo kernel. It uses the
+working bring-up kernel #329 (`6.6.0-00048-g188aade698dd`) from the
+GeminiPDA project, wrapped as a thin kernel package
+(`devices/planet-geminipda/kernel-borrowed.nix`) whose artifacts are
+vendored in `kernel/borrowed/` (tracked — small, and the source commit
+is local-only, not fetchable):
+
+- `Image.gz` + `dtbs/...` — the exact kernel payload + DTB extracted
+  from the verified `new_kali_boot.img`, so the flake's `bootimg`
+  output builds the correct boot image for the NixOS rootfs (borrowed
+  kernel + DTB + the minimal initrd) without any GeminiPDA dependency;
+- `modules-6.6.0-00048-g188aade698dd.tar.xz` — the module tree of that
+  exact kernel (panfrost, mtk_wcn, wlan_gen3, rtw88_*, …), served as
+  NixOS `system.modulesTree` → `/run/booted-system/kernel-modules`;
+- `sramldo-smc.ko` — the A72 bring-up module with matching vermagic
+  (the in-repo kernel would build a `6.6.0`-vermagic module this kernel
+  refuses); under `extra/` in the module tree, depmod-indexed;
+- `config-…` — the exact #329 `.config` (nixpkgs generates the ASLR
+  sysctl file from it).
+
+The in-repo `devices/planet-geminipda/kernel/` build stays for the
+self-contained phase; it must first be re-synced to the #329+ kernel
+line (it lacks the CONSYS Wi-Fi, audio S16 and sidekey commits).
+
+**Tarball visibility**: nix 2.34 flake exports contain only git-tracked
+files, and the host runs `pure-eval = true`. The large source tarballs
+(`kernel/*.tar.gz`, `mesa/*.tar.gz`) stay gitignored but are registered
+with `git add -Nf` (intent-to-add — path only, content never committed)
+by the snapshot scripts, which makes them visible to nix. A fresh
+clone must run `bash bin/snapshot-kernel.sh && bash bin/snapshot-mesa.sh`
+before building. (Do not `git add .` — it would commit the tarballs.)
 
 ## Build
 
@@ -50,17 +90,34 @@ From an x86_64 host (cross-compiles to aarch64-linux):
 
 ```sh
 nix build .#packages.x86_64-linux.default   # boot.img + rootfs.img (+ flash script)
-nix build .#packages.x86_64-linux.bootimg   # boot.img only
+nix build .#packages.x86_64-linux.bootimg   # boot.img only (borrowed kernel #329 payload)
 nix build .#packages.x86_64-linux.rootfs    # rootfs.img (→ `linux` partition)
 nix build .#packages.x86_64-linux.initrd    # minimal initrd (size measurement, docs R1)
 nix build .#packages.x86_64-linux.mesa      # Mesa 25.0.7 + geminipda panfrost fork
 ```
 
+With the borrowed kernel, the rootfs build no longer compiles the
+6.6 kernel tree (the former long pole) — the module tree is vendored.
+Mesa is the remaining heavy build (cached in the local store once
+built).
+
+Cross-aarch64 note: `ffmpeg`/`ffmpeg-headless` in this nixpkgs pin
+default to `withCudaLLVM = true` (`withHeadlessDeps && !isDarwin`) and
+fail to configure for a non-Darwin aarch64 target ("cuda_llvm
+requested but not found") — they are hard build inputs of
+`alsa-plugins` (→ `alsa-utils`, in `environment.systemPackages`).
+`config/gemini.nix` carries a `nixpkgs.overlays` entry overriding both
+to `withCudaLLVM = false`; the override is applied through
+nixpkgs's extensible-derivation machinery (the package attrs are a
+derivation, and `override` re-runs the overlay chain with the merged
+attrs, so the drv hash does change).
+
 ## Phase 3 device services (in the rootfs)
 
 The verified bring-up utilities are ported as systemd services + CLIs
 (`services/`; scripts verbatim from the GeminiPDA project except the
-`power` PATH shim and the new `gemini-wdt-reboot`):
+`power` PATH shim, the `__GEMINI_UTILS__` bin-dir placeholder in the
+audio/wifi CLIs, and the new `gemini-wdt-reboot`):
 
 | Unit / CLI | What it does |
 |---|---|
@@ -71,11 +128,19 @@ The verified bring-up utilities are ported as systemd services + CLIs
 | `battstat`, `bq25896-raw.sh` | BQ25896 status reader; raw ADC reads (bypasses the driver's stale latches) |
 | `gemini-boot-recovery` | Writes `boot-recovery` to the `para` partition and reboots into TWRP |
 | `gemini-wdt-reboot [s]` | Device-side reboot that self-boots (WDT EXRST — plain `systemctl reboot` powers this unit off) |
+| `pipewire` / `wireplumber` / `pipewire-pulse` | PipeWire media stack as ONE root system session (`/run/gemwl-audio`); the WirePlumber rule opens the MT6351 card through `pcm.gemini16` (`/etc/asound.conf`), which pins the S16-only analog path to S16_LE at the alsa-lib boundary (S32 plays as white noise, S24 is refused — verified) |
+| `gemini-audio-defaults` | Applies the DL1→ADDA→HPL/HPR playback route + the persisted speaker/headphone output mode at boot (after `alsa-restore`) |
+| `speaker` / `audio-output` | Built-in-speaker vs headphone output (speaker-amp pads 243/244 via the gpio chardev; no jack detection yet, so manual) |
+| `gemini-wifi-nvram` | Installs the factory NVRAM record (real MAC `00:09:34:5a:af:c1` + TX cal) to `/data/nvram/APCFG/APRDEB/WIFI` (tmpfs) before the Wi-Fi stack probes the chip — without it the MAC changes every power cycle |
+| `gemini-wifi-internal` | Internal MT6630 CONSYS stack: mtk_wcn + wlan_gen3 (load order matters, B-33) + the WMT pwr-on → wlan0. Runs after `gemini-gpu-poweron` (the CONSYS chip's chrdev, major 226, collides with the GPU's if the wlan modules probe first) |
+| `gemini-wifi-auto` | `wifi auto`: associate with the strongest saved profile (`/etc/wifi/profiles.conf`) + dhcpcd lease; silent no-op without profiles |
+| `wifi` / `wifi-internal` | CLIs: USB RTL8821CU dongle (scan/connect/networks/forget) and the internal CONSYS stack (start/status/stop) |
 
-`sramldo-smc.ko` is loaded at boot via `boot.kernelModules` (the kernel
-derivation builds it in `postInstall` and ships it in the module tree
-under `extra/`); `busybox` + `i2c-tools` are system packages for the
-scripts and hand use on the serial console.
+`sramldo-smc.ko` is loaded at boot via `boot.kernelModules` (the
+borrowed module tree ships it under `extra/`, depmod-indexed; the
+in-repo kernel derivation would build it in `postInstall` instead);
+`busybox` + `i2c-tools` are system packages for the scripts and hand
+use on the serial console.
 
 **Mesa ICD runtime wiring** (phase 4 preview, verified in the rootfs
 2026-09-05): the glvnd client libs (`pkgs.libglvnd`) scan the
@@ -88,8 +153,6 @@ the build-time entries for `libdrm`/glibc) so its `DT_NEEDED` on
 `libgallium-25.0.7.so` resolves without an ldconfig cache. On-glass
 check owed: `eglQueryString(EGL_EXTENSIONS)` must list
 `EGL_EXT_image_dma_buf_import` (the fork's headline feature).
-
-The kernel build is the long pole (full 6.6 tree, ~16 cores).
 
 Measured boot image (build 2026-09-05): 15,431,680 B = **14.7 MiB** in
 the 16 MiB partition (kernel payload 13.45 MiB + DTB, initrd 1.26 MiB
@@ -145,7 +208,10 @@ manual, see below).
 
 Do **not** flash anything from this repo yet — the artifacts build and
 match the bring-up boot contract (phases 0/1/3 done at the build level),
-but on-glass verification (phase 1/2) has not happened.
+but on-glass verification (phase 1/2) has not happened. The device
+itself currently runs the GeminiPDA Debian rootfs on the same borrowed
+kernel #329; the NixOS rootfs + boot.img are build-ready, not yet
+booted on glass.
 
 ## Known constraints (docs §7)
 

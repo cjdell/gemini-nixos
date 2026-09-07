@@ -3,5 +3,12 @@ result*
 
 # Vendored source tarballs — too large for git; see kernel/README.md
 # and mesa/README.md (regenerate with bin/snapshot-kernel.sh /
-# bin/snapshot-mesa.sh)
+# bin/snapshot-mesa.sh). The snapshot scripts register the files with
+# `git add -Nf` (intent-to-add) so nix 2.34's tracked-files-only source
+# export sees them WITHOUT the content ever being committed.
+#
+# EXCEPTION: kernel/borrowed/ is tracked (small, ~14 MB: the working
+# bring-up kernel payload + DTB + module tree + sramldo-smc.ko + config
+# of kernel #329 — the rootfs build needs them and the source commit is
+# local-only, not fetchable; see kernel-borrowed.nix).
 *.tar.gz

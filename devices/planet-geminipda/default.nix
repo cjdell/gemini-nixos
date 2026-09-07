@@ -116,13 +116,23 @@ in
 
   # ---- Kernel / initrd (docs R1: 16 MiB boot partition) ----
   #
-  # The kernel still goes through the Mobile NixOS kernel builder (the
-  # android system type reads the package from this option, via the
-  # stage-0 specialization). Everything boot-critical (mmc block, ext4,
-  # ...) is =y in the bring-up config; GPU/display modules (panfrost,
-  # pwm-mtk-disp) are loaded in stage-2 from /lib/modules on the rootfs.
+  # The android system type reads the kernel package from this option
+  # (via the stage-0 specialization), and NixOS uses it as the system
+  # kernel (boot.kernelPackages -> system.modulesTree ->
+  # /run/booted-system/kernel-modules, where modprobe/udev look for
+  # /lib/modules/$(uname -r)).
+  #
+  # PHASE (rootfs-only port): the kernel is BORROWED from the working
+  # GeminiPDA bring-up (kernel #329, 6.6.0-00048-g188aade698dd) — see
+  # kernel-borrowed.nix for the vendored artifacts (kernel payload, DTB,
+  # module tree, sramldo-smc.ko) and the exact reasons the in-tree
+  # ./kernel build is not used yet (stale pin 733c0c7ea; 225 MB source
+  # rebuild; vermagic mismatch with the borrowed modules). Everything
+  # boot-critical (mmc block, ext4, ...) is =y in the bring-up config;
+  # GPU/display/wifi modules (panfrost, mtk_wcn, wlan_gen3, rtw88_*)
+  # are loaded in stage-2 from the borrowed module tree on the rootfs.
   mobile.boot.stage-1.kernel = {
-    package = pkgs.callPackage ./kernel { };
+    package = pkgs.callPackage ./kernel-borrowed.nix { };
     modular = false;
   };
 

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# speaker — enable/disable the Gemini PDA built-in flanking speakers.
+#
+# The speakers are NOT wired to the codec's LOL line-out: they ride the
+# codec HPL/HPR (headphone) drivers through external speaker amps whose
+# enable = SoC pads 243+244 held HIGH (verified audible 2026-09-06;
+# stock-Android OpenSpeakerPath = headphone_output + ext_speaker_output).
+# Level is the ALSA 'Headphone Volume' control (same amps as the jack).
+#
+# Control goes through the kernel gpio chardev (gpioout; gpiochip0 lines
+# 243/244) — NO /dev/mem. Status reads the pinctrl regs (spkamp, the
+# diagnostic tool; also fine for exploration).
+#
+# Default OFF at boot (like stock Android when nothing plays to the
+# speaker device); run `speaker on` before speaker playback. With the
+# amps on, the headphone jack plays the speakers too (electrically in
+# parallel) — there is no jack-detection on this mainline stack yet.
+#
+# (Ported verbatim from the GeminiPDA project; the helper dir is the
+# gemini-pda-utils bin dir, substituted at package build time.)
+set -u
+LIB=__GEMINI_UTILS__
+GPO="${SPEAKER_GPO:-$LIB/gpioout}"
+SPK="${SPEAKER_SPK:-$LIB/spkamp}"
+
+[ -x "$GPO" ] || { echo "speaker: helper $GPO missing" >&2; exit 1; }
+
+case "${1:-}" in
+  on)  "$GPO" 243=1 244=1 ;;
+  off) "$GPO" 243=0 244=0 ;;
+  status)
+    [ -x "$SPK" ] && "$SPK" status 243 244 || { echo "speaker: $SPK missing" >&2; exit 1; }
+    ;;
+  *) echo "usage: $0 on|off|status"; exit 2;;
+esac

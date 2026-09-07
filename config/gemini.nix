@@ -14,6 +14,14 @@ in
     # Phase 3 device services: gpu-poweron, a72-up, battery-guard,
     # backlight/power CLIs, boot-recovery, wdt-reboot.
     ../services/gemini-pda.nix
+    # Audio: PipeWire/WirePlumber/pipewire-pulse root system session,
+    # ALSA S16 pinning, speaker-amp output mode (ported from the
+    # verified GeminiPDA bring-up).
+    ../services/audio.nix
+    # Wi-Fi: internal MT6630 CONSYS stack (mtk_wcn + wlan_gen3 + WMT
+    # pwr-on) + USB RTL8821CU dongle auto-connect + factory NVRAM
+    # (ported from the verified GeminiPDA bring-up).
+    ../services/wifi.nix
   ];
 
   system.stateVersion = "26.11";
@@ -71,12 +79,27 @@ in
   # BPF-enabled build back into the closure. The systemd-bpf LSM units
   # (restrict-fs, io_uring restrictions) are irrelevant for a trusted
   # single-user PDA.
+  # The Wi-Fi firmware blobs (MediaTek WMT/ROMv3/CONSYS + Realtek
+  # rtw88) are vendor-furnished and tracked in pkgs/gemini-firmware/
+  # (unfreeRedistributable) — the same blobs the verified device runs.
+  nixpkgs.config.allowUnfree = true;
+
   # List-typed option: definitions from all modules (including Mobile
   # NixOS's own overlays) are concatenated in module order, so a plain
   # definition here appends after theirs.
   nixpkgs.overlays = [
     (final: prev: {
       systemd = prev.systemd.override { withLibBPF = false; };
+    })
+    (final: prev: {
+      # nixpkgs' ffmpeg builds (ffmpeg + ffmpeg-headless; the latter is a
+      # hard buildInput of pipewire/chromaprint, the former of
+      # alsa-plugins) enable cuda-llvm by default, which is broken for
+      # cross-aarch64 in this pin ("ERROR: cuda_llvm requested but not
+      # found" — no CUDA toolchain exists for the target). This device
+      # has no CUDA (Mali-T880, panfrost only), so disable it.
+      ffmpeg = prev.ffmpeg_8.override { withCudaLLVM = false; };
+      ffmpeg-headless = prev.ffmpeg_8-headless.override { withCudaLLVM = false; };
     })
   ];
 

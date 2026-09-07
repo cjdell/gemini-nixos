@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# audio-output — manual built-in-speaker / headphone output selection.
+#
+# WHY: the Gemini PDA's flanking speakers and the 3.5 mm jack are
+# electrically IN PARALLEL on the codec HPL/HPR drivers; the only thing
+# that separates "built-in speakers" from "headphones" is the speaker-amp
+# enable (SoC pads 243+244, `speaker on|off`).  There is no accdet jack
+# detection on this mainline stack yet (docs/hardware.md §jack-detect), so
+# the choice is manual:
+#     audio-output speaker    -> pads 243/244 HIGH = built-in speakers.
+#                                (a plugged headphone also plays them —
+#                                parallel net, documented caveat)
+#     audio-output headphone  -> pads LOW = 3.5 mm jack only.
+# The choice persists in /etc/gemini/audio-output-mode and is re-applied
+# at every boot by gemini-audio-defaults.service.
+#
+# Used by: the gemini-pda-utils CLI, LXQt desktop launchers, the LXQt
+# panel CustomCommand output widget (display+click-toggle).
+#
+# (Ported verbatim from the GeminiPDA project; the speaker CLI lives next
+# to this script in the gemini-pda-utils bin dir, substituted at package
+# build time.)
+set -u
+
+STATE=/etc/gemini/audio-output-mode
+SPEAKER="${SPEAKER_BIN:-__GEMINI_UTILS__/speaker}"
+
+die() { echo "audio-output: $*" >&2; exit 1; }
+
+apply() { # mode  -> flip the amp pads + persist the choice
+  case "$1" in
+    speaker)   "$SPEAKER" on  || die "speaker on failed"; echo "$1" > "$STATE" ;;
+    headphone) "$SPEAKER" off || die "speaker off failed"; echo "$1" > "$STATE" ;;
+    *) die "unknown mode '$1' (want speaker|headphone)" ;;
+  esac
+}
+
+mode="$(cat "$STATE" 2>/dev/null || echo speaker)"
+case "${1:-status}" in
+  speaker|headphone) apply "$1" ;;
+  toggle)
+    [ "$mode" = speaker ] && apply headphone || apply speaker
+    ;;
+  status)
+    # live pad state (authoritative) vs stored intent — dout= field of pad
+    # 243 ("pad 243 (gpio 755): mode=0 dir=out din=0 dout=1"; field 6 is
+    # dir=out, NOT the level — parse dout explicitly)
+    dout="$( "$SPEAKER" status 2>/dev/null | grep -o 'dout=[01]' | head -1 | cut -d= -f2 )"
+    if [ "$dout" = 1 ]; then live_mode=speaker; else live_mode=headphone; fi
+    if [ "${2:-}" = --panel ]; then
+      # one short line for the LXQt panel CustomCommand widget
+      if [ "$live_mode" = speaker ]; then echo "Speakers"; else echo "Headphones"; fi
+    else
+      echo "mode: $live_mode (stored intent: $mode)"
+      echo "speaker amps (pads 243/244): $([ "$dout" = 1 ] && echo ON || echo OFF)"
+      echo "headphone jack plays too when mode=speaker and something is plugged (parallel net, no jack detect yet)"
+    fi
+    ;;
+  *) echo "usage: $0 status|speaker|headphone|toggle"; exit 2 ;;
+esac

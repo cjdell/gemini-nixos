@@ -11,9 +11,12 @@
 # `boot` and `linux` partitions via the patched TWRP, or via adb. See
 # README.md and docs/mobile-nixos-port-feasibility.md §3.5.
 #
-# Mobile NixOS is not a flake, so we import its evaluation entry point
-# from the in-tree clone at repos/mobile-nixos (pinned commit, see
-# README.md). Nixpkgs is resolved by Mobile NixOS's own npins pin
+# Mobile NixOS is NOT a flake (no flake.nix, even at branch tip), so on
+# nix 2.34 it cannot be a flake input (inputs must contain a flake.nix).
+# We fetch the pinned commit as a tarball instead — the same mechanism
+# Mobile NixOS itself uses to pin nixpkgs (npins, builtins.fetchTarball).
+# The full commit SHA in the URL is the pin (deterministic tarball).
+# Nixpkgs is then resolved by Mobile NixOS's own npins pin
 # (nixos-unstable 26.11pre1031299.0bb7ec54c848).
 {
   description = "Mobile NixOS for the Planet Computers Gemini PDA (MT6797X, LK framebuffer, no DRM)";
@@ -24,7 +27,23 @@
       # cross-building from x86_64 (docs R7, examples/hello precedent).
       buildSystem = "x86_64-linux";
 
-      mnx = ./repos/mobile-nixos;
+      # Mobile NixOS source tree, pinned to an exact commit (was: the
+      # repos/mobile-nixos submodule). Bump the SHA to update.
+      # NOTE: do not bind `inputs` in the outputs pattern on nix 2.34 —
+      # the pattern's bindings are treated as input declarations, and a
+      # bare `inputs` binding spawns a phantom "flake:inputs" registry
+      # lookup that fails ("cannot find flake 'flake:inputs'").
+      # nix 2.34: builtins.fetchTarball no longer pins content (its old
+      # `sha256` file-hash arg is gone); use fetchTree, which pins the
+      # NAR hash of the UNPACKED tree (GitHub tarball bytes are not a
+      # canonical representation). Re-verify the narHash when bumping
+      # the rev:  nix flake prefetch github:mobile-nixos/mobile-nixos/<rev>
+      mnx = builtins.fetchTree {
+        type = "tarball";
+        url =
+          "https://github.com/mobile-nixos/mobile-nixos/archive/2c132754323fc1915e8d21dcfc0ef68ab084c6fb.tar.gz";
+        narHash = "sha256-CzwmiKxuh1u+H8hDnrVeUl/fL59PvsgLbr2l0FhqWK0=";
+      };
 
       # Out-of-tree device (path-based, per mobile-nixos
       # lib/release-tools.nix) plus the system configuration.

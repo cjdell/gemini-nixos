@@ -27,3 +27,10 @@ echo "==> Archiving $GIT_DIR @ $REV"
 git -C "$GIT_DIR" archive --format=tar "$REV" | gzip -9 > "$OUT"
 echo "==> Wrote $OUT ($(du -h "$OUT" | cut -f1))"
 echo "    sha256: $(sha256sum "$OUT" | cut -d' ' -f1)"
+
+# Make the tarball visible to nix's source export: nix 2.34 flake
+# exports contain only git-tracked files. intent-to-add (git add -Nf)
+# registers the path WITHOUT committing its content. (Do NOT `git add
+# .` afterwards — that would commit the tarball into git.)
+git -C "$REPO_ROOT" add -Nf "${OUT#"$REPO_ROOT"/}"
+echo "==> Registered $OUT in the git index (intent-to-add; not committed)"

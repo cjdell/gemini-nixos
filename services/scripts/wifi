@@ -1,0 +1,190 @@
+#!/bin/sh
+# wifi — CLI for the 0bda:c811 RTL8821CU USB dongle on the Gemini PDA
+# (kernel #294+, rtw88_8821cu module + /lib/firmware/rtw88/rtw8821c_fw.bin).
+#
+# Usage:
+#   wifi status                     state/IP/SSID of the wifi interface
+#   wifi scan                       list visible networks (SSID, signal, security)
+#   wifi connect <SSID> [--pass <psk>] [--key-mgmt sae]
+#                                   connect (WPA2/WPA3-PSK or open) and get a DHCP
+#                                   lease; the network is saved for auto-connect
+#   wifi networks                   show saved profiles
+#   wifi forget <SSID>              remove a saved profile
+#   wifi auto                       connect to the best saved profile (boot hook)
+#   wifi off                        take the interface down
+#   wifi ifname                     print the wifi interface name (for scripts)
+#
+# Profile store: /etc/wifi/profiles.conf  (one per line: ssid|psk ; psk empty = open)
+# wpa_supplicant runs as a daemon with a config that includes all saved
+# profiles, so it auto-roams between known networks. dhcpcd manages the IP.
+#
+# NOTE: g_ether (usb0, 10.15.19.x) is the host link — wifi never touches it.
+
+set -u
+
+PROFILE_DIR=/etc/wifi
+PROFILES="$PROFILE_DIR/profiles.conf"
+RUN=/var/run
+WPA_CONF="$RUN/wpa-wifi.conf"
+WPA_PID="$RUN/wpa-wifi.pid"
+
+ifname() {
+    iw dev 2>/dev/null | awk '/Interface/{print $2; exit}'   # line is tab-indented
+}
+
+die() { echo "wifi: $*" >&2; exit 1; }
+
+check_if() {
+    IF=$(ifname) || :
+    [ -n "${IF:-}" ] || die "no wifi interface (is the rtw88_8821cu module loaded? modprobe rtw88_8821cu)"
+}
+
+# render the wpa_supplicant config from the profile store
+write_wpa_conf() {
+    mkdir -p "$RUN"
+    {
+        echo "ctrl_interface=/var/run/wpa_supplicant"
+        echo "update_config=1"
+        # no crda/regdb on this rootfs -> let the kernel default to the
+        # "world" regulatory domain
+        echo "country=00"
+        if [ -f "$PROFILES" ]; then
+            while IFS='|' read -r ssid psk; do
+                [ -n "$ssid" ] || continue
+                case "$ssid" in \#*) continue;; esac
+                if [ -n "$psk" ]; then
+                    printf 'network={\n\tssid="%s"\n\tpsk="%s"\n}\n' "$ssid" "$psk"
+                else
+                    printf 'network={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$ssid"
+                fi
+            done < "$PROFILES"
+        fi
+    } > "$WPA_CONF"
+}
+
+wpa_ensure() {
+    check_if
+    ip link set "$IF" up 2>/dev/null
+    if ! wpa_cli -i "$IF" status >/dev/null 2>&1; then
+        write_wpa_conf
+        wpa_supplicant -B -i "$IF" -c "$WPA_CONF" -P "$WPA_PID" \
+            || die "wpa_supplicant failed to start (dmesg?)"
+        sleep 1
+    fi
+}
+
+dhcp() {
+    check_if
+    # fresh dhcpcd lease for this interface only
+    pkill -f "dhcpcd.*$IF" 2>/dev/null; sleep 0.5
+    dhcpcd --timeout 25 "$IF" || die "no DHCP lease on $IF (router? wrong password?)"
+}
+
+save_profile() { # ssid psk
+    mkdir -p "$PROFILE_DIR"
+    touch "$PROFILES"
+    grep -v "^$1|" "$PROFILES" > "$PROFILES.tmp" 2>/dev/null || true
+    echo "$1|$2" >> "$PROFILES.tmp"
+    mv "$PROFILES.tmp" "$PROFILES"
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+status)
+    check_if
+    ip -br addr show "$IF"
+    st=$(wpa_cli -i "$IF" status 2>/dev/null)
+    [ -n "$st" ] || { echo "  (wpa_supplicant not running)"; exit 0; }
+    echo "$st" | grep -E "^(ssid|bssid|ip_address|wpa_state|signal_level) " \
+        | sed 's/^/  /'
+    ;;
+scan)
+    wpa_ensure
+    echo "Scanning... (10 s)"
+    # one entry per AP, starting at its 'bssid' line; flush on the next
+    # entry and at END. SSIDs may contain spaces (whole line after "SSID:").
+    timeout 12 iw dev "$IF" scan 2>/dev/null \
+        | awk '
+            function flush() {
+                if (sig == "") return
+                if (sec == "") sec = "open"
+                if (seen[ssid]++ == 0)
+                    printf "%-28s %8s  %s\n", (ssid==""?"(hidden)":ssid), sig" dBm", sec
+            }
+            /bssid/ { flush(); ssid=""; sig=""; sec="" }
+            /SSID:/ { sub(/^SSID:/, ""); ssid=$0 }
+            /signal:/ { sig=$2 }
+            /RSN Authentication Suites/ { sec = ($0 ~ /SAE/) ? "WPA2/WPA3" : "WPA2" }
+            /WPA Authentication Suites/ { if (sec == "") sec = "WPA" }
+            END { flush() }' | sort -u
+    ;;
+connect)
+    SSID=""
+    PSK=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --pass) PSK=${2:-}; shift 2;;
+            --pass=*) PSK=${1#--pass=}; shift;;
+            *) SSID=$1; shift;;
+        esac
+    done
+    [ -n "$SSID" ] || die "usage: wifi connect <SSID> [--pass <psk>]"
+    wpa_ensure
+    save_profile "$SSID" "$PSK"
+    write_wpa_conf
+    # restart the daemon so it picks up the new network block
+    pkill -f "wpa_supplicant -B" 2>/dev/null; sleep 1
+    wpa_ensure
+    # give association a moment, then DHCP
+    i=0
+    while [ $i -lt 30 ]; do
+        s=$(wpa_cli -i "$IF" status 2>/dev/null | awk -F= '/^ssid=/{print $2; exit}')
+        [ "$s" = "$SSID" ] && break
+        i=$((i+1)); sleep 1
+    done
+    [ "$s" = "$SSID" ] || die "association timeout (wrong password? AP hidden?)"
+    dhcp
+    echo "connected to $SSID"
+    ;;
+networks)
+    [ -f "$PROFILES" ] || { echo "(no saved profiles)"; exit 0; }
+    awk -F'|' '{printf "%-28s %s\n", $1, ($2==""?"open":"wpa-psk")}' "$PROFILES"
+    ;;
+forget)
+    SSID=${1:-}
+    [ -n "$SSID" ] && [ -f "$PROFILES" ] || die "usage: wifi forget <SSID>"
+    grep -v "^$SSID|" "$PROFILES" > "$PROFILES.tmp" || true
+    mv "$PROFILES.tmp" "$PROFILES"
+    echo "forgot $SSID"
+    ;;
+auto)
+    check_if
+    [ -s "$PROFILES" ] || { echo "wifi: no saved profiles — skipping"; exit 0; }
+    wpa_ensure
+    # wpa_supplicant picks the strongest known network itself; just get a lease
+    i=0
+    while [ $i -lt 45 ]; do
+        s=$(wpa_cli -i "$IF" status 2>/dev/null | awk -F= '/^ssid=/{print $2; exit}')
+        [ -n "$s" ] && break
+        i=$((i+1)); sleep 1
+    done
+    [ -n "${s:-}" ] || { echo "wifi: no association — leaving up for later"; exit 0; }
+    dhcp || echo "wifi: DHCP failed (will retry via 'wifi auto' on next boot)"
+    ;;
+off)
+    check_if
+    pkill -f "wpa_supplicant -B" 2>/dev/null
+    pkill -f "dhcpcd.*$IF" 2>/dev/null
+    ip link set "$IF" down 2>/dev/null
+    echo "wifi off ($IF down)"
+    ;;
+ifname)
+    check_if
+    echo "$IF"
+    ;;
+help|*)
+    sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac

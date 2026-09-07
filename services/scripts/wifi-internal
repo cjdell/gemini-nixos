@@ -1,0 +1,89 @@
+#!/bin/sh
+# wifi-internal — bring up the INTERNAL Wi-Fi stack (MT6630 CONSYS, on-die)
+# on the Gemini PDA: mtk_wcn (WMT core) + wlan_gen3 (port of the vendor
+# gen3 802.11 host stack) + the debugfs pwr-on that runs the full WMT
+# vendor init (hw_check -> ROMv3 patches -> STP_RDY -> FUNC_ON -> wlan0).
+#
+# This is the kernel-stack half of boot persistence. The network half
+# (wpa_supplicant + dhcpcd against the saved profiles in
+# /etc/wifi/profiles.conf) is handled by the milestone-13 wifi-auto.service
+# (`wifi auto`), which runs AFTER this unit and connects whatever STA
+# interface exists (wlan0 = this stack when the USB-dongle fallback is
+# absent).
+#
+# Usage:
+#   wifi-internal start     load modules + pwr-on + wait for wlan0
+#   wifi-internal status    modules / pwr / wlan0 state
+#   wifi-internal stop      pwr-off (power-cycle the CONN domain; modules
+#                           stay loaded). wlan0 teardown is untested on
+#                           this port (2026-09-06) — prefer reboot.
+#
+# Load ORDER matters (docs/wifi-consys.md B-33): wlan_gen3 MUST be loaded
+# before the pwr-on — a func-on with no wlan registered returns -2 and
+# opfunc_func_on powers the chip back down (by design). The pwr node lives
+# under debugfs; mount it if needed.
+# g_ether (usb0) is untouched.
+
+set -u
+
+PWR=/sys/kernel/debug/wcn/pwr
+IF=wlan0
+
+die() { echo "wifi-internal: $*" >&2; exit 1; }
+
+# ensure_debugfs — mount debugfs if needed. NOTE: /sys/kernel/debug/wcn is
+# created by the mtk_wcn MODULE, not by the mount — the "wcn dir" check
+# belongs AFTER modprobe mtk_wcn (fixed 2026-09-06 11th: the old check
+# before the modprobe died on every fresh boot, so wifi-internal.service
+# failed and wlan0 never appeared).
+ensure_debugfs() {
+    [ -d /sys/kernel/debug ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null || :
+    [ -d /sys/kernel/debug ] || die "cannot mount debugfs"
+}
+
+mod_loaded() { grep -q "^$1 " /proc/modules; }
+
+cmd=${1:-status}
+
+case "$cmd" in
+start)
+    ensure_debugfs
+    mod_loaded mtk_wcn || modprobe mtk_wcn || die "modprobe mtk_wcn failed (dmesg?)"
+    [ -d /sys/kernel/debug/wcn ] || die "mtk_wcn loaded but no /sys/kernel/debug/wcn (dmesg?)"
+    mod_loaded wlan_gen3 || modprobe wlan_gen3 || die "modprobe wlan_gen3 failed (dmesg?)"
+    # pwr-on: idempotent-ish — a second 'on' while FUNC_ON returns EIO
+    # ("already powered on"); tolerate it, verify wlan0 instead.
+    echo on > "$PWR" 2>/dev/null || :
+    i=0
+    while [ $i -lt 30 ]; do
+        iw dev 2>/dev/null | grep -q "^	Interface $IF\b" && break
+        i=$((i+1)); sleep 1
+    done
+    iw dev 2>/dev/null | grep -q "^	Interface $IF\b" \
+        || die "wlan0 did not appear in ${i}s (dmesg? 'echo on' verdict?)"
+    echo "wifi-internal: $IF up (mtk_wcn + wlan_gen3 loaded, WMT FUNC_ON)"
+    ;;
+status)
+    ensure_debugfs 2>/dev/null || :
+    echo "modules: mtk_wcn=$(mod_loaded mtk_wcn && echo yes || echo no) wlan_gen3=$(mod_loaded wlan_gen3 && echo yes || echo no)"
+    [ -d /sys/kernel/debug/wcn ] || echo "wcn debugfs: (mtk_wcn not loaded / no /sys/kernel/debug/wcn)"
+    if [ -w "$PWR" ]; then
+        P=$(cat "$PWR" 2>/dev/null)
+        echo "wcn pwr: ${P:-<write-only node; use start/stop>}"
+    else
+        echo "wcn pwr: (no debugfs)"
+    fi
+    iw dev 2>/dev/null | awk '/^	Interface/{print "iface:", $2}'
+    if iw dev 2>/dev/null | grep -q "^	Interface $IF\b"; then
+        ip -br addr show "$IF" 2>/dev/null | sed 's/^/ip: /'
+    fi
+    ;;
+stop)
+    ensure_debugfs
+    echo off > "$PWR" 2>/dev/null && echo "wifi-internal: WMT power off (CONN domain cycled)" \
+        || echo "wifi-internal: pwr-off failed (modules stay loaded)"
+    ;;
+help|*)
+    sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac
