@@ -13,6 +13,12 @@ base + delta”**, expressed as reproducible Nix configuration. Mesa is
 the first library converted (this document + `pkgs/mesa-geminipda.nix`);
 the kernel and other libraries follow the same pattern.
 
+> **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
+> knowledge repo (AGENTS.md); GeminiPDA is legacy, being folded in. The
+> "never from the GeminiPDA repo's local state" goal below is unchanged
+> — its blobs/trees are being migrated here (M3/M5), after which the
+> wording means "no dependency on the legacy repo at all".
+
 ## The pattern, in one line
 
 > Take the published artifact whose version is in your fork's major

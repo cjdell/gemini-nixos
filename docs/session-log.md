@@ -5,6 +5,58 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 — GOLDEN-REPO PIVOT: gemini-nixos declared the primary repo for the whole Gemini PDA project; DR playbook ported here from the sibling (no revert of GeminiPDA)
+
+User decision this session: gemini-nixos will **eventually completely
+replace GeminiPDA** — new content goes in THIS repo, GeminiPDA is the
+legacy source being folded in (not reverted, not edited for new work).
+What was done:
+
+- **AGENTS.md rewritten as the golden charter**: new "Repo status:
+  GOLDEN" header + transitional rule (a topic's truth is wherever its
+  latest content is; port pointers decay), a **migration plan M1–M7**
+  (receipt docs / DR knowledge / stock-dump blobs / recovery tooling /
+  kernel+LK trees / services / session history), and all existing rules
+  0–8b preserved with authority references changed from
+  "sibling is the authority" to "this repo is golden; legacy paths are
+  transitional".
+- **DR playbook ported here**: `docs/disaster-recovery/{README,
+  inventory,gather,drills}.md` — inventory now carries a copy-status
+  column (here vs legacy-pending M3) and the bulk-migration rsync
+  command; tooling references point at this repo's `bin/`.
+- **Recovery tooling ported (M4)**: `bin/run-mtk.sh` (patched-mtkclient
+  launcher; version-agnostic store lookup + clear errors when the
+  devshell closure / patched copy is missing) and `bin/usb-watch.sh`,
+  both from the legacy `build/` originals; `mtkclient` (nixpkgs
+  2.1.4.1 — verified present in this repo's nixpkgs pin) added to the
+  flake devshell so the store pkg + Loader DAs exist for the launcher.
+- **Boot-critical blobs copied (M3 partial)**: `stock-dump/` here now
+  holds lk/para/para-boot-recovery/recovery/twrp-noswipe/boot/boot2/
+  boot3/logo/proinfo/nvram + gpt txt + 2 representative boot images
+  (130 MB); every sha256 re-verified OK against the ledger. Bulk
+  (android images, firmware zip, ~85 boot backups) stays in
+  `GeminiPDA/stock-dump/` until the documented rsync.
+- **Pivot notes added** (dated, non-destructive) to the docs that still
+  asserted sibling authority: README (golden banner + local DR row),
+  boot-process, repartition-android-space, library-deltas,
+  mobile-nixos-port-feasibility (marked historical), outstanding.md.
+- Legacy sibling edits from earlier this session (DR folder,
+  flashing.md pointer, hardware.md [open question], its session-log
+  entry) are **left in place** per "no revert" — they are now legacy
+  copies; this repo is the golden ledger.
+
+Versions (nothing flashed): unchanged — kernel #329
+`6.6.0-00048-g188aade698dd` (borrowed); Mesa 25.0.7 fork; wlroots 0.18.2;
+gemwl 1.0; Mobile NixOS `2c132754`; nixpkgs `nixos-26.11pre1031299.0bb7ec54c848`.
+
+Next action: when the device is next on the bench (phase 2 window), run
+`docs/disaster-recovery/gather.md` steps 1–8 BEFORE any flash work —
+preloader dump + raw GPT + BROM-entry check are one-time, device-healthy
+tasks; then continue M1 (port the receipt docs) whenever a doc session
+allows.
+
+## 2026-09-07 — A72 cluster power-DOWN brought over (cl2-down.sh, verbatim; build-level)
+
 ## 2026-09-07 — A72 cluster power-DOWN brought over (cl2-down.sh, verbatim; build-level)
 
 Ported the sibling's proven A72 power-down path (GeminiPDA @ 738d19f,

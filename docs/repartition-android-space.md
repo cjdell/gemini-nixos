@@ -4,6 +4,11 @@
 implemented** (nothing flashed, nothing rewritten). Decision on the open
 questions in §10 is required before the §9 change list is implemented.
 **Last updated:** 2026-09-07.
+> **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
+> knowledge repo (AGENTS.md); the sibling GeminiPDA project is legacy
+> and being folded in. The "ground truth" receipts cited below keep
+> their `file:line` values but now live in the legacy repo until each is
+> ported (M1).
 **Ground truth:** sibling GeminiPDA project (`/home/cjdell/Projects/
 GeminiPDA`) — this doc only records the port-level decision/deltas and
 cross-checks claims against its receipts (boot chain: `docs/boot-chain.md`,

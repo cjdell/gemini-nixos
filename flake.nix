@@ -108,6 +108,7 @@
             git
             android-tools # adb/fastboot — host-side flash/recovery tooling (bin/boot-switch.sh, bin/flash-nixos.sh)
             usbutils # lsusb — device-state detection (POC 0e8d:2008, preloader 0e8d:2000, BROM 0e8d:0003, TWRP 18d1:4ee2)
+            mtkclient # preloader/BROM recovery tooling (store pkg + Loader DAs for bin/run-mtk.sh; the CDC-ACM patched copy shadows it — docs/disaster-recovery/)
           ];
         };
     };

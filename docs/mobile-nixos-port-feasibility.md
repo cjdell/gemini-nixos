@@ -7,6 +7,13 @@ working mainline-Linux bring-up of the Planet Computers Gemini PDA
 Mobile NixOS (`/home/cjdell/Projects/gemini-nixos/repos/mobile-nixos`,
 commit `2c132754`, development branch) as the base.
 
+> **GOLDEN-REPO note [2026-09-07]:** this doc is historical (written
+> when gemini-nixos was only the port repo). gemini-nixos is now the
+> GOLDEN repo for the whole project (AGENTS.md M1–M7); GeminiPDA is
+> legacy and being folded in. The feasibility analysis and phase table
+> remain valid; only the "sibling is the knowledge authority" framing
+> is obsolete.
+
 ---
 
 ## 1. Executive summary

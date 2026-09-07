@@ -11,6 +11,14 @@ with the rootfs on the 27.7 GiB `linux` partition (p29). There is no
 fastboot; flashing goes through the patched no-swipe TWRP or `dd` over
 adb.
 
+> **GOLDEN REPO (declared 2026-09-07):** gemini-nixos is now the primary
+> home for the whole Gemini PDA project — the port AND the
+> hardware/boot knowledge base (see `AGENTS.md` for the migration
+> plan M1–M7 and the rules). The former sibling repo
+> `GeminiPDA` is the legacy source being folded in; it is not deleted
+> and not edited for new work. Disaster-recovery knowledge now lives
+> here: `docs/disaster-recovery/`. [added 2026-09-07]
+
 ## Layout
 
 | Path | What |
@@ -40,6 +48,7 @@ adb.
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
 | `docs/repartition-android-space.md` | Proposal: NixOS rootfs on Android's p32 `userdata` (Debian stays on p29) + dual-boot boot.img via a para marker; boot-budget analysis. Decision open (2026-09-07) — no code changes yet |
 | `docs/boot-process.md` | Plain-language explainer: how the Gemini boots for this port — one boot slot, shared kernel, initrd-as-rootfs-selector, cmdline storage/`CMDLINE_FORCE`, para marker, initramfs builds |
+| DR (device disaster recovery) | `docs/disaster-recovery/` — full-flash-erase restore to TWRP (levels 0–2); image ledger + sha256 in `inventory.md` (blobs in `stock-dump/`, gitignored), gather checklist + drills. NixOS flashing after a restore = `bin/flash-nixos.sh` |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 
 ## Pins

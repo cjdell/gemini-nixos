@@ -21,6 +21,12 @@ missing from the built NixOS rootfs. The built closure that was audited is
 `/nix/store/nwjfk7f16jjgbrm3pryf5bfppkhqp85p-nixos-system-nixos-26.11pre1031299.0bb7ec54c848`
 (== the current working tree's `.#packages.x86_64-linux.toplevel`).
 
+> **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the GOLDEN
+> repo (AGENTS.md M1–M7); GeminiPDA is legacy, being folded in. "Sibling
+> repo" references below remain valid as the source until each item
+> migrates; the authority rules in this file's §0 are superseded by
+> AGENTS.md.
+
 ## 0. Agent working rules (read before touching anything)
 
 - Hardware/boot truth authority = `/home/cjdell/Projects/GeminiPDA`

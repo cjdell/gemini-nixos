@@ -3,11 +3,17 @@
 **Purpose:** a plain-language explainer of the boot/bootstrap process as
 it applies to this port — written from the Q&A of the 2026-09-07 session
 (kernel identity, cmdline storage, rootfs selection, initramfs builds).
-It does **not** replace the receipts — hardware/boot ground truth with
-`file:line` references lives in the sibling project
-(`GeminiPDA/docs/boot-chain.md`) and in `docs/repartition-android-space.md`
-for the dual-boot proposal. This doc is the "how it fits together" layer.
+It does **not** replace the receipts — the `file:line` boot-chain
+receipts live in the legacy `GeminiPDA/docs/boot-chain.md` and in
+`docs/repartition-android-space.md` for the dual-boot proposal (port to
+this repo is migration item M1 — see `AGENTS.md`). This doc is the
+"how it fits together" layer.
 **Last updated:** 2026-09-07.
+
+> **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
+> knowledge repo; the sibling GeminiPDA project is the legacy source
+> being folded in (AGENTS.md M1–M7). New hardware/boot facts go HERE;
+> cite the legacy path only until each receipt is ported.
 
 ## 1. The one boot slot: everything lives in one boot.img
 
