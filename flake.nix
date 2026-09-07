@@ -106,6 +106,8 @@
           packages = with pkgs; [
             python3 # boot.img header inspection
             git
+            android-tools # adb/fastboot — host-side flash/recovery tooling (bin/boot-switch.sh, bin/flash-nixos.sh)
+            usbutils # lsusb — device-state detection (POC 0e8d:2008, preloader 0e8d:2000, BROM 0e8d:0003, TWRP 18d1:4ee2)
           ];
         };
     };

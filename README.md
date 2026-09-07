@@ -32,6 +32,11 @@ adb.
 | `kernel/borrowed/` | The working bring-up kernel #329 artifacts, vendored + tracked (payload, DTB, module tree, sramldo-smc.ko, .config) |
 | `kernel/geminipda-bringup-733c0c7ea.tar.gz` | `git archive` snapshot of the in-repo kernel pin (future self-contained build; see “Kernel phase”) |
 | `bin/snapshot-kernel.sh` | Regenerates the kernel snapshot (and registers it for nix visibility) |
+| `bin/dump-bootimg-header.sh` | Parse an AOSP v0 boot.img header (phase-0 geometry checks) |
+| `bin/device-ssh.sh`, `bin/net-up.sh`, `bin/device-reboot.sh` | Host side of the g_ether link (root @ 10.15.19.82), auto link-up after power-on, WDT-EXRST remote reboot |
+| `bin/boot-switch.sh` | Boot-target switching + boot-partition flash over adb/TWRP (status/twrp/android/flash/restore) |
+| `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and rootfs → p29 (`linux`); safe TWRP-sticky default |
+| `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 
@@ -199,17 +204,36 @@ manual, see below).
 
 ## Flashing (manual — no fastboot)
 
-1. Flash the rootfs image to the `linux` partition (p29) and
-   `boot.img` to the `boot` partition (p22), via TWRP (adb) or the
-   project's `flash-nohelp.sh`-style pipeline (para-write → WDT EXRST
-   self-boot → TWRP adb). The image is complete ext4 with label
-   `NIXOS_SYSTEM` (set by image-builder; `rootfs.img` from the `rootfs`
-   output, `system.img` in the `default` output — same file) — writing
-   it replaces p29 entirely (wipes Gemian only; Android's
-   `system`/`userdata` are untouched).
-2. The device auto-boots: LK → minimal initrd (partition scan) →
-   NixOS stage-2. First boot rehydrates the Nix store
-   (`nix-store --load-db`) and auto-resizes the filesystem to fill p29.
+**Tooling is in-repo and ready** (see `AGENTS.md` for the full cheat
+sheet): `bin/flash-nixos.sh` orchestrates the whole pipeline — it
+converges the device to TWRP from **any** state (running Linux via
+para-write + WDT EXRST self-boot over ssh, Android via adb, or POC/
+offline with prompts), then flashes. `bin/boot-switch.sh` is the
+adb/TWRP boot-target state machine underneath; device state over ssh
+= `bin/device-ssh.sh` / `bin/net-up.sh` (g_ether, 10.15.19.82).
+
+1. Build: `nix build .#packages.x86_64-linux.default` → `result/`
+   with `boot.img` + `system.img` (the rootfs; same file as the
+   `rootfs` output's `rootfs.img`).
+2. `bash bin/flash-nixos.sh status` — device state + local artifacts.
+3. `bash bin/flash-nixos.sh boot` — backs up the current `boot`, flashes
+   `boot.img` → p22 `boot` (16 MiB). Stays in TWRP by default.
+4. `bash bin/flash-nixos.sh rootfs --yes` — flashes `system.img` → p29
+   `linux` (27.7 GiB ext4, label `NIXOS_SYSTEM`; replaces p29 entirely —
+   wipes the current GeminiPDA Debian rootfs only; Android's
+   `system`/`userdata` untouched). Optional `--backup-rootfs FILE`
+   (slow — run under `bin/run-job.sh`).
+5. `bash bin/flash-nixos.sh boot-nixos` — clear para + reboot: LK →
+   minimal initrd (partition scan) → NixOS stage-2. First boot
+   rehydrates the Nix store (`nix-store --load-db`) and auto-resizes
+   the filesystem to fill p29.
+
+**Safety model:** an unverified boot image that hangs has no software
+path back (recovery = mtkclient preloader mode), so the scripts default
+to para = boot-recovery (TWRP sticky) until you explicitly boot the new
+image, and every `boot` flash is backed up to `stock-dump/` first
+(`bin/boot-switch.sh restore` rolls back). Rollback of p29 = re-flash
+the pre-NixOS rootfs.
 
 Do **not** flash anything from this repo yet — the artifacts build and
 match the bring-up boot contract (phases 0/1/3 done at the build level),

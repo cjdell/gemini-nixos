@@ -1,6 +1,11 @@
 # Nix build result symlinks (recreated by `nix build`)
 result*
 
+# Host-side device-operation state (bin/run-job.sh, bin/boot-switch.sh,
+# bin/flash-nixos.sh):
+logs/
+stock-dump/
+
 # Vendored source tarballs — too large for git; see kernel/README.md
 # (regenerate with bin/snapshot-kernel.sh). The snapshot script registers
 # the file with `git add -Nf` (intent-to-add) so nix 2.34's
