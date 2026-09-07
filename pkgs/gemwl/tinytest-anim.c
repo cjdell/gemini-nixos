@@ -27,6 +27,22 @@ static const struct xdg_wm_base_listener wm_base_listener = { .ping = wm_base_pi
 static void buffer_release(void *d, struct wl_buffer *b) {}
 static void global_remove(void *d, struct wl_registry *r, uint32_t n) {}
 
+/*
+ * Listener vtables must outlive the objects they are attached to:
+ * libwayland stores a POINTER to the struct passed to wl_*_add_listener
+ * (it does not copy it). These were previously function-scope compound
+ * literals (one per draw()/frame_callback() call), so the vtable dangled
+ * as soon as the enclosing handler returned and the first ASYNC event
+ * (wl_buffer.release / wl_callback.done — one dispatch cycle later)
+ * segfaulted inside wl_closure_invoke -> ffi_call_SYSV. Observed on
+ * glass 2026-09-07: tinytest-anim died ~1 s after the toplevel mapped,
+ * leaving gemwl with an empty (black) scene. File-scope statics, like
+ * the registry/wm_base/xdg/toplevel listeners below. [fixed 2026-09-07]
+ */
+static const struct wl_buffer_listener buffer_listener = {
+	.release = buffer_release,
+};
+
 static void draw(void) {
 	/* map + paint the whole buffer */
 	int w = 800, h = 600;
@@ -41,13 +57,20 @@ static void draw(void) {
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, stride * h);
 	if (buf) wl_buffer_destroy(buf);
 	buf = wl_shm_pool_create_buffer(pool, 0, w, h, stride, WL_SHM_FORMAT_ARGB8888);
-	wl_buffer_add_listener(buf, &(struct wl_buffer_listener){ .release = buffer_release }, NULL);
+	wl_buffer_add_listener(buf, &buffer_listener, NULL);
 	wl_surface_attach(surf, buf, 0, 0);
 	wl_surface_damage_buffer(surf, 0, 0, w, h);
 	wl_surface_commit(surf);
 	close(fd);
 	wl_shm_pool_destroy(pool);
 }
+
+/* The frame-callback listener (see the note above draw(): must outlive
+ * the per-frame wl_callback objects — file-scope static). */
+static void frame_callback(void *data, struct wl_callback *cb, uint32_t time);
+static const struct wl_callback_listener frame_listener = {
+	.done = frame_callback,
+};
 
 static void frame_callback(void *data, struct wl_callback *cb, uint32_t time) {
 	frames++;
@@ -58,14 +81,14 @@ static void frame_callback(void *data, struct wl_callback *cb, uint32_t time) {
 	draw();
 	wl_callback_destroy(cb);
 	struct wl_callback *next = wl_surface_frame(surf);
-	wl_callback_add_listener(next, &(struct wl_callback_listener){ .done = frame_callback }, NULL);
+	wl_callback_add_listener(next, &frame_listener, NULL);
 }
 
 static void xdg_surface_configure(void *data, struct xdg_surface *s, uint32_t serial) {
 	xdg_surface_ack_configure(s, serial);
 	draw();
 	struct wl_callback *cb = wl_surface_frame(surf);
-	wl_callback_add_listener(cb, &(struct wl_callback_listener){ .done = frame_callback }, NULL);
+	wl_callback_add_listener(cb, &frame_listener, NULL);
 }
 static const struct xdg_surface_listener xdg_surface_listener = { .configure = xdg_surface_configure };
 

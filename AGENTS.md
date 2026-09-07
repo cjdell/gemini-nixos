@@ -149,8 +149,8 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | Stage-2 system config (headless + g_ether SSH, services, mesa fork, systemd-BPF/cudaLLVM overlays) | `config/gemini.nix` |
 | SoC fragment (out-of-tree MT6797) | `modules/hardware-soc-mediatek-mt6797.nix` |
 | Device services: GPU poweron / A72-up / battery-guard / WDT reboot | `services/gemini-pda.nix`, `services/scripts/` |
-| Audio (PipeWire S16 path), Wi-Fi (CONSYS+USB), desktop (gemwl) | `services/audio.nix`, `services/wifi.nix`, `services/desktop.nix` |
-| Mesa 25.0.7+geminipda fork / wlroots 0.18.2 pin / gemwl pkgs | `pkgs/{mesa-geminipda,wlroots-geminipda,gemwl}.nix` + `patches/` |
+| Audio (PipeWire S16 path), Wi-Fi (CONSYS+USB), desktop (gemwl), **LXQt nested (labwc → lxqt-session)** | `services/audio.nix`, `services/wifi.nix`, `services/desktop.nix`, `services/lxqt.nix` (+ `services/scripts/start-lxqt-nested`, `config/lxqt/`) |
+| Mesa 25.0.7+geminipda fork / wlroots 0.18.2 pin / gemwl pkgs / **labwc 0.8.3 pin** | `pkgs/{mesa-geminipda,wlroots-geminipda,gemwl,labwc-geminipda}.nix` + `patches/` |
 | Borrowed kernel #329 artifacts (vendored, tracked) | `kernel/borrowed/` (payload, DTB, module tree, sramldo-smc.ko, .config) |
 | Kernel source snapshot (gitignored, intent-to-add) | `kernel/geminipda-bringup-733c0c7ea.tar.gz` + `bin/snapshot-kernel.sh` |
 | boot.img header inspection | `bin/dump-bootimg-header.sh` |

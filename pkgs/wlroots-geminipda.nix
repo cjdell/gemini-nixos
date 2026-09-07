@@ -24,6 +24,19 @@
 #                          outside a logind seat, exactly like the
 #                          verified Debian root service)
 #
+# withDrmBackend: the drm backend is OFF by default (gemwl never uses it
+# — this device has no KMS/DRM scanout; the LCD is the LK framebuffer).
+# labwc 0.8.3, however, compiles wlr_drm_lease_v1 unconditionally, and
+# wlroots only installs wlr_drm_lease_v1.h / backend/drm.h when the drm
+# backend feature is on (types/meson.build + include/meson.build), so
+# labwc needs a drm-enabled wlroots BUILD (its headers) even though it
+# runs nested (WLR_BACKENDS=wayland) and never opens a DRM device. The
+# labwc variant is a separate store path (services/lxqt.nix passes
+# withDrmBackend = true); gemwl keeps the trimmed build. Userspace only —
+# no kernel DRM drivers are involved and the LCD core rule (LK-initialized
+# panel) is untouched: the drm backend is never instantiated here.
+# [2026-09-07]
+#
 # gles2 renderer consequences (verified against wlroots-0.18.2
 # meson.build while writing this):
 #   - render/gles2 needs the `egl` AND `gbm` pkg-config modules (gbm is
@@ -43,7 +56,11 @@
 #
 # All other deps are the wlroots 0.18.2 core set (wayland-server >=
 # 1.23, libdrm >= 2.4.122, xkbcommon, pixman) plus wayland-client for
-# the always-built nested-wayland backend.
+# the always-built nested-wayland backend. The drm backend additionally
+# needs (backend/drm/meson.build): hwdata NATIVE (dependency native:
+# true — its pnp.ids feed gen_pnpids.sh at build time, looked up with
+# the build-machine pkg-config) and libdisplay-info (target lib, linked
+# into the drm backend).
 { lib
 , stdenv
 , fetchurl
@@ -60,9 +77,14 @@
 , libGL
 , systemd
 , seatd
+, hwdata
+, libdisplay-info
   # mesa 25.0.7 geminipda fork (gbm + EGL ICD provider; must be the
   # fork, NOT nixpkgs mesa — see pkgs/mesa-geminipda.nix)
 , mesaGeminipda
+  # true: build the drm backend too (labwc 0.8.3 header requirement — see
+  # the header comment). gemwl's build keeps the default (no drm).
+, withDrmBackend ? false
 }:
 
 let
@@ -91,7 +113,12 @@ stdenv.mkDerivation (finalAttrs: {
   ];
 
   strictDeps = true;
-  depsBuildBuild = [ pkg-config ];
+  depsBuildBuild = [
+    pkg-config
+  ] ++ lib.optionals withDrmBackend [
+    hwdata # build-machine copy: the drm backend's gen_pnpids.sh reads the
+    # pnp.ids database at build time via the native pkg-config lookup
+  ];
 
   nativeBuildInputs = [
     meson
@@ -118,6 +145,8 @@ stdenv.mkDerivation (finalAttrs: {
     # overlay's withLibBPF=false build, same as the rest of the system)
     seatd # libseat.pc (session; nixpkgs seatd package ships the libseat
     # client library + pkg-config)
+  ] ++ lib.optionals withDrmBackend [
+    libdisplay-info # drm backend hard requirement (backend/drm/meson.build)
   ];
 
   # nixpkgs' meson hook force-enables auto features by default
@@ -128,7 +157,7 @@ stdenv.mkDerivation (finalAttrs: {
   mesonAutoFeatures = "disabled";
 
   mesonFlags = [
-    "-Dbackends=libinput"
+    "-Dbackends=${if withDrmBackend then "drm,libinput" else "libinput"}"
     "-Drenderers=gles2"
     "-Dsession=enabled"
     "-Dxwayland=disabled"
@@ -147,9 +176,12 @@ stdenv.mkDerivation (finalAttrs: {
     longDescription = ''
       wlroots 0.18.2 built for the Gemini PDA desktop path: libinput
       backend + gles2 renderer + libseat session only (no drm/x11/xwayland/
-      vulkan). Exactly the library version gemwl.c was verified against on
-      the device (Debian libwlroots-0.18-dev). pkg-config module:
-      wlroots-0.18. Do NOT use with the pin's newer nixpkgs wlroots.
+      vulkan) by default; withDrmBackend=true additionally builds the drm
+      backend (labwc 0.8.3 needs its headers, though it runs nested and
+      never opens a DRM device). Exactly the library version gemwl.c was
+      verified against on the device (Debian libwlroots-0.18-dev).
+      pkg-config module: wlroots-0.18. Do NOT use with the pin's newer
+      nixpkgs wlroots.
     '';
     homepage = "https://gitlab.freedesktop.org/wlroots/wlroots";
     license = lib.licenses.mit;

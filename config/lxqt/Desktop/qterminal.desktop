@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+GenericName=Terminal emulator
+Comment=Command line shell
+Icon=utilities-terminal
+Exec=qterminal
+Terminal=false
+Categories=Qt;System;TerminalEmulator;

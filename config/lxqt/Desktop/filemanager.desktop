@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=File Manager
+GenericName=File Manager
+Comment=Manage files and folders
+Icon=system-file-manager
+Exec=pcmanfm-qt %U
+Terminal=false
+Categories=Qt;System;FileManager;Utility;

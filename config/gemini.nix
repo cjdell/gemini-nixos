@@ -5,8 +5,10 @@
 # Phase 4 (preview): the GPU desktop is now in-tree too — gemwl (custom
 # wlroots 0.18 compositor, pkgs/gemwl.nix + pkgs/wlroots-geminipda.nix)
 # is wired as services/desktop.nix and auto-starts at boot (console-
-# less fb desktop; serial console unaffected). Nested KWin/Plasma or
-# labwc/LXQt sessions are still phase-4 follow-up work (see README R2).
+# less fb desktop; serial console unaffected). Since 2026-09-07 the
+# desktop payload is the nested LXQt session (services/lxqt.nix: labwc
+# 0.8.3 on the pinned wlroots 0.18.2 + nixpkgs lxqt 2.4, the verified
+# GeminiPDA stack). `systemctl disable gemwl lxqt-nested` = console boot.
 { config, lib, pkgs, ... }:
 let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
@@ -32,6 +34,11 @@ in
     # pkgs/wlroots-geminipda.nix). Auto-starts at boot; disable with
     # `systemctl disable gemwl` for a console-only boot.
     ../services/desktop.nix
+    # LXQt (Wayland) desktop nested inside gemwl — labwc 0.8.3 (pinned
+    # against wlroots 0.18.2) hosting the nixpkgs lxqt 2.4 session
+    # (panel, pcmanfm-qt desktop, qterminal, audio GUIs). The verified
+    # GeminiPDA desktop stack as NixOS services (2026-09-07).
+    ../services/lxqt.nix
   ];
 
   system.stateVersion = "26.11";
@@ -191,6 +198,53 @@ in
       # has no CUDA (Mali-T880, panfrost only), so disable it.
       ffmpeg = prev.ffmpeg_8.override { withCudaLLVM = false; };
       ffmpeg-headless = prev.ffmpeg_8-headless.override { withCudaLLVM = false; };
+    })
+    (final: prev: {
+      # openblas 0.3.33 with DYNAMIC_ARCH=true (nixpkgs forces it for
+      # aarch64-linux) cross-compiles every target kernel, including the
+      # ARMV9SME (SVE/SME) set, whose generated sgemm_kernel_ARMV9SME.S
+      # includes kernel/arm64/sgemm_kernel_sve_v2x4.S — a file missing
+      # from the v0.3.33 release tarball -> fatal error (observed cross-
+      # building for the LXQt closure 2026-09-07, via lxqt-panel -> KF6
+      # kguiaddons' python output: numpy/pyside6/shiboken6). For the
+      # aarch64 target build the single ARMV8 kernel instead
+      # (dynamicArch=false): cross-clean AND correct for the Cortex-A72
+      # (ARMv8.0-A, no SVE/SME). The condition keeps the native x86_64
+      # openblas (buildPackages toolchain) at its default — x86_64 has
+      # no single-target KERNEL.ATHLON file, so disabling DYNAMIC_ARCH
+      # there breaks configure. The python-bound numpy is build-time
+      # only (never referenced by the system closure).
+      openblas = if final.stdenv.hostPlatform.isAarch64
+        then prev.openblas.override { dynamicArch = false; }
+        else prev.openblas;
+    })
+    (final: prev: {
+      # LXDE-era autotools (libfm-extra/menu-cache — pulled into the LXQt
+      # closure by pcmanfm-qt -> libfm-qt, for desktop-menu parsing) fail
+      # autoreconf under the pin's autoconf 2.73: "undefined or
+      # overquoted macro: AM_GLIB_GNU_GETTEXT". glib's glib-gettext.m4
+      # lives in glib.dev/share/aclocal, but glib is only a TARGET
+      # (buildInputs) dep, so the NATIVE autoreconf/aclocal run never
+      # sees it. Add the build-machine glib.dev (+ gettext/intltool, the
+      # rest of that macro family) as native inputs. [2026-09-07]
+      libfm-extra = prev.libfm-extra.overrideAttrs (o: {
+        nativeBuildInputs = (o.nativeBuildInputs or [ ])
+          ++ [ final.buildPackages.glib.dev final.buildPackages.gettext ];
+      });
+      # plain libfm (C, built for its menu-cache/gtk parts in this
+      # closure) hits the same autoreconf macro failure
+      libfm = prev.libfm.overrideAttrs (o: {
+        nativeBuildInputs = (o.nativeBuildInputs or [ ])
+          ++ [ final.buildPackages.glib.dev final.buildPackages.gettext ];
+      });
+      menu-cache = prev.menu-cache.overrideAttrs (o: {
+        nativeBuildInputs = (o.nativeBuildInputs or [ ])
+          ++ [
+            final.buildPackages.glib.dev
+            final.buildPackages.gettext
+            final.buildPackages.intltool
+          ];
+      });
     })
   ];
 

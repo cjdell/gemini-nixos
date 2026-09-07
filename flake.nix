@@ -82,6 +82,19 @@
       gemwl = eval.pkgs.callPackage ./pkgs/gemwl.nix {
         inherit wlroots;
       };
+      # labwc 0.8.3 pinned against the wlroots 0.18.2 line (nixpkgs'
+      # labwc is 0.20/0.20-wlroots — too new for this stack). Hosts the
+      # nested LXQt session (services/lxqt.nix). labwc 0.8.3 compiles
+      # wlr_drm_lease_v1 unconditionally, which requires a
+      # drm-backend-enabled wlroots BUILD (header only — labwc runs
+      # nested and never opens a DRM device; see pkgs/wlroots-
+      # geminipda.nix withDrmBackend).
+      labwc = eval.pkgs.callPackage ./pkgs/labwc-geminipda.nix {
+        wlroots = eval.pkgs.callPackage ./pkgs/wlroots-geminipda.nix {
+          mesaGeminipda = mesa;
+          withDrmBackend = true;
+        };
+      };
     in
     {
       packages.${buildSystem} = {
@@ -96,6 +109,7 @@
         mesa    = mesa;   # geminipda panfrost fork (Mali-T880, dma-buf import)
         wlroots = wlroots; # wlroots 0.18.2 pin (gemwl's library; R2)
         gemwl   = gemwl;   # GPU-direct fb compositor + tinytest clients
+        labwc   = labwc;   # 0.8.3 nested compositor (pinned wlroots 0.18.2)
       };
 
       devShells.${buildSystem}.default =

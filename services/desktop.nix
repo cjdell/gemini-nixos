@@ -11,11 +11,14 @@
 #                   renderD128, so the D129 attempt fails harmlessly),
 #                   renders the Wayland scene graph GPU-direct (shadow
 #                   dma-buf + compute blit), unbinds fbcon while it runs.
-#                   Starts a smoke-test client (tinytest-anim) so the
-#                   first boot visibly proves the chain on glass; replace
-#                   with a real session (weston-terminal, then the nested
-#                   KWin/Plasma or labwc/LXQt session — docs R3/phase 4)
-#                   once verified.
+#                   With no -s startup client it idles (empty scene)
+#                   until its client connects — since 2026-09-07 that
+#                   client is the NESTED LXQt session (services/lxqt.nix:
+#                   labwc 0.8.3 -> lxqt-session/panel/pcmanfm-qt/...).
+#                   The tinytest/tinytest-anim/wlegltst smoke clients stay
+#                   in the gemwl package for manual/headless compositor
+#                   checks (tinytest-anim's dangling-listener crash fixed
+#                   2026-09-07 — see pkgs/gemwl/tinytest-anim.c).
 #
 # Differences from the Debian unit (semantics preserved):
 #   - After=gemini-gpu-poweron.service (the Debian unit spelled it
@@ -35,15 +38,18 @@
 # FIRST GL client of the boot, and the Mali-T880 tiler can come out of a
 # cold boot in a "bad state" — the first client whose tiler batches exceed
 # 1024 px in one axis drops the region beyond 1024 px (black band). The
-# tinytest-anim startup client draws a small window and likely does NOT
-# absorb it. Whether kernel #329 still exhibits this (observed on #284 +
-# Mesa 25.0.7 debug, 2026-09-02) is an on-glass question to answer at the
-# first gemwl boot; if it bands, add a throwaway full-frame warmup as the
-# first GL client Before=gemwl (pattern: GeminiPDA
-# build/rootfs-files/gpu-warmup/, PAN_MESA_DEBUG=noafbc kept).
+# nested LXQt session (labwc's full-output compositing) is now that first
+# client and plausibly DOES absorb it. Whether kernel #329 still exhibits
+# this (observed on #284 + Mesa 25.0.7 debug, 2026-09-02) is an on-glass
+# question to answer at the first LXQt boot; if it bands, add a
+# throwaway full-frame warmup as the first GL client Before=gemwl
+# (pattern: GeminiPDA build/rootfs-files/gpu-warmup/,
+# PAN_MESA_DEBUG=noafbc kept).
 # Serial console (ttyS0) is unaffected by the fbcon unbind — the NixOS
 # bring-up/debug path stays available while the compositor owns the fb.
-# To fall back to the console-only boot: systemctl disable gemwl.
+#                     once verified.
+# To fall back to the console-only boot: systemctl disable gemwl
+# lxqt-nested.
 #
 # Packages: gemwl (the compositor + tinytest clients, pkgs/gemwl.nix)
 # and wlroots-geminipda (pkgs/wlroots-geminipda.nix, the pinned 0.18.2
@@ -63,13 +69,6 @@ let
   };
   gemwl = pkgs.callPackage ../pkgs/gemwl.nix { inherit wlroots; };
   utils = pkgs.callPackage ./gemini-utils.nix { };
-
-  # What to run inside the compositor at startup. The default is the
-  # animated xdg-shell client (cycles red/green/blue on frame
-  # callbacks) — a self-evident on-glass proof of the whole chain and a
-  # frame-rate probe; point this at a real client (weston-terminal,
-  # later the nested Plasma session) once the chain is verified.
-  startupClient = "${gemwl}/bin/tinytest-anim";
 in
 {
   environment.systemPackages = [
@@ -112,9 +111,9 @@ in
         "HOME=/root"
       ];
       # -t 90: output transform (panel is physically landscape, fb is
-      # portrait). The startup client runs in a forked shell from gemwl
-      # itself, inheriting XDG_RUNTIME_DIR + WAYLAND_DISPLAY.
-      ExecStart = "${gemwl}/bin/gemwl -t 90 -s '${startupClient}'";
+      # portrait). No -s: the nested LXQt session (services/lxqt.nix) is
+      # the client; gemwl idles black until it connects.
+      ExecStart = "${gemwl}/bin/gemwl -t 90";
       Restart = "on-failure";
       RestartSec = "2";
     };

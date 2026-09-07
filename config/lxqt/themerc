@@ -1,0 +1,30 @@
+# Gemini — openbox-3 themerc for labwc 0.8.3 (vendored 2026-09-07).
+#
+# labwc reads <data-dir>/themes/<name>/openbox-3/themerc (plus the
+# labwc/ variant); this is the Clearlooks-style set scoped to the keys
+# labwc 0.8.3 parses (src/theme.c — window.active/inactive.title.bg,
+# .label.text.color, .button.*.image.color, .border.color, titlebar
+# padding + button sizes). Anything omitted falls back to labwc's
+# builtin theme. Seeded to /root/.local/share/themes/Gemini by
+# services/scripts/start-lxqt-nested (XDG_DATA_HOME in the unit env).
+
+# --- window title bars --------------------------------------------------
+window.active.title.bg.color: #5f8dd3
+window.active.label.text.color: #ffffff
+window.active.border.color: #5f8dd3
+window.inactive.title.bg.color: #b9b9b9
+window.inactive.label.text.color: #3c3c3c
+window.inactive.border.color: #b9b9b9
+
+window.titlebar.padding.height: 6
+window.titlebar.padding.width: 8
+window.label.text.justify: center
+
+# --- window buttons (glyphs are drawn by labwc with these colors) -------
+window.button.width: 22
+window.button.height: 22
+window.button.spacing: 2
+window.active.button.unpressed.image.color: #ffffff
+window.inactive.button.unpressed.image.color: #3c3c3c
+
+# --- (pressed/hover variants fall back to builtin) ----------------------

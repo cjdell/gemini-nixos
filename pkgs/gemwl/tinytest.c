@@ -18,6 +18,14 @@ static void buffer_release(void *d, struct wl_buffer *b) {
 	printf("[client] buffer released\n");
 }
 
+/* See tinytest-anim.c: libwayland stores the listener vtable POINTER, so
+ * it must outlive the wl_buffer — a function-scope compound literal here
+ * dangled and the async release event segfaulted one dispatch later.
+ * [fixed 2026-09-07] */
+static const struct wl_buffer_listener buffer_listener = {
+	.release = buffer_release,
+};
+
 static void toplevel_close(void *d, struct xdg_toplevel *t) {
 	printf("[client] toplevel.close\n");
 }
@@ -49,9 +57,7 @@ static void xdg_surface_configure(void *data, struct xdg_surface *s, uint32_t se
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, stride * h);
 	struct wl_buffer *buf = wl_shm_pool_create_buffer(pool, 0, w, h, stride,
 		WL_SHM_FORMAT_ARGB8888);
-	wl_buffer_add_listener(buf, &(struct wl_buffer_listener){
-		.release = buffer_release,
-	}, NULL);
+	wl_buffer_add_listener(buf, &buffer_listener, NULL);
 
 	wl_surface_attach(surf, buf, 0, 0);
 	wl_surface_damage(surf, 0, 0, w, h);

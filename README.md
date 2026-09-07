@@ -32,10 +32,12 @@ adb.
 | `devices/planet-geminipda/initrd.nix` | Minimal partition-scanning busybox initrd (R1; replaces Mobile NixOS stage-1 in the boot image) |
 | `devices/planet-geminipda/kernel/` | Kernel derivation (mobile-nixos kernel-builder) + the working bring-up `.config`; `postInstall` builds the out-of-tree `sramldo-smc.ko` (A72 bring-up SMC) against the same tree |
 | `modules/hardware-soc-mediatek-mt6797.nix` | Out-of-tree MT6797 SoC fragment (upstreaming = phase 6) |
-| `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `desktop.nix` (gemwl compositor unit, phase 4 preview), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
+| `services/` | Device services: `gemini-pda.nix` (GPU/A72/battery units), `audio.nix` (PipeWire system session + S16 pin + speaker-amp), `wifi.nix` (internal CONSYS stack + USB auto-connect + NVRAM), `desktop.nix` (gemwl compositor unit), `lxqt.nix` (**nested LXQt desktop 2026-09-07**: labwc 0.8.3 hosting the nixpkgs lxqt 2.4 session inside gemwl — the verified GeminiPDA stack as NixOS services), `gemini-utils.nix`/`scripts/` (verified bring-up CLIs, ported verbatim) |
 | `pkgs/mesa-geminipda.nix` | Mesa 25.0.7 + geminipda panfrost fork (Mali-T880 dma-buf import; phase 4 preview). Base = published upstream 25.0.7 archive fetched by hash + the tracked fork patch — nothing vendored (see `docs/library-deltas.md`). Also builds `libgbm` (needed by wlroots 0.18's gles2 renderer) |
-| `pkgs/wlroots-geminipda.nix` | wlroots 0.18.2 pinned from source (the version the verified desktop used; nixpkgs in the pin floats 0.20.1) — libinput backend + gles2 renderer only (no DRM on this device), built against the mesa fork |
-| `pkgs/gemwl.nix` + `pkgs/gemwl/` | gemwl, the GPU-direct LK-framebuffer Wayland compositor (wlroots 0.18) + the tinytest xdg-shell smoke clients; sources byte-identical to the verified GeminiPDA `build/wayland/` files |
+| `pkgs/wlroots-geminipda.nix` | wlroots 0.18.2 pinned from source (the version the verified desktop used; nixpkgs in the pin floats 0.20.1) — libinput backend + gles2 renderer only (no DRM on this device) for gemwl, built against the mesa fork; `withDrmBackend=true` variant for labwc 0.8.3 (its wlr_drm_lease compile needs the header; never instantiated on hardware) |
+| `pkgs/labwc-geminipda.nix` | labwc 0.8.3 pinned from source against the pinned wlroots 0.18.2 (the on-glass verified pair; nixpkgs floats labwc 0.20/wlroots 0.20) — the nested compositor hosting the LXQt session |
+| `pkgs/gemwl.nix` + `pkgs/gemwl/` | gemwl, the GPU-direct LK-framebuffer Wayland compositor (wlroots 0.18) + the tinytest xdg-shell smoke clients; sources byte-identical to the verified GeminiPDA `build/wayland/` files (tinytest-anim/tinytest listener-lifetime crash fixed 2026-09-07) |
+| `config/lxqt/` | The LXQt-session user configs (lxqt.conf, session.conf, labwc rc.xml + autostart, the vendored “Gemini” openbox themerc, desktop launchers) seeded to `/root` by `services/scripts/start-lxqt-nested` |
 | `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp), cross-compiled |
 | `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
 | `patches/` | The geminipda Mesa fork patch (byte-for-byte the GeminiPDA submodule commit `ac19be0`) |
@@ -202,6 +204,9 @@ the build-time entries for `libdrm`/glibc) so its `DT_NEEDED` on
 check owed: `eglQueryString(EGL_EXTENSIONS)` must list
 `EGL_EXT_image_dma_buf_import` (the fork's headline feature).
 
+**Desktop — gemwl + nested LXQt (phase 4 preview, in-tree 2026-09-07).**
+The desktop is NOT a display manager: `gemwl.service` (services/desktop.nix) owns the LK framebuffer (/dev/gemfb, GPU-direct via panfrost + the mesa fork); the LXQt desktop runs NESTED inside it — `lxqt-nested.service` (services/lxqt.nix): labwc 0.8.3 (pkgs/labwc-geminipda.nix, wlroots 0.18.2 “wayland” backend) on gemwl's wayland-0 exporting wayland-1, hosting the nixpkgs lxqt 2.4 session (panel via wlr-layer-shell, pcmanfm-qt desktop, qterminal, pavucontrol-qt + qpwgraph audio GUIs). User configs/theme seeded from `config/lxqt/`; icon theme Papirus; session bus in /run/gemwl; PipeWire sockets from audio.nix (/run/gemwl-audio). Both units auto-start (wantedBy multi-user.target); console-only boot = `systemctl disable gemwl lxqt-nested`. Built repo-side 2026-09-07; on-glass verification pending (first LXQt boot = the gpu-warmup banding question, see services/desktop.nix header).
+
 Measured boot image (build 2026-09-05): 15,431,680 B = **14.7 MiB** in
 the 16 MiB partition (kernel payload 13.45 MiB + DTB, initrd 1.26 MiB
 gzip, ~1.3 MiB headroom).
@@ -302,11 +307,14 @@ p29); the rootfs `growfs` (TODO P0), a few services and the
   libglvnd). wlroots 0.18.2 is now packaged too
   (`pkgs/wlroots-geminipda.nix` — pinned 0.18.2 from source, libinput
   backend + gles2 only) and gemwl (the compositor, `pkgs/gemwl.nix` +
-  `services/desktop.nix`) is in the system closure as a phase-4
-  preview. The remaining phase-4 open item is the nested session
-  (kwin 6.3.6 / Plasma 6, or labwc/LXQt — nixpkgs 26.11pre floats
-  newer, unverified versions of those).
+  `services/desktop.nix`) is in the system closure. The nested
+  session is now in-tree too (2026-09-07): labwc 0.8.3 +
+  nixpkgs lxqt 2.4 as `lxqt-nested.service` (services/lxqt.nix) — the
+  verified GeminiPDA LXQt/labwc stack. Remaining: on-glass
+  verification; the Plasma-6-nested alternative stays an open A/B
+  (kwin 6.3.6 / Plasma 6 — nixpkgs 26.11pre floats newer, unverified
+  versions).
 - **R3**: no DRM — the desktop is `gemwl` (custom wlroots compositor)
-  nested KWin/LXQt on the LK framebuffer; packaged as services, not a
-  display manager (preview in-tree: `services/desktop.nix`, auto-start
-  at boot; console-only boot via `systemctl disable gemwl`).
+  with LXQt nested inside it on the LK framebuffer; packaged as
+  services, not a display manager (`services/desktop.nix` + `services/lxqt.nix`,
+  auto-start at boot; console-only boot via `systemctl disable gemwl lxqt-nested`).
