@@ -43,6 +43,17 @@ in
   # docs-R4 A/B switch happens. Keep the NixOS side consistent with it.
   console.font = "TER16x32";
 
+  # Gemini built-in keyboard layout: UK base + the Fn layer as
+  # AltGr/Shift combos (outstanding.md item 3). Vendored verbatim from the sibling
+  # GeminiPDA project (build/rootfs-files/keyboard/gemini-uk.map, kbd
+  # text format, header `keymaps 0-127`; provenance note in
+  # config/keymaps/README). NixOS accepts a store path here — the
+  # console module writes KEYMAP=<path> to /etc/vconsole.conf and
+  # systemd-vconsole-setup loads it with kbd's loadkeys directly (the
+  # device-only busybox .bkmap binary from the Debian rootfs is NOT
+  # needed; loadkeys --validate passes on the text map).
+  console.keyMap = ./keymaps/gemini-uk.map;
+
   # Same parameters, declared on the NixOS side too. Inert while the
   # kernel enforces CONFIG_CMDLINE; this is the bridge for dropping
   # CMDLINE_FORCE (LK appends the boot.img cmdline to /chosen/bootargs).
@@ -63,6 +74,21 @@ in
   ];
 
   # ---- Users / access ---------------------------------------------------
+  # The bring-up interface is ssh over g_ether as root@10.15.19.82, keyed
+  # by ~/.ssh/id_ed25519_gemini (bin/device-ssh.sh). NixOS's default sshd
+  # (PermitRootLogin prohibit-password) allows root pubkey login, but root
+  # must actually carry the key: without it there is NO ssh path into the
+  # system (root is locked, the only non-root user has no keys; serial is
+  # the only login). pubkey == the host's id_ed25519_gemini.pub, the same
+  # key the GeminiPDA Debian rootfs has in /root/.ssh/authorized_keys.
+  users.users.root.openssh.authorizedKeys.keys = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1AU4h4b3z6GFRHVRgXCJ5UMfJU5F8B7A38u7migkuh gemini-pda-root (device-ssh.sh)"
+  ];
+  # This PDA is the device called `gemini` everywhere else (hostname was
+  # NixOS's default `nixos` in the rootfs; the Debian rootfs it replaces
+  # uses `gemini`).
+  networking.hostName = "gemini";
+
   users.users.gemini = {
     isNormalUser = true;
     extraGroups = [ "wheel" "video" "networkmanager" ];
@@ -72,6 +98,18 @@ in
   services.getty.autologinUser = "gemini";
 
   services.openssh.enable = true;
+
+  # No suspend/resume path exists on this unit (only the LK-configured WDT
+  # EXRST path self-boots; a software reset powers the PDA off). The silver
+  # key reports KEY_SLEEP (mt6351-keys) and would make logind attempt a
+  # suspend the device cannot resume from; ESC/On reports KEY_ESC (never
+  # KEY_POWER), but keep all three inert. Mirrors the verified Debian
+  # drop-in /etc/systemd/logind.conf.d/99-gemini-sidekeys.conf.
+  services.logind.settings.Login = {
+    HandleSuspendKey = "ignore";
+    HandleHibernateKey = "ignore";
+    HandlePowerKey = "ignore";
+  };
 
   # No host firewall on the trusted g_ether link. Beyond that, NixOS's
   # default nftables firewall demands a set of NF_TABLES/NETFILTER_XT_*
