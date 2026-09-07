@@ -30,9 +30,28 @@ set -euo pipefail
 PATCHED=/usr/local/lib/mtkclient-patched
 STORE=/nix/store
 # Version-agnostic match: prefer 2.1.4.1 (the version the patches were
-# made against), fall back to any mtkclient in the store.
-PKG=$(ls -d $STORE/*-mtkclient-2.1.4.1 2>/dev/null | head -1)
-[ -z "${PKG:-}" ] && PKG=$(ls -d $STORE/*-mtkclient-* 2>/dev/null | grep -v '\.drv$' | head -1)
+# made against), fall back to any mtkclient in the store. Multiple store
+# copies can coexist (different devshell evals: python3.13 vs 3.14), and
+# the deps scan below looks for python3.13 site-packages (the interpreter
+# this launcher runs) — so pick the first candidate whose deps actually
+# resolve, not just the first by name. [hardened 2026-09-07: two
+# mtkclient-2.1.4.1 paths existed; head -1 picked the python3.14 build
+# and Cryptodome vanished]
+pick_pkg() { # $1 = glob — a candidate is usable if >=1 of its deps
+  # roots contains a python3.13 site-packages dir on disk
+  local g=$1 p d ok
+  for p in $(ls -d $g 2>/dev/null); do
+    case "$p" in *.drv) continue ;; esac
+    ok=""
+    for d in $(cat "$p/nix-support/propagated-build-inputs" 2>/dev/null); do
+      [ -d "$d/lib/python3.13/site-packages" ] && { ok=1; break; }
+    done
+    [ -n "$ok" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+PKG=$(pick_pkg "$STORE/*-mtkclient-2.1.4.1" || true)
+[ -z "${PKG:-}" ] && PKG=$(pick_pkg "$STORE/*-mtkclient-*" || true)
 LIBUSB=$(ls -d $STORE/*-libusb-1.0.2*/lib 2>/dev/null | tail -1)
 
 if [ -z "${PKG:-}" ]; then

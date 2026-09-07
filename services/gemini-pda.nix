@@ -12,6 +12,9 @@
 #   backlight / power    display LED-boost + charge CLI
 #   battstat / bq25896-raw  BQ25896 status / raw ADC readers
 #   gemini-boot-recovery reboot into TWRP (para=boot-recovery)
+#   gemini-boot-debian   reboot into Debian p29 (para=boot-debian; the
+#                        dual-boot initrd selector, 2026-09-07 — see
+#                        docs/repartition-android-space.md §5)
 #   gemini-wdt-reboot    device-side reboot that self-boots (WDT EXRST)
 #
 # Kernel prerequisites (all in devices/planet-geminipda/kernel/config.aarch64
@@ -196,6 +199,9 @@ in
   #   gemini-boot-recovery      writes para=boot-recovery then plain
   #                             reboot → the unit powers OFF; the next
   #                             power-on (para is sticky) lands in TWRP
+  #   gemini-boot-debian        writes para=boot-debian then plain reboot
+  #                             → next power-on boots Debian p29 through
+  #                             the dual-boot initrd (repartition doc §5)
   systemd.services.gemini-wdt-reboot = {
     description = "Gemini PDA WDT EXRST self-boot (device-side safe reboot)";
     after = [ "multi-user.target" ];
@@ -215,6 +221,16 @@ in
       ExecStart = "${utils}/bin/gemini-boot-recovery";
       # coreutils (dd/sync) + systemd (reboot, via its sw/bin symlink).
       Path = lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.systemd ];
+    };
+  };
+  systemd.services.gemini-boot-debian = {
+    description = "Gemini PDA reboot into Debian p29 (para=boot-debian)";
+    after = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${utils}/bin/gemini-boot-debian";
+      # coreutils (dd/sync) + gnugrep (para verify) + systemd (reboot).
+      Path = lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.gnugrep pkgs.systemd ];
     };
   };
 }

@@ -21,18 +21,23 @@
 #       Converge to TWRP → back up current `boot` → flash the image into
 #       `boot`. STAYS in TWRP (para untouched): the unverified image is
 #       never booted unattended. Next step = `boot-nixos` when ready.
-#   bash bin/flash-nixos.sh rootfs [rootfs.img] [--backup-rootfs FILE]
-#       Converge to TWRP → flash the image into p29 (the `linux`
-#       partition, by-name). DESTROYS the current p29 rootfs (the
-#       GeminiPDA Debian rootfs) — prompts unless --yes. Optional
-#       --backup-rootfs dd's the current p29 to FILE first (big/slow:
-#       ~27 GiB — run under bin/run-job.sh, see below).
+#   bash bin/flash-nixos.sh rootfs [rootfs.img] [--yes]
+#       Converge to TWRP → flash the image into Android's `userdata`
+#       partition (p32, by-name). DESTROYS the Android FDE userdata —
+#       prompts unless --yes. The GeminiPDA Debian rootfs on p29
+#       (`linux`) is NOT touched (docs/repartition-android-space.md).
 #   bash bin/flash-nixos.sh all [--yes]
 #       boot + rootfs, skipping the interactive prompts.
 #   bash bin/flash-nixos.sh boot-nixos
 #       Clear para + reboot from TWRP → NORMAL boots the `boot` partition
-#       (the flashed NixOS boot.img). Rollback from TWRP: bin/boot-switch.sh
-#       restore (boot) — p29 rollback = re-flash the pre-NixOS rootfs.
+#       (the flashed dual-boot boot.img; para zeros = NixOS p32 default).
+#       Rollback of `boot` from TWRP: bin/boot-switch.sh restore. Debian
+#       stays bootable any time via para=boot-debian (bin/boot-switch.sh
+#       debian / this script's `debian` / on-device gemini-boot-debian).
+#   bash bin/flash-nixos.sh debian
+#       Switch to the Debian rootfs on p29: para=boot-debian + reboot
+#       (from running Linux: WDT EXRST self-boot; from TWRP: adb reboot).
+#       Reverse (back to NixOS): boot-nixos (or clear para + reboot).
 #
 # Default images: result/boot.img + result/system.img (the `default`
 # flake output's android-fastboot-images layout). Built with:
@@ -47,10 +52,12 @@
 # SAFETY MODEL (why the default leaves TWRP sticky):
 #   A failed boot image on this device can strand the unit (a hung kernel
 #   has no software path back; recovery then = mtkclient preloader mode,
-#   see GeminiPDA docs/flashing.md). So: flash while para=boot-recovery
-#   (every power-on = TWRP), verify your images, and only then
-#   `boot-nixos` (para-clear + reboot). Keep the boot backups in
-#   stock-dump/ — restore is one adb command.
+#   see the DR playbook docs/disaster-recovery/). So: flash while
+#   para=boot-recovery (every power-on = TWRP), verify your images, and
+#   only then `boot-nixos` (para-clear + reboot). Keep the boot backups in
+#   stock-dump/ — restore is one adb command. The p29 Debian rootfs is
+#   never written by this script; it stays bootable via the `boot-debian`
+#   marker even after the NixOS boot.img is installed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,10 +84,11 @@ ROOTFS_IMG_DEFAULT="$ROOT/result/system.img"
 P=/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name
 BACKUP_DIR="$ROOT/stock-dump"
 YES=0
-BACKUP_ROOTFS=""
 
 adb_q()  { timeout 30 adb "$@"; }
 adb_sh() { timeout 300 adb shell "$@"; }
+# long ops: the 1.5 GiB rootfs push + on-device dd need minutes, not 30 s.
+adb_push() { timeout 900 adb "$@"; }
 devssh() { bash "$ROOT/bin/device-ssh.sh" "$@"; }
 
 say() { printf '>> %s\n' "$*"; }
@@ -218,31 +226,34 @@ cmd_rootfs() {
   local img="${1:-$ROOTFS_IMG_DEFAULT}"
   need_img "$img" "rootfs image"
   converge_twrp
-  # sanity: the target partition exists and is big (>= 20 GiB = p29).
-  # TWRP has no blockdev — resolve the by-name symlink and read the
-  # size from /proc/partitions (column 3, KiB units) on the HOST.
+  # sanity: the target partition exists and is big (>= 20 GiB = p32
+  # userdata). TWRP has no blockdev — resolve the by-name symlink and
+  # read the size from /proc/partitions (column 3, KiB units) on the HOST.
   local tgt base kb
-  tgt=$(adb_sh "readlink -f $P/linux" | tr -d '\r' || true)
+  tgt=$(adb_sh "readlink -f $P/userdata" | tr -d '\r' || true)
   base=$(basename "$tgt")
   kb=$(adb_sh 'cat /proc/partitions' | tr -d '\r' | awk -v b="$base" '$4==b{print $3}')
   if [ -z "$tgt" ] || [ -z "$kb" ] || [ "$kb" -lt $((20 * 1024 * 1024)) ]; then
-    die "p29 (by-name/linux) missing or too small (readlink=$tgt, blocks=$kb) — refusing. Partition list: $(adb_sh 'ls '$P | tr '\n' ' ')"
+    die "p32 (by-name/userdata) missing or too small (readlink=$tgt, blocks=$kb) — refusing. Partition list: $(adb_sh 'ls '$P | tr '\n' ' ')"
   fi
-  echo ">> target: $P/linux -> $tgt = $((kb / 1024 / 1024)) GiB (p29)"
+  echo ">> target: $P/userdata -> $tgt = $((kb / 1024 / 1024)) GiB (p32)"
   if [ "$YES" != 1 ]; then
-    echo "!! This DESTROYS the current p29 rootfs (the GeminiPDA Debian rootfs)."
-    read -r -p "Type 'wipe p29' to continue: " ans
-    [ "$ans" = "wipe p29" ] || { echo "aborted."; exit 1; }
+    echo "!! This DESTROYS Android's userdata on p32 (factory FDE data) —"
+    echo "   the NixOS rootfs replaces it. The Debian rootfs on p29 is untouched."
+    read -r -p "Type 'wipe android' to continue: " ans
+    [ "$ans" = "wipe android" ] || { echo "aborted."; exit 1; }
   fi
-  if [ -n "$BACKUP_ROOTFS" ]; then
-    say "backing up current p29 -> $BACKUP_ROOTFS (27 GiB — can take 30+ min over USB; run under bin/run-job.sh)"
-    adb exec-out "dd if=$P/linux bs=1M 2>/dev/null" > "$BACKUP_ROOTFS"
-    say "backup done: $(du -h "$BACKUP_ROOTFS" | cut -f1)"
-  fi
-  say "pushing rootfs image to the device (~1.7 GiB)..."
-  adb_q push "$img" /tmp/rootfs.img >/dev/null
-  say "flashing -> $P/linux (ext4, label NIXOS_SYSTEM; first boot auto-resizes + rehydrates the store)"
-  twrp_dd_part /tmp/rootfs.img linux
+  say "pushing rootfs image to the device (~1.5 GiB — allow several minutes)..."
+  adb_push push "$img" /tmp/rootfs.img >/dev/null
+  # belt: confirm the pushed copy is complete before the destructive dd
+  # (TWRP's busybox stat has no -c — wc -c works everywhere)
+  local got want
+  got=$(adb_sh "wc -c < /tmp/rootfs.img 2>/dev/null" | tr -d '\r' || true)
+  want=$(stat -c %s "$img")
+  [ "$got" = "$want" ] || die "push incomplete (device $got vs host $want bytes) — re-run"
+  say "push verified ($got bytes on device)"
+  say "flashing -> $P/userdata (ext4, label NIXOS_SYSTEM; first boot auto-resizes to fill p32 + rehydrates the store)"
+  twrp_dd_part /tmp/rootfs.img userdata
   say "rootfs flashed. Device is in TWRP (para sticky)."
 }
 
@@ -257,7 +268,8 @@ cmd_boot_nixos() {
     twrp) : ;;
     *) converge_twrp ;;
   esac
-  say "clearing para + rebooting → NORMAL boots the \`boot\` partition (the NixOS boot.img)"
+  say "clearing para + rebooting → NORMAL boots the \`boot\` partition"
+  say "  (dual-boot boot.img; para zeros = NixOS p32 default)"
   adb_sh "dd if=/dev/zero of=$P/para bs=32 count=1 conv=fsync" >/dev/null
   adb_q reboot >/dev/null 2>&1 || true
   say "reboot sent. First NixOS boot: watch the serial console (ttyS0,921600) or fbcon."
@@ -265,22 +277,56 @@ cmd_boot_nixos() {
   say "recovery = mtkclient preloader mode OR re-power-on (para cleared now = normal boot)."
 }
 
+# ---- para helpers ------------------------------------------------------------
+# Write a 32-byte boot command to the para partition (offset 0) from TWRP:
+# "" clears (zeros = NixOS default), otherwise "<marker>\0" + zero padding to
+# 32 bytes — the exact layout the dual-boot initrd compares against
+# (initrd.nix; boot-debian = 11 chars + NUL + 20 zeros).
+twrp_para() { # [marker] — "" clears
+  local marker="${1:-}" cmd=/tmp/para-cmd.bin
+  if [ -n "$marker" ]; then
+    { printf '%s\0' "$marker"; head -c $((31 - ${#marker})) /dev/zero; } > "$cmd"
+  else
+    dd if=/dev/zero of="$cmd" bs=32 count=1 2>/dev/null
+  fi
+  adb_q push "$cmd" "$cmd" >/dev/null
+  adb_sh "dd if=$cmd of=$P/para bs=32 count=1 conv=fsync" >/dev/null
+}
+
+cmd_debian() {
+  case "$(state)" in
+    linux)
+      say "Linux up over g_ether (no adb) — para=boot-debian + WDT EXRST self-boot"
+      # largest-mmcblk rule + read-back verify (same as converge_twrp)
+      devssh 'best=""; bs=0; for D in $(lsblk -dn -o NAME | grep -E "^mmcblk[0-9]+$"); do S=$(blockdev --getsize64 /dev/$D 2>/dev/null || echo 0); if [ "$S" -gt "$bs" ]; then bs=$S; best=$D; fi; done; [ -b /dev/${best}p2 ] || { echo "no para partition (largest mmcblk=$best)"; exit 1; }; { printf "boot-debian\0"; head -c 20 /dev/zero; } > /tmp/bootcmd.bin; dd if=/tmp/bootcmd.bin of=/dev/${best}p2 bs=32 count=1 conv=fsync 2>/dev/null && dd if=/dev/${best}p2 bs=32 count=1 2>/dev/null | grep -qa "boot-debian" && echo "PARA=debian (verified on $best)" || { echo "!! para write/verify FAILED"; exit 1; }' \
+        || die "para write over ssh failed"
+      say "arming WDT for EXRST self-boot (busybox devmem 0x10007004 32 0x48)"
+      devssh "busybox devmem 0x10007004 32 0x48" 2>/dev/null || true
+      say "device resetting — Debian should come up on g_ether ($DEV) in ~40-90 s;"
+      say "then: bash bin/device-ssh.sh 'uname -a' to confirm (or bin/net-up.sh first)"
+      ;;
+    twrp)
+      say "in TWRP — para=boot-debian, rebooting into Debian"
+      twrp_para "boot-debian"
+      adb_q reboot >/dev/null 2>&1 || true
+      say "Debian has no adbd — expect g_ether at $DEV (ssh) in ~30-60 s"
+      ;;
+    *)
+      converge_twrp
+      twrp_para "boot-debian"
+      adb_q reboot >/dev/null 2>&1 || true
+      say "Debian has no adbd — expect g_ether at $DEV (ssh) in ~30-60 s"
+      ;;
+  esac
+}
+
 # ---- main --------------------------------------------------------------------
 args=()
 for a in "$@"; do
   case "$a" in
     --yes) YES=1 ;;
-    --backup-rootfs) : ;; # consumed below with its value
     *) args+=("$a") ;;
   esac
-done
-# pull --backup-rootfs FILE out of the positional args
-for ((i=0; i<${#args[@]}; i++)); do
-  if [ "${args[$i]}" = "--backup-rootfs" ]; then
-    BACKUP_ROOTFS="${args[$((i+1))]:-}"
-    unset 'args[$i]'; unset 'args[$((i+1))]'
-    [ -n "$BACKUP_ROOTFS" ] || die "--backup-rootfs needs a FILE path"
-  fi
 done
 set -- "${args[@]}"
 
@@ -290,6 +336,7 @@ case "${1:-}" in
   rootfs)      cmd_rootfs "${2:-$ROOTFS_IMG_DEFAULT}" ;;
   all)         cmd_all "${2:-$BOOT_IMG_DEFAULT}" "${3:-$ROOTFS_IMG_DEFAULT}" ;;
   boot-nixos)  cmd_boot_nixos ;;
+  debian)      cmd_debian ;;
   -h|--help|help|"") usage ;;
   *) echo "!! unknown command: ${1:-}" >&2; usage; exit 1 ;;
 esac

@@ -1,8 +1,9 @@
 # Repurposing the Android partition space for the NixOS rootfs (dual-boot with Debian)
 
-**Status:** ⬜ investigation + proposal — **no device or repo change
-implemented** (nothing flashed, nothing rewritten). Decision on the open
-questions in §10 is required before the §9 change list is implemented.
+**Status:** ✅ DECIDED + IMPLEMENTED (repo-side) 2026-09-07 — §10 decisions
+made (below), §9 change list landed, images rebuilt. Nothing flashed yet:
+the p32/userdata flash + first on-glass boot is the next session's
+milestone (see `docs/session-log.md`).
 **Last updated:** 2026-09-07.
 > **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
 > knowledge repo (AGENTS.md); the sibling GeminiPDA project is legacy
@@ -172,14 +173,10 @@ symlink creation without udev, generation lookup). The Debian branch adds
 
 ## 7. `boot` size constraints: measured numbers + workaround ladder
 
-Measured artifacts (2026-09-07 store build; earlier/lighter config in
-parentheses):
-
-- `boot.img` = **15,433,728 B = 14.72 MiB** in the 16 MiB p22
-  (earlier: 14,815,232 B = 14.13 MiB) → **headroom 1.28 MiB** (1.87 MiB).
-- kernel payload (`Image.gz`+appended DTB) = 14,108,276 B = **13.45 MiB**
-  gz; `Image.gz` alone 12.84 MiB → **decompresses to 34.3 MiB** (measured).
-- ramdisk = 1,321,716 B = **1.26 MiB** gzip. Page size 2048, v0 header.
+Measured artifacts (2026-09-07 rebuild, sha-verified kernel payload
+`3a2a7f3a…822`): `boot.img` = **14,815,232 B = 14.13 MiB** in the 16 MiB
+p22 → **headroom 1.87 MiB** (older builds measured 15,433,728 B — a
+different gzip encoding of the same #329 payload; [corrected 2026-09-07]).
 
 Hard ceilings (receipts in §2 + `GeminiPDA/docs/boot-chain.md`):
 
@@ -249,21 +246,44 @@ deliberate moment when the Debian test loop changes.**
   (§10 below), session-log entries per the repo rules once anything is
   flashed or changed.
 
-## 10. Open decisions
+## 10. Decisions (2026-09-07 — all taken; the change list §9 is implemented)
 
-a. **Default OS on para-clear.** Recommendation: NixOS (keeps the current
-   "clear para → boot the flashed image" semantics; Debian one marker
-   away).
-b. **Marker location**: bootloader_message command field @ para 0
-   (proven write pattern; resets to default if TWRP UI rewrites misc) vs
-   a dedicated byte at para offset 0x10000 (decoupled from the Android
-   struct — slight robustness preference).
-c. **Kernel**: stay on borrowed #329 for the dual-boot phase (recommended)
-   vs adopt the in-repo kernel now (breaks Debian-on-#329 boot without a
-   p22 reflash, §8).
-d. Whether to back up p32's ciphertext before the first format (it is
-   useless as a restore — FDE — but preserves the option of a forensic
-   dump); recommend no.
+a. **Default OS on para-clear = NixOS** — keeps the existing
+   "clear para → boot the flashed image" semantics of `boot-nixos`/
+   `android`; Debian is one `boot-debian` marker away. [decided 2026-09-07]
+b. **Marker location = the bootloader_message command field @ para 0**
+   (32-byte command, offset 0) — the proven dd write pattern shared with
+   `boot-recovery`, and what the dual-boot initrd's byte-exact `cmp`
+   checks. TWRP-UI reboots rewrite misc (choice resets to NixOS default)
+   — harmless, and no flow here uses TWRP's UI (all reboots are dd para
+   writes + adb/WDT). The dedicated-0x10000 byte is not used. [decided
+   2026-09-07]
+c. **Kernel = stay on the borrowed #329** for the whole dual-boot phase
+   (Debian keeps booting the same boot.img; the in-repo kernel switch is
+   a deliberate, separate moment — §8). [decided 2026-09-07]
+d. **No p32 ciphertext backup** — FDE data is useless as a restore;
+   `flash-nixos.sh --backup-rootfs` is DROPPED (its p29 twin was the
+   whole reason it existed). [decided 2026-09-07]
+
+Implementation record (2026-09-07, §9 change list):
+
+- `devices/planet-geminipda/initrd.nix` — dual-boot selector: reads the
+  para command (p2 of the largest mmcblk, byte-exact cmp against
+  `boot-debian\0`+zeros), Debian branch replicates
+  `GeminiPDA/build/initramfs-6.6/init` (A72 opt-in + fstab fix +
+  switch_root `/sbin/init`), NixOS default branch + other-kind fallback.
+- `devices/planet-geminipda/default.nix` —
+  `system_partition_destination = "userdata"` (p32) + comment.
+- `bin/flash-nixos.sh` — `rootfs` targets `by-name/userdata` (p32);
+  prompt "Type 'wipe android'"; `--backup-rootfs` removed; new `debian`
+  verb (from Linux: ssh para write + WDT EXRST; from TWRP: adb).
+- `bin/boot-switch.sh` — new `debian` verb (para=boot-debian + reboot
+  from TWRP; no adb wait — Debian has no adbd).
+- NixOS side: `services/scripts/gemini-boot-debian` (mirror of
+  gemini-boot-recovery; 32-byte conv=sync write + read-back verify) +
+  hand-started `gemini-boot-debian.service` in `services/gemini-pda.nix`.
+- Docs: this doc, README (flashing + unit table), AGENTS cheat sheet,
+  boot-process.md selector table, session-log entry.
 
 ## 11. Sources / evidence
 

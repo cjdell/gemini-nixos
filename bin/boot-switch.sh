@@ -3,12 +3,14 @@
 # over USB from the host (adb states: TWRP / Android).
 #
 # Adapted from the GeminiPDA project's build/boot-switch.sh (same
-# mechanism, verified on this hardware 2026-08-30). Two deltas:
+# mechanism, verified on this hardware 2026-08-30). Three deltas:
 #   * adb/lsusb come from the repo flake devshell — if they are not on
 #     the bare host PATH the script re-executes itself inside `nix develop`;
 #   * no `linux` (Gemian boot2-copy) command — this project's Linux is the
 #     NixOS boot.img flashed into `boot` itself; booting it = `android`
-#     below (para-clear + reboot → NORMAL → whatever is in `boot`).
+#     below (para-clear + reboot → NORMAL → whatever is in `boot`);
+#   * `debian` verb (2026-09-07): para=boot-debian selects the Debian
+#     branch of the dual-boot initrd (docs/repartition-android-space.md).
 #
 # Mechanism (GeminiPDA docs/boot-chain.md §8c): LK boots RECOVERY whenever
 # the MISC command in the `para` partition (offset 0) is "boot-recovery".
@@ -29,7 +31,7 @@
 #
 # Usage (from the repo root, any host):
 #   bash bin/boot-switch.sh status
-#   bash bin/boot-switch.sh twrp|android
+#   bash bin/boot-switch.sh twrp|android|debian
 #   bash bin/boot-switch.sh flash [image] [twrp|android]
 #   bash bin/boot-switch.sh restore
 #
@@ -37,7 +39,13 @@
 #   twrp    -> TWRP on every power-on (default, sticky; para=boot-recovery)
 #   android -> clear para + reboot → NORMAL boots the `boot` partition
 #              (stock Android, or the flashed NixOS boot.img — whatever is
-#              in `boot` right now)
+#              in `boot` right now). With the dual-boot initrd installed
+#              this is the NixOS boot (p32 default; boot-debian marker
+#              below overrides).
+#   debian  -> para=boot-debian + reboot → NORMAL boots the `boot` image's
+#              Debian branch (p29 rootfs). NOTE: Debian has no adbd, so
+#              this verb does not wait for an adb state — expect g_ether
+#              (10.15.19.82, ssh) instead.
 #   flash   -> back up current `boot`, write [image] into `boot`; stays in
 #              TWRP (target=twrp) or clears para + reboots (target=android)
 #   restore -> put the latest stock-dump/boot-*.img backup back into `boot`
@@ -209,6 +217,21 @@ cmd_android() {
   wait_for android 36
 }
 
+cmd_debian() {
+  ensure_twrp
+  backup_para
+  # 32-byte command: "boot-debian\0" + 20 zero bytes (para offset 0). LK
+  # ignores it (only "boot-recovery" is special to LK); the dual-boot
+  # initrd in \`boot\` selects Debian p29 on it (repartition doc §5).
+  { printf 'boot-debian\0'; head -c 20 /dev/zero; } > /tmp/bootcmd.bin
+  adb_q push /tmp/bootcmd.bin /tmp/bootcmd.bin >/dev/null
+  adb_sh "dd if=/tmp/bootcmd.bin of=$P/para bs=32 count=1 conv=fsync" >/dev/null
+  echo ">> para=boot-debian. Rebooting — the boot image's Debian branch (p29)."
+  echo "   Debian has no adbd: do not wait for adb — expect g_ether"
+  echo "   (10.15.19.82 over ssh) in ~30-60s, or use bin/net-up.sh."
+  adb_q reboot >/dev/null 2>&1 || true
+}
+
 cmd_flash() {
   local img="${1:-$BOOTIMG_DEFAULT}" target="${2:-twrp}" bak
   [ -f "$img" ] || { echo "!! image not found: $img (build it: nix build .#packages.x86_64-linux.default)" >&2; exit 1; }
@@ -250,6 +273,7 @@ case "${1:-}" in
   status)  cmd_status ;;
   twrp)    cmd_twrp ;;
   android) cmd_android ;;
+  debian)  cmd_debian ;;
   flash)   cmd_flash "${2:-$BOOTIMG_DEFAULT}" "${3:-twrp}" ;;
   restore) cmd_restore ;;
   -h|--help|help|"") usage ;;

@@ -76,22 +76,28 @@ this port's boot.img is a **minimal busybox script**
 (`devices/planet-geminipda/initrd.nix`) that:
 
 1. mounts proc/sysfs/devtmpfs and waits for the eMMC block devices;
-2. **probes every `/dev/mmcblk*` partition** (mount ext4 ro, falling back
-   to rw for dirty-journal replay) looking for **content markers**:
+2. reads the **para selector** (32-byte command @ offset 0 of p2, the
+   largest whole mmcblk): `boot-debian\0` → Debian mode, anything else /
+   zeros → NixOS (default) — then **probes every `/dev/mmcblk*`
+   partition** (mount ext4 ro, falling back to rw for dirty-journal
+   replay) looking for the mode's **content marker**:
    - NixOS rootfs (store-only image): `/nix/store` **and**
      (`/nix-path-registration` on first boot, or
      `/nix/var/nix/profiles/system` later);
-   - Debian rootfs (proposed branch): `/etc/os-release` **and**
-     `/sbin/init`;
+   - Debian rootfs: `/etc/os-release` (with `/sbin/init` at handoff);
+   if the mode's marker is missing, the initrd falls back to the OTHER
+   kind's rootfs, and only drops to a shell if neither exists;
 3. mounts the chosen partition rw at `/newroot`; for NixOS also creates
    `/dev/disk/by-label/NIXOS_SYSTEM` by hand (no udev in the initrd; the
    stage-2 fstab mounts `/` by label);
 4. `exec switch_root /newroot <init>` — NixOS: the resolved
-   `<generation>/init`; Debian: `/sbin/init`.
+   `<generation>/init`; Debian: `/sbin/init` after the GeminiPDA handoff
+   (A72 opt-in + fstab `/` fix).
 
 The chosen partition *becomes* `/` because the initrd mounted it and
-switched into it. Scanning by content (rather than a fixed `root=`)
-exists because the eMMC partition numbering is unstable on this unit
+switched into it. Scanning by content (rather than a fixed `root=`) and
+reading the selector by device size (rather than a hardcoded mmcblkN)
+exist because the eMMC partition numbering is unstable on this unit
 (mmcblk0 vs mmcblk1) and because the Mobile NixOS rootfs is store-only —
 no `/etc/os-release` until stage-2 has run.
 
@@ -102,10 +108,10 @@ places**, three of them inside the boot.img in p22:
 
 | # | Location | Current content | Wins? |
 |---|---|---|---|
-| 1 | Compiled into the kernel Image (`CONFIG_CMDLINE`, in `kernel/borrowed/config-…`) | `console=tty0 console=ttyS0,921600n1 earlycon maxcpus=8 nokaslr fbcon=rotate:3 fbcon=font:TER16x32 g_ether.dev_addr=42:00:15:19:82:01 g_ether.host_addr=42:00:15:19:82:00 clk_ignore_unused pd_ignore_unused regulator_ignore_unused consoleblank=0` | **YES — `CONFIG_CMDLINE_FORCE=y`** |
-| 2 | boot.img header field `cmdline[512]` @ offset 0x40 | repo build: NixOS set + `console=tty1 loglevel=4 lsm=…`; on-device #329 image: `bootopt=64S3,32N2,64N2 log_buf_len=4M` | ignored (inert) |
+| 1 | Compiled into the kernel Image (`CONFIG_CMDLINE`, in `kernel/borrowed/config-…`) | `console=tty0 console=ttyS0,921600n1 earlycon maxcpus=8 nokaslr fbcon=rotate:3 fbcon=font:TER16x32 g_ether.dev_addr=42:00:15:19:82:01 g_ether.host_addr=42:00:15:19:82:00 clk_ignore_unused pd_ignore_unused regulator_ignore_unused consoleblank=0` | **kernel: YES — `CONFIG_CMDLINE_FORCE=y`**; LK: sees it as its own env only |
+| 2 | boot.img header field `cmdline[512]` @ offset 0x40 | repo build: `bootopt=64S3,32N2,64N2 log_buf_len=4M console=tty1 console=tty0 … loglevel=4 lsm=…` (bootopt added 2026-09-07 — see below); on-device #329 image: `bootopt=64S3,32N2,64N2 log_buf_len=4M` | **kernel: ignored** (inert, CMDLINE_FORCE) — **but LK consumes `bootopt=` from it BEFORE the kernel** ([corrected 2026-09-07]: not fully inert — see the note under the table) |
 | 3 | DTB `/chosen/bootargs` | placeholder — LK overwrites it in RAM each boot with its assembled string (LK base + boot.img field + `lcm=…` + `earlycon=uartmtk,…` + `androidboot.…`) | ignored (see #1) |
-| 4 | OS build source: `boot.kernelParams` in `config/gemini.nix` → mkbootimg stamps field #2 | the bring-up param set, declared as the bridge for dropping `CMDLINE_FORCE` | — |
+| 4 | OS build source: `boot.kernelParams` in `config/gemini.nix` → mkbootimg stamps field #2 | the bring-up param set + `bootopt`/`log_buf_len` (LK-only), declared as the bridge for dropping `CMDLINE_FORCE` | — |
 
 Because #329 is built with `CONFIG_CMDLINE_FORCE=y`, the kernel reads
 **only** the compiled-in string (#1) and discards the DTB bootargs that
@@ -114,7 +120,18 @@ LK assembled from the boot.img field (#2). Consequences:
 - **Today both Debian and NixOS boot with the identical forced cmdline** —
   NixOS does *not* actually get "a different cmdline" until the kernel
   build changes. The extra entries in the repo's boot.img field
-  (`console=tty1`, `loglevel=4`, `lsm=…`) are silently ignored.
+  (`console=tty1`, `loglevel=4`, `lsm=…`) are silently ignored by the
+  kernel.
+- ⚠️ **[corrected 2026-09-07] the field is NOT fully inert — LK reads
+  `bootopt=` from it.** `platform_parse_bootopt(boot_hdr->cmdline)`
+  (`platform/mt6797/load_image.c:839`) runs at every boot image load; a
+  field WITHOUT `bootopt=64S3,32N2,64N2` hangs the boot on the LK logo
+  (~15 s, LK-WDT loop) before the kernel console appears (observed +
+  bisected 2026-09-07; the repo's own boot.img did this). The repo's
+  field therefore carries `bootopt=64S3,32N2,64N2 log_buf_len=4M`
+  (value copied from the verified on-device image) via
+  `boot.kernelParams`. Any future repack that replaces the field must
+  keep bootopt. Full story: `docs/phase-2-on-glass.md` §2a.
 - **If/when NixOS needs its own cmdline** (feasibility docs R4 / §3.3):
   rebuild the kernel with `CONFIG_CMDLINE_FORCE` dropped
   (`CONFIG_CMDLINE=""`); the kernel then honors `/chosen/bootargs` — i.e.
@@ -151,49 +168,54 @@ LK's check is an exact `strcmp(command, "boot-recovery")`
 (`platform/mt6797/recovery.c:107`), so any other value is inert and the
 boot proceeds normally. LK env lives at para offset 0x20000
 (`platform/mt6797/env.h:36-44`), so writes to bytes 0..31 never touch it.
-The initrd reads the marker from the eMMC's p2 (same "largest mmcblk"
-detection the flash scripts use) and falls back to content probing →
-busybox shell if the marked OS's partition is missing.
+The initrd compares the marker **byte-exact** (`cmp` against
+`boot-debian\0`+20 zeros — the exact 32 bytes `bin/` and
+gemini-boot-debian write; shell vars cannot hold NULs). If the marked
+OS's partition is missing the initrd falls back to the other OS's
+rootfs, and only to a busybox shell if neither exists (e.g. para-clear
+before p32 is flashed boots Debian, not a dead shell).
 
-Switching OS = one para write + reboot from either running OS (a
-`gemini-boot-debian` unit on the NixOS side would mirror the existing
-`gemini-boot-recovery`). Note: TWRP's own UI reboot actions rewrite the
-misc command field, which resets the choice to default — the `bin/` flash
-scripts write para with dd and are deterministic.
+Switching OS = one para write + reboot from either running OS — from
+NixOS the `gemini-boot-debian` CLI/unit (mirrors `gemini-boot-recovery`,
+both hand-started), from Debian the host's `bin/flash-nixos.sh
+debian|boot-nixos` over ssh or `bin/boot-switch.sh debian` from TWRP.
+Note: TWRP's own UI reboot actions rewrite the misc command field, which
+resets the choice to default (NixOS) — the `bin/` flash scripts write
+para with dd and are deterministic.
 
-## 6. The two initramfs builds today — and the one proposed
+## 6. The two initramfs builds today — and the one dual-boot initrd
 
-Today there are two *different* initramfs builds, each riding in its own
-boot.img:
-
-| | GeminiPDA initramfs | gemini-nixos initrd |
+| | GeminiPDA initramfs | gemini-nixos dual-boot initrd |
 |---|---|---|
-| Source | `GeminiPDA/build/initramfs-6.6/init` | `devices/planet-geminipda/initrd.nix` |
-| In | the on-device boot.img (p22, boots Debian) | the repo's NixOS boot.img (built, never flashed) |
-| Finds | `/etc/os-release` → Debian p29 | `/nix/store` + registration/profile → NixOS |
-| Handoff | fix fstab, A72 opt-in, `switch_root /sbin/init` | by-label symlink, resolve generation, `switch_root <gen>/init` |
+| Source | `GeminiPDA/build/initramfs-6.6/init` | `devices/planet-geminipda/initrd.nix` (2026-09-07) |
+| In | the on-device boot.img (p22 TODAY — boots Debian) | the repo's NixOS boot.img (built 2026-09-07, never flashed) |
+| Reads | — | para marker: zeros → NixOS p32, `boot-debian` → Debian p29 |
+| Finds (NixOS) | — | `/nix/store` + registration/profile |
+| Finds (Debian) | `/etc/os-release` → Debian p29 | `/etc/os-release` → Debian p29 (same probe) |
+| Handoff | fix fstab, A72 opt-in, `switch_root /sbin/init` | NixOS: by-label symlink + generation → `switch_root <gen>/init`; Debian: the same handoff verbatim |
 
 Notes:
 
 - **Debian's own initramfs (`/boot/initrd.img` on p29) is never used in
   this chain** — LK boots only the boot.img in p22 and never reads the
-  rootfs. The thing that boots Debian is the GeminiPDA initramfs *in p22*.
+  rootfs. The thing that boots Debian is the initramfs *in p22*.
 - **NixOS's Mobile NixOS stage-1 initrd is not in the boot image** — it
   cannot fit the 16 MiB budget (feasibility R1); the minimal initrd
   replaces it.
-- Switching OS today = swapping the whole boot.img (each carries its own
-  initramfs) — the "reflash `boot`" cost.
-- **Proposal** (repartition doc §5/§6): one *dual-boot initramfs* — the
-  NixOS branch (already written) plus a Debian branch that replicates the
-  GeminiPDA init verbatim (fstab `/` rewrite to the real device, A72
-  opt-in enforcement, `switch_root /sbin/init`). One boot.img, one
-  initramfs build, both OSes boot through it; no reflash.
+- **Until the dual-boot boot.img is flashed to p22**, switching OS means
+  swapping the whole boot.img (each carries its own initramfs). After
+  the flash (next milestone): one boot.img, one initramfs build, both
+  OSes boot through it, and switching = one para write — no reflash.
 
 ## 7. Size constraints that shape all of this
 
-Measured (2026-09-07 build): boot.img 14.72 MiB in a 16 MiB partition
-(1.28 MiB headroom); kernel payload 13.45 MiB gz (decompresses to
-34.3 MiB); ramdisk 1.26 MiB gz. Hard ceilings: LK decompresses the
+Measured (2026-09-07 rebuild): boot.img 14,815,232 B = 14.13 MiB in a
+16 MiB partition (1.87 MiB headroom); kernel payload (Image.gz + appended
+DTB) 13,489,966 B = 12.87 MiB gz (sha `3a2a7f3a…822`, decompresses to
+34.3 MiB class); ramdisk 1,321,716 B = 1.26 MiB gz. [corrected 2026-09-07:
+older builds measured 15,433,728 B / 14,108,276 B kernel — a different
+gzip encoding of the same #329 payload; the sha-verified identity is
+`3a2a7f3a…822` (§2), matching the current build] Hard ceilings: LK decompresses the
 kernel with **zlib/gzip only** (no lzma/lz4/xz kernel payload); the
 decompressed kernel must fit LK's MT6797 scratch (~50 MiB) and stay clear
 of the ramdisk copy target (0x45000000); the ramdisk is decompressed by

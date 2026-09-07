@@ -1,0 +1,39 @@
+#!/bin/sh
+# gemini-boot-debian — reboot into the Debian rootfs (p29) from the
+# running NixOS, via the para boot selector.
+#
+# The dual-boot initramfs in `boot` (p22) picks the OS from the 32-byte
+# MISC command at offset 0 of the `para` partition
+# (docs/repartition-android-space.md §5): "boot-debian" → Debian p29,
+# anything else / zeros → NixOS (p32 userdata, the default). LK itself
+# ignores the marker — only the exact "boot-recovery" command sends LK to
+# TWRP (that is gemini-boot-recovery's job).
+#
+# Like gemini-boot-recovery this uses a plain reboot: on this unit a
+# software reset powers the PDA OFF, and the STICKY para command decides
+# what the next power-on boots. To come back to NixOS: clear para from
+# TWRP/host (bin/boot-switch.sh android, bin/flash-nixos.sh boot-nixos)
+# or use the host's `debian`/`boot-nixos` verbs over ssh — this CLI is
+# for the device-only, no-host case.
+#
+# Usage: gemini-boot-debian
+set -e
+
+# para = p2 on the stock GPT. NixOS stage-2 has udev, so the by-name
+# paths exist; fall back to the raw node (mmcblk numbering shifts).
+for p in \
+    /dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/para \
+    /dev/block/by-name/para \
+    /dev/mmcblk0p2; do
+    [ -b "$p" ] && PARA="$p" && break
+done
+[ -n "${PARA:-}" ] || { echo "gemini-boot-debian: para partition not found" >&2; exit 1; }
+
+# Write the full 32-byte command ("boot-debian\0" + 20 zeros, conv=sync
+# pads the short printf output) — the initrd compares byte-exact.
+printf 'boot-debian\0' | dd of="$PARA" bs=32 count=1 conv=sync,fsync 2>/dev/null
+dd if="$PARA" bs=32 count=1 2>/dev/null | grep -qa 'boot-debian' \
+    || { echo "gemini-boot-debian: para write verify FAILED ($PARA)" >&2; exit 1; }
+echo "gemini-boot-debian: para=boot-debian ($PARA) — rebooting; next power-on boots Debian (p29)"
+sync
+reboot

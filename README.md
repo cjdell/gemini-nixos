@@ -6,8 +6,12 @@ study and phase plan live in
 [docs/mobile-nixos-port-feasibility.md](docs/mobile-nixos-port-feasibility.md).
 
 The device boots a stock MediaTek LK from a 16 MiB `boot` partition
-(Android `boot.img` v0, gzip `Image.gz` + appended DTB, 2048-byte pages),
-with the rootfs on the 27.7 GiB `linux` partition (p29). There is no
+(Android `boot.img` v0, gzip `Image.gz` + appended DTB, 2048-byte pages).
+One **dual-boot boot.img** (shared #329 kernel + para-selected initrd)
+boots both OSes: the NixOS rootfs on Android's former p32 `userdata`
+(27.3 GiB, ext4 label `NIXOS_SYSTEM`) by default, and the GeminiPDA
+Debian rootfs on p29 `linux` (kept for testing) via a `boot-debian`
+para marker — see `docs/repartition-android-space.md`. There is no
 fastboot; flashing goes through the patched no-swipe TWRP or `dd` over
 adb.
 
@@ -42,12 +46,13 @@ adb.
 | `bin/snapshot-kernel.sh` | Regenerates the kernel snapshot (and registers it for nix visibility) |
 | `bin/dump-bootimg-header.sh` | Parse an AOSP v0 boot.img header (phase-0 geometry checks) |
 | `bin/device-ssh.sh`, `bin/net-up.sh`, `bin/device-reboot.sh` | Host side of the g_ether link (root @ 10.15.19.82), auto link-up after power-on, WDT-EXRST remote reboot |
-| `bin/boot-switch.sh` | Boot-target switching + boot-partition flash over adb/TWRP (status/twrp/android/flash/restore) |
-| `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and rootfs → p29 (`linux`); safe TWRP-sticky default |
+| `bin/boot-switch.sh` | Boot-target switching + boot-partition flash over adb/TWRP (status/twrp/android/debian/flash/restore; `debian` = para=boot-debian → p29, 2026-09-07) |
+| `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and system.img → p32 (`userdata`, Android erased — Debian p29 untouched); verbs status/boot/rootfs/all/boot-nixos/debian; safe TWRP-sticky default |
 | `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
-| `docs/repartition-android-space.md` | Proposal: NixOS rootfs on Android's p32 `userdata` (Debian stays on p29) + dual-boot boot.img via a para marker; boot-budget analysis. Decision open (2026-09-07) — no code changes yet |
+| `docs/repartition-android-space.md` | NixOS rootfs on Android's p32 `userdata` (Debian stays on p29) + dual-boot boot.img via a para marker; boot-budget analysis. **Decided + implemented repo-side 2026-09-07** (§10 decisions; flash is the next milestone) |
 | `docs/boot-process.md` | Plain-language explainer: how the Gemini boots for this port — one boot slot, shared kernel, initrd-as-rootfs-selector, cmdline storage/`CMDLINE_FORCE`, para marker, initramfs builds |
+| `docs/phase-2-on-glass.md` | **Phase-2 milestone (2026-09-07): NixOS boots on glass** — version lines, the bootopt discovery (§2a), recovery/fix receipts, device state, and the open TODO list of not-quite-working items |
 | DR (device disaster recovery) | `docs/disaster-recovery/` — full-flash-erase restore to TWRP (levels 0–2); image ledger + sha256 in `inventory.md` (blobs in `stock-dump/`, gitignored), gather checklist + drills. NixOS flashing after a restore = `bin/flash-nixos.sh` |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 
@@ -156,6 +161,7 @@ rules, the 10 % backlight-default unit, and hand-started
 | `backlight`, `power` | DISP_PWM0 backlight control (no sysfs backlight on this kernel; drives the LED-boost PWM via devmem) + charge CLI (`power dim-to-charge` solves full-brightness-cannot-charge) |
 | `battstat`, `bq25896-raw.sh` | BQ25896 status reader; raw ADC reads (bypasses the driver's stale latches) |
 | `gemini-boot-recovery` / `gemini-wdt-reboot [s]` | CLIs (in `gemini-pda-utils`) + hand-started systemd units (outstanding.md item 9): boot into TWRP via sticky para, and device-side WDT EXRST self-boot (plain `systemctl reboot` powers this unit off) |
+| `gemini-boot-debian` | CLI + hand-started unit (2026-09-07, dual-boot): writes para=`boot-debian` and reboots → next power-on boots Debian p29 through the shared initrd (docs/repartition-android-space.md §5); reverse = para-clear (`boot-nixos`) |
 | `pipewire` / `wireplumber` / `pipewire-pulse` | PipeWire media stack as ONE root system session (`/run/gemwl-audio`); the WirePlumber rule opens the MT6351 card through `pcm.gemini16` (`/etc/asound.conf`), which pins the S16-only analog path to S16_LE at the alsa-lib boundary (S32 plays as white noise, S24 is refused — verified) |
 | `gemini-audio-defaults` | Applies the DL1→ADDA→HPL/HPR playback route + the persisted speaker/headphone output mode at boot (after `alsa-restore`) |
 | `speaker` / `audio-output` | Built-in-speaker vs headphone output (speaker-amp pads 243/244 via the gpio chardev; no jack detection yet, so manual) |
@@ -241,34 +247,39 @@ adb/TWRP boot-target state machine underneath; device state over ssh
 = `bin/device-ssh.sh` / `bin/net-up.sh` (g_ether, 10.15.19.82).
 
 1. Build: `nix build .#packages.x86_64-linux.default` → `result/`
-   with `boot.img` + `system.img` (the rootfs; same file as the
-   `rootfs` output's `rootfs.img`).
+   with `boot.img` (dual-boot initrd + #329 kernel) + `system.img`
+   (the NixOS rootfs; same file as the `rootfs` output's `rootfs.img`).
 2. `bash bin/flash-nixos.sh status` — device state + local artifacts.
 3. `bash bin/flash-nixos.sh boot` — backs up the current `boot`, flashes
-   `boot.img` → p22 `boot` (16 MiB). Stays in TWRP by default.
-4. `bash bin/flash-nixos.sh rootfs --yes` — flashes `system.img` → p29
-   `linux` (27.7 GiB ext4, label `NIXOS_SYSTEM`; replaces p29 entirely —
-   wipes the current GeminiPDA Debian rootfs only; Android's
-   `system`/`userdata` untouched). Optional `--backup-rootfs FILE`
-   (slow — run under `bin/run-job.sh`).
+   the dual-boot `boot.img` → p22 `boot` (16 MiB). Stays in TWRP.
+4. `bash bin/flash-nixos.sh rootfs --yes` — flashes `system.img` → p32
+   `userdata` (27.3 GiB ext4, label `NIXOS_SYSTEM`; destroys Android's
+   FDE userdata — **Debian on p29 is untouched**). First boot
+   auto-resizes the fs to fill p32 and rehydrates the Nix store.
 5. `bash bin/flash-nixos.sh boot-nixos` — clear para + reboot: LK →
-   minimal initrd (partition scan) → NixOS stage-2. First boot
-   rehydrates the Nix store (`nix-store --load-db`) and auto-resizes
-   the filesystem to fill p29.
+   dual-boot initrd (para zeros = NixOS default) → p32 → NixOS stage-2.
+
+**Switching OS afterwards = one para write + reboot** (no reflash):
+Debian p29 = `boot-debian` marker (`bin/flash-nixos.sh debian` from a
+running OS over ssh, `bin/boot-switch.sh debian` from TWRP, or the
+on-device `gemini-boot-debian` unit); NixOS = clear para
+(`boot-nixos`). If the marked OS's rootfs is missing, the initrd boots
+the other OS instead of failing.
 
 **Safety model:** an unverified boot image that hangs has no software
 path back (recovery = mtkclient preloader mode), so the scripts default
 to para = boot-recovery (TWRP sticky) until you explicitly boot the new
 image, and every `boot` flash is backed up to `stock-dump/` first
-(`bin/boot-switch.sh restore` rolls back). Rollback of p29 = re-flash
-the pre-NixOS rootfs.
+(`bin/boot-switch.sh restore` rolls back). Rollback of p32 = reflash
+`system.img`; Debian p29 is never written by these scripts.
 
-Do **not** flash anything from this repo yet — the artifacts build and
-match the bring-up boot contract (phases 0/1/3 done at the build level),
-but on-glass verification (phase 1/2) has not happened. The device
-itself currently runs the GeminiPDA Debian rootfs on the same borrowed
-kernel #329; the NixOS rootfs + boot.img are build-ready, not yet
-booted on glass.
+Do **not** flash anything else from this repo yet — the artifacts build
+and match the bring-up boot contract, but **NixOS now RUNS on glass**
+(2026-09-07 phase-2 milestone: ssh to a NixOS shell over g_ether from
+p32; see `docs/phase-2-on-glass.md` for the bootopt discovery + the
+open TODO). The device runs the NixOS rootfs on p32 (Debian stays on
+p29); the rootfs `growfs` (TODO P0), a few services and the
+`nixos-rebuild` round-trip are the remaining on-glass work.
 
 ## Known constraints (docs §7)
 

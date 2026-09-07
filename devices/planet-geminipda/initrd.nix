@@ -16,11 +16,30 @@
 # cpio.gz is exactly the contract, and gzip matches the verified
 # reference format.
 #
-# The initrd does one thing: find the NixOS rootfs among the eMMC
-# partitions (by probing for /etc/os-release + /nix/store — the
-# mmcblk numbering is not stable on this unit, per the bring-up
-# notes) and switch_root into it. Everything else (udev, networking,
-# GPU, ...) happens in stage-2 (the NixOS systemd system).
+# DUAL-BOOT (2026-09-07, docs/repartition-android-space.md §5): the
+# initrd is the NixOS/Debian selector. LK boots it only in NORMAL mode —
+# when the para command @ offset 0 is exactly "boot-recovery" LK goes to
+# p1 TWRP instead and never loads this ramdisk. So the remaining command
+# values select the OS:
+#
+#   "boot-debian\0"+zeros  -> Debian branch: ext4 rootfs with
+#                             /etc/os-release (p29), replicating the
+#                             proven GeminiPDA handoff (A72 opt-in +
+#                             fstab fix) -> switch_root /sbin/init.
+#   "" (zeros) / unknown   -> NixOS branch (the DEFAULT): the Mobile
+#                             NixOS store-only image (p32 userdata,
+#                             ext4 label NIXOS_SYSTEM); by-label symlink
+#                             + generation lookup -> switch_root <gen>/init.
+#   mode target missing    -> fallback: boot the first rootfs of the
+#                             OTHER kind, so out-of-order states (e.g.
+#                             para cleared before p32 is flashed) boot
+#                             Debian instead of a dead shell.
+#
+# The initrd scans partitions by content, never by name: the mmcblk
+# numbering is not stable on this unit (mmcblk0 vs mmcblk1), and the
+# para partition is found as p2 of the LARGEST whole mmcblk (the same
+# rule the host-side bin/ scripts use). Everything else (udev,
+# networking, GPU, ...) happens in stage-2 (the NixOS systemd system).
 #
 # BUILD NOTE: this deliberately does NOT use nixpkgs makeInitrd, which
 # archives the *nix-store closure* of its inputs (a static busybox
@@ -57,77 +76,181 @@ let
     "true"
     "cp"
     "rm"
-    "find"
     "ln"
+    "chmod"
+    "find"
     "blkid"
     "readlink"
+    "dd"
+    "cmp"
+    "basename"
   ];
 
   init = pkgs.writeText "gemini-initrd-init" ''
     #!/bin/busybox sh
-    # Gemini PDA NixOS rootfs initramfs.
+    # Gemini PDA dual-boot initramfs (para-selected rootfs).
     #
-    # Finds the NixOS rootfs partition regardless of MMC host numbering
-    # (on the reference unit the eMMC lands on mmcblk1, not mmcblk0),
-    # mounts it, and switch_roots into NixOS.
-    #
-    # Adapted from the verified bring-up init
-    # (GeminiPDA/build/initramfs-6.6/init), extended for Mobile NixOS
-    # rootfs images, which contain ONLY the Nix store (no /init, /etc
-    # or /bin symlinks): the stage-2 init lives at
-    # <generation>/init where <generation> is the nixos-system store
-    # path, found via /nix/var/nix/profiles/system (after first boot)
-    # or the /nix-path-registration file (first boot) — the same
-    # lookup Mobile NixOS's own stage-1 performs
-    # (repos/mobile-nixos/boot/init/tasks/switch_root.rb).
+    # Booted by the stock MediaTek LK in NORMAL mode (para command @
+    # offset 0 != "boot-recovery"; that exact command sends LK to p1
+    # TWRP and never reaches this ramdisk — see initrd.nix header and
+    # docs/repartition-android-space.md §5).
 
     echo "==> gemini-nixos initramfs: starting (kernel $(uname -r))"
 
     mount -t proc proc /proc 2>/dev/null
     mount -t sysfs sysfs /sys 2>/dev/null
     mount -t devtmpfs devtmpfs /dev 2>/dev/null
-    mkdir -p /dev/pts /newroot
+    mkdir -p /dev/pts /newroot /tmp
     mount -t devpts devpts /dev/pts 2>/dev/null
 
     echo "==> waiting for eMMC block devices"
-    ROOT=""
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-      for blk in /dev/mmcblk*; do
+    i=0
+    while [ "$i" -lt 30 ]; do
+        i=$((i + 1))
+        ready=""
+        for blk in /dev/mmcblk[0-9]*; do
+            [ -b "$blk" ] || continue
+            case "$blk" in
+            *boot0|*boot1|*rpmb) continue ;;
+            esac
+            # a whole eMMC whose GPT is scanned shows up as ...p2 (para)
+            if [ -b "$blk"p2 ]; then ready=1; break; fi
+        done
+        [ -n "$ready" ] && break
+        sleep 1
+    done
+
+    # ---- boot selector: the 32-byte para command @ offset 0 ------------
+    # para = p2 of the LARGEST whole mmcblk (mmcblk numbering shifts
+    # between kernel builds; boot0/boot1/rpmb have no p2). Byte-exact
+    # compare against the reference marker — shell vars cannot hold NULs,
+    # so cmp on files (dd captures the raw 32 bytes first).
+    PARA=""
+    bs=0
+    for blk in /dev/mmcblk[0-9]*; do
         [ -b "$blk" ] || continue
         case "$blk" in
         *boot0|*boot1|*rpmb) continue ;;
         esac
-        # A DIRTY ext4 (unclean journal after a crash / mid-write eMMC
-        # abort) cannot be mounted -o ro (EUCLEAN — replay needs rw).
-        # Fall back to an rw probe, which replays the journal and mounts.
-        if mount -t ext4 -o ro "$blk" /newroot 2>/dev/null || \
-           mount -t ext4 -o rw "$blk" /newroot 2>/dev/null; then
-          # Mobile NixOS rootfs: store-only image with a registration
-          # file (first boot) or a system profile (later boots).
-          # Classic full NixOS rootfs: /init + /etc/os-release.
-          if { [ -d /newroot/nix/store ] && \
-               { [ -f /newroot/nix-path-registration ] || [ -e /newroot/nix/var/nix/profiles/system ]; }; } || \
-             { [ -x /newroot/init ] && [ -f /newroot/etc/os-release ]; }; then
-            ROOT="$blk"
-            umount /newroot
-            echo "==> rootfs found on $ROOT"
-            break 2
-          fi
-          umount /newroot 2>/dev/null
-        fi
-      done
-      sleep 1
+        [ -b "$blk"p2 ] || continue
+        s=0
+        # (basename keeps the block name for the sysfs size read; shell
+        # param expansion is avoided here — nix string interpolation)
+        read -r s < "/sys/class/block/$(basename "$blk")/size" 2>/dev/null || s=0
+        if [ "$s" -gt "$bs" ]; then bs=$s; PARA="$blk"p2; fi
     done
 
+    # zeros (or anything unreadable/unknown) -> NixOS default
+    MODE=nixos
+    if [ -n "$PARA" ]; then
+        dd if="$PARA" of=/tmp/para bs=32 count=1 2>/dev/null || true
+        # reference: "boot-debian\0" + 20 NULs — exactly what bin/ and
+        # gemini-boot-debian write (32 bytes).
+        printf 'boot-debian\0' | dd of=/tmp/ref-debian bs=32 count=1 conv=sync 2>/dev/null || true
+        if [ -f /tmp/para ] && cmp -s /tmp/para /tmp/ref-debian 2>/dev/null; then
+            MODE=debian
+        fi
+    fi
+    echo "==> boot selector: $MODE (para=$PARA)"
+
+    # ---- rootfs scan ------------------------------------------------------
+    # NixOS store-only image: /nix/store + a registration file (first
+    # boot, removed after store re-hydration) or a system profile (later
+    # boots). Debian rootfs: /etc/os-release at the filesystem root.
+    # A DIRTY ext4 (unclean journal after a crash / mid-write eMMC abort)
+    # cannot mount -o ro (EUCLEAN — replay needs rw): fall back to an rw
+    # probe, which replays the journal and mounts.
+    ROOT=""      # the mode target
+    KIND=""      # nixos | debian
+    FALLBACK=""  # first valid rootfs of the OTHER kind (out-of-order safety)
+    echo "==> scanning for rootfs (mode: $MODE)"
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        for blk in /dev/mmcblk*; do
+            [ -b "$blk" ] || continue
+            case "$blk" in
+            *boot0|*boot1|*rpmb) continue ;;
+            esac
+            if mount -t ext4 -o ro "$blk" /newroot 2>/dev/null || \
+               mount -t ext4 -o rw "$blk" /newroot 2>/dev/null; then
+                is_nixos=""
+                if [ -d /newroot/nix/store ] && \
+                   { [ -f /newroot/nix-path-registration ] || [ -e /newroot/nix/var/nix/profiles/system ]; }; then
+                    is_nixos=1
+                fi
+                is_debian=""
+                [ -f /newroot/etc/os-release ] && is_debian=1
+
+                if { [ "$MODE" = nixos ] && [ -n "$is_nixos" ]; } || \
+                   { [ "$MODE" = debian ] && [ -n "$is_debian" ]; }; then
+                    ROOT="$blk"; KIND="$MODE"
+                    umount /newroot
+                    echo "==> rootfs found: $ROOT ($KIND)"
+                    break 2
+                fi
+                # remember the first other-kind rootfs for the fallback
+                if [ -z "$FALLBACK" ]; then
+                    if { [ "$MODE" = nixos ] && [ -n "$is_debian" ]; } || \
+                       { [ "$MODE" = debian ] && [ -n "$is_nixos" ]; }; then
+                        FALLBACK="$blk"
+                    fi
+                fi
+                umount /newroot 2>/dev/null
+            fi
+        done
+        sleep 1
+    done
+
+    if [ -z "$ROOT" ] && [ -n "$FALLBACK" ]; then
+        ROOT="$FALLBACK"
+        # the mode target was missing — the other kind is what we found
+        if [ "$MODE" = nixos ]; then KIND=debian; else KIND=nixos; fi
+        echo "!! $MODE rootfs not found — falling back to the $KIND rootfs on $ROOT"
+    fi
     if [ -z "$ROOT" ]; then
-      echo "!! no NixOS rootfs found — dropping to a shell"
-      exec /bin/sh
+        echo "!! no usable rootfs found — dropping to a shell"
+        exec /bin/sh
     fi
 
     echo "==> mounting $ROOT rw"
     mount -t ext4 -o rw "$ROOT" /newroot 2>/dev/null || \
-      mount -t ext4 -o rw "$ROOT" /newroot 2>&1 || { echo "!! mount failed — shell"; exec /bin/sh; }
+        mount -t ext4 -o rw "$ROOT" /newroot 2>&1 || { echo "!! mount failed — shell"; exec /bin/sh; }
 
+    if [ "$KIND" = debian ]; then
+        # ---- Debian handoff ---------------------------------------------
+        # Replicates the proven GeminiPDA initramfs
+        # (GeminiPDA/build/initramfs-6.6/init) exactly, so Debian boots
+        # unchanged through this ramdisk.
+        [ -x /newroot/sbin/init ] || { echo "!! no /sbin/init on $ROOT — shell"; exec /bin/sh; }
+
+        # A72 opt-in: the automatic a72-up.service fires early in boot and
+        # the A72-cluster power-on WEDGES the box while boot is still busy
+        # (RCU stall / eMMC+i2c timeouts). A72 bring-up is opt-in from a
+        # settled system (manual cl2-up.sh ~5+ min after boot). Enforce
+        # before systemd (belt: remove the enable symlink; braces: neuter
+        # an empty cl2-up.sh).
+        if [ -f /newroot/etc/systemd/system/a72-up.service ]; then
+            rm -f /newroot/etc/systemd/system/multi-user.target.wants/a72-up.service
+            echo "==> a72-up.service disabled (opt-in A72 bring-up)"
+        fi
+        if [ -f /newroot/root/cl2-up.sh ]; then
+            [ -f /newroot/etc/systemd/system/a72-up.service ] || \
+                { grep -q "a72-up.service disabled" /newroot/root/cl2-up.sh 2>/dev/null || \
+                  { echo '#!/bin/sh' > /newroot/root/cl2-up.sh; chmod +x /newroot/root/cl2-up.sh; \
+                    echo "==> cl2-up.sh neutered"; }; }
+        fi
+
+        # the Debian rootfs fstab hardcodes /dev/mmcblk0p29; the eMMC may
+        # be mmcblk1 on this unit — fix the / entry to the mounted device
+        if [ -f /newroot/etc/fstab ]; then
+            sed -i "s|^[^ ]*[[:space:]]/[[:space:]]|$ROOT / |" /newroot/etc/fstab 2>/dev/null || true
+            echo "==> fstab root -> $ROOT"
+        fi
+
+        echo "==> switching root to Debian /sbin/init"
+        exec switch_root /newroot /sbin/init
+    fi
+
+    # ---- NixOS branch (store-only image) --------------------------------
     # NixOS's fstab references / by label (/dev/disk/by-label/NIXOS_SYSTEM).
     # A normal NixOS initrd provides that symlink via udev; this one has
     # no udev, so create it on devtmpfs before handing over — systemd
@@ -141,16 +264,10 @@ let
         echo "!! could not read ext4 label of $ROOT — systemd may not find /"
     fi
 
-    # Classic full NixOS rootfs: hand over directly.
-    if [ -x /newroot/init ]; then
-        echo "==> switching root to /init"
-        exec switch_root /newroot /init
-    fi
-
-    # Mobile NixOS rootfs: locate the nixos-system generation.
+    # Locate the nixos-system generation.
     GEN=""
-    # First boot: the closure registration file (removed after the
-    # store is re-hydrated on first boot).
+    # First boot: the closure registration file (removed after the store
+    # is re-hydrated on first boot).
     p=$(grep "^/nix/store/[a-z0-9]*-nixos-system-" /newroot/nix-path-registration 2>/dev/null | sed -n 1p)
     # Later boots: the system profile (system -> system-N-link -> store path).
     if [ -z "$p" ]; then

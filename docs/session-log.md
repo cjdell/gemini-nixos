@@ -5,6 +5,212 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 — PHASE-2 MILESTONE: FIRST NIXOS BOOT ON GLASS (ssh to a NixOS shell over g_ether); the bootopt discovery; full saga + TODO in docs/phase-2-on-glass.md
+
+The moment of truth happened and mostly worked. **NixOS boots and runs on
+the hardware** (p32 userdata; hostname gemini; kernel #329; sshd at
+10.15.19.82; g_ether; store re-hydrated; gemini-gpu-poweron + battery-
+guard active). Debian (p29) intact throughout. The boot image needed
+ONE fix before it would boot at all — see the bootopt discovery below.
+Full knowledge capture + the open TODO list: `docs/phase-2-on-glass.md`.
+
+Versions flashed this session (rule 0 lines):
+- p22 boot.img sha `3965955f91162467d17e8659c103ac67ee4c79a4950bed38ea3cd456ffc364fb`
+  (dual-boot initrd, #329 payload `3a2a7f3a…822`, bootopt cmdline).
+- p32 system.img sha `091707d7…` (gen `yl6hkkih…` embedded; flash md5-
+  verified + first-MiB readback verified). [corrected: the earlier prep
+  entry's `dcfv0nsj` gen came from a separate path-info eval — the
+  image's own registration says `yl6hkkih`]
+- Debian p29 untouched; para cleared at milestone end (NixOS default).
+
+What happened / what was learned (receipts point at phase-2-on-glass.md):
+
+1. **WDT-EXRST silent no-op from a mid-session A72 bring-up** (the
+   cl2-up wdt_disarm trap): the first converge-to-TWRP reboot never
+   fired (device uptime 13.9 h unchanged; WDT_MODE 0x10007000 = 0). Fix
+   discovered + used: `devmem 0x10007000 32 0x2200005D` (key|0x5D)
+   restores LK's mode → `0x48` fires → EXRST. (§2b in the doc.)
+2. **THE bootopt discovery**: our boot.img (kernel field sha-identical
+   to the working Debian image, geometry identical, ramdisk recipe-
+   equivalent) hung on the LK logo ~15 s → WDT boot loop, no kernel
+   text, empty pstore (death precedes ramoops/fb). Bisected to the
+   HEADER: re-packing our kernel+ramdisk with the old image's header
+   (pack-boot-img-custom-ramdisk.py --reference) booted Debian through
+   OUR initrd's debian branch. Root cause: LK's
+   `platform_parse_bootopt(boot_hdr->cmdline)` (load_image.c:839)
+   needs `bootopt=64S3,32N2,64N2 log_buf_len=4M` in the field — the
+   field is inert for the KERNEL (CMDLINE_FORCE) but LK reads it first
+   ([corrected] boot-process.md §4). Fixed in config/gemini.nix
+   kernelParams. (§2a.)
+3. **Loop recovery proven ~5×**: para restore via the preloader window
+   (`run-mtk.sh w para stock-dump/para-boot-recovery.bin` — the loop
+   provides the power-cycles) → TWRP in ~25 s. Also confirmed the
+   drills-doc FAC_RESET note is not needed when the preloader path is
+   available.
+4. **run-mtk.sh hardened**: a second python3.14 mtkclient store path
+   broke the python3.13 deps scan (Cryptodome vanishing) — pick_pkg()
+   now selects a candidate whose deps resolve. (§2d.)
+5. **flash-nixos.sh fixed**: 30 s adb timeout killed the 1.5 GiB rootfs
+   push → adb_push (900 s) + wc -c verify; TWRP busybox stat has no -c.
+   (§2e.)
+6. **Boot attempts + recoveries**: boot-nixos #1 (14:50) looped (pre-
+   bootopt image); control tests with the Debian backup boot.img proved
+   flash/para/eMMC flows; the P3 header test proved the bootopt cause.
+7. **First NixOS boot** (fixed image, ~15:27): fbcon log on the LCD ✓,
+   initrd markers ✓, switch_root to gen `yl6hkkih` ✓, store rehydrated,
+   systemd up, sshd answering. On-glass checks pass: uname #329,
+   hostname gemini, 3.6 GiB RAM, gpu-poweron + battery-guard active.
+8. **Not-quite-working (→ TODO in the doc)**: growfs (`/` 3.1 GiB —
+   udev by-label coldplug race + resize2fs EINVAL at group #25, kernel
+   ext4_resize_fs -22); vconsole (setfont TER16x32 not a kbd font);
+   gemini-audio-defaults (status 127); gemini-wifi-internal (mtk_wcn
+   modprobe); gemini-a72-up failed at boot (should be opt-in like
+   Debian's handoff); nixos-rebuild round-trip untested (phase-2
+   criterion second half); Debian-branch re-verify on the final image
+   pending.
+
+Device left: NixOS running on p32 (milestone state), para cleared,
+Debian p29 intact/bootable, A72s offline, battery charging. Nothing
+flashed since the successful boot. Commits pending (14 modified + 2
+intent-to-add — see git status). Next: the phase-2-on-glass.md TODO
+(P0 growfs first).
+
+## 2026-09-07 — p32 DUAL-BOOT DECIDED + IMPLEMENTED (repo-side): NixOS rootfs → Android userdata, Debian stays on p29; images rebuilt + verified; flash plan updated (awaiting user go-ahead)
+
+User decision this session: "override Android" = take the p32 route of
+`docs/repartition-android-space.md`. All §10 decisions made (dated in the
+doc): **a)** default OS on para-clear = NixOS; **b)** marker = para
+offset-0 command field (byte-exact `cmp` in the initrd); **c)** kernel
+stays borrowed #329 (Debian keeps booting the same boot.img); **d)** no
+p32 ciphertext backup (`--backup-rootfs` dropped). §9 change list landed:
+
+- **`devices/planet-geminipda/initrd.nix` — dual-boot initrd**: reads the
+  32-byte para command (p2 of the largest mmcblk, sysfs size read,
+  byte-exact `cmp` vs `boot-debian\0`+20 zeros — cmp-on-files because
+  ash vars can't hold NULs); zeros/unknown → NixOS default, marker →
+  Debian branch replicating `GeminiPDA/build/initramfs-6.6/init` verbatim
+  (A72 opt-in + fstab `/` fix + `switch_root /sbin/init`); mode target
+  missing → fall back to the OTHER kind's rootfs → shell only if none.
+  Fixed during review: `/tmp` did not exist in the initrd staging dirs
+  (would have silently ignored the marker); `${…}` inside the nix `''`
+  string is interpolated — replaced with `$var` concatenation +
+  `$(basename …)`; added applets dd/cmp/chmod/basename.
+- **`devices/planet-geminipda/default.nix`**:
+  `system_partition_destination = "userdata"` (p32) + comment.
+- **`bin/flash-nixos.sh`**: `rootfs` → `by-name/userdata` (p32, ≥20 GiB
+  sanity still passes at 27.3 GiB; prompt "Type 'wipe android'");
+  `--backup-rootfs` REMOVED (§10d); NEW `debian` verb (running Linux:
+  ssh para-write + WDT EXRST self-boot with read-back verify; TWRP:
+  adb). New `twrp_para` helper writes any 32-byte marker.
+- **`bin/boot-switch.sh`**: NEW `debian` verb (para=boot-debian + reboot
+  from TWRP; no adb wait — Debian has no adbd).
+- **NixOS side**: NEW `services/scripts/gemini-boot-debian` (mirror of
+  gemini-boot-recovery; 32-byte `conv=sync,fsync` write + read-back
+  verify) + hand-started `gemini-boot-debian.service` in
+  `services/gemini-pda.nix`. NOTE: new untracked files must be
+  `git add -N`ed before building — the flake source export only carries
+  tracked paths (hit + fixed this session; the packaged utils lacked the
+  script until `git add -N services/scripts/gemini-boot-debian`).
+- **Docs**: repartition doc → ✅ decided/implemented (§10 + impl record),
+  README (intro, layout rows, Flashing steps, unit table, "do not flash"
+  text), AGENTS cheat-sheet boot targets + flash pipeline + where-things-
+  live rows, boot-process §3/§5/§6/§7 (selector implemented; fallback =
+  other-kind rootfs; gemini-boot-debian exists; size correction — the
+  earlier 15,433,728 B / 14,108,276 B figures were an older gzip
+  encoding; current sha-verified build is 14,815,232 B / 13,489,966 B
+  payload), feasibility §9 phase-2 row annotation, session-log entry.
+
+Images rebuilt + verified (NO FLASH — device untouched, still Debian on
+p29, para cleared):
+
+- **`result/boot.img`** 14,815,232 B — sha256
+  `016c232351bd5de18c1d855cf9c6c2804ceaf532ad6d96d4a65d96d09152dd47`;
+  dual-boot initrd verified inside: /init carries the para selector
+  (mkdir /dev/pts /newroot /tmp, dd+cmp marker check, debian branch with
+  A72/fstab handoff, NixOS gen lookup); **native busybox `sh -n` clean**;
+  the four marker writers (boot-switch debian, flash-nixos twrp_para +
+  ssh inline, gemini-boot-debian) all produce byte-identical 32-byte
+  commands == the initrd's `cmp` reference (tested on host). Kernel
+  field unchanged: payload sha `3a2a7f3a…822` (#329, verified).
+- **`result/system.img`** 1,640,378,368 B — sha256
+  `091707d716767b31835b821ac6f723b7fb5c4fb8b8058775903b163134b3c056`;
+  generation `dcfv0nsj…-nixos-system-gemini-…` — now carries
+  `gemini-boot-debian.service` + the packaged CLI
+  (`vgrm0ygh…-gemini-pda-utils/bin/gemini-boot-debian`, /bin/sh
+  shebang kept under R10). ext4 label NIXOS_SYSTEM re-verified.
+
+**Flash plan (supersedes the earlier p29 entry's next-action; run only
+on the user's word):** `flash-nixos.sh status` → `boot` (dual-boot
+boot.img → p22; current #329 Debian boot.img auto-backed-up to
+stock-dump/) → `rootfs --yes` (system.img → p32 userdata, Android FDE
+gone) → `boot-nixos` (para-clear → NixOS p32 first boot) → on-glass
+checks (ssh `uname -r`, generation `dcfv0nsj`, growfs). Debian stays
+untouched on p29 and boots any time via `boot-debian` (host
+`flash-nixos.sh debian` / `boot-switch.sh debian`, or on-device
+`gemini-boot-debian`). Note: once the dual-boot boot.img is in p22,
+Debian boots ONLY through its initrd's debian branch — rollback of
+`boot` = `boot-switch.sh restore` (auto-backup). Nothing flashed yet.
+Versions: kernel #329 (payload sha `3a2a7f3a…822`); boot.img sha
+`016c2323…`; system.img sha `091707d7…`; generation `dcfv0nsj`; Mesa
+25.0.7 fork; wlroots 0.18.2; gemwl 1.0; Mobile NixOS `2c132754`;
+nixpkgs `nixos-26.11pre1031299.0bb7ec54c848`.
+
+## 2026-09-07 — PHASE-2 PREP: flash images built + verified (nothing flashed); device state recorded; waiting for the go-ahead
+
+Host-side readiness for the first real NixOS rootfs flash. **No flash,
+no write to the device** — all checks read-only.
+
+- **Images rebuilt fresh** (`bash bin/run-job.sh start build-images --
+  nix build .#packages.x86_64-linux.default`, rc=0, 21 s — heavy deps
+  cached from the 2026-09-07 toplevel rebuild). `result/` now carries:
+  - `boot.img` 14,815,232 B — sha256
+    `7f346637d69f74744861a993da7aab27ec56900c347f6d587ed62a618a943329`;
+    fits p22 (16 MiB) with 1.87 MiB headroom. Kernel field verified:
+    `kernel/borrowed/Image.gz` (sha `3f8761a4…`, 13,466,943 B) + 23,023 B
+    appended DTB = 13,489,966 B payload, sha `3a2a7f3a…822` — the exact
+    documented verified #329 payload (boot-process.md §2); decompressed
+    sha `96d0cbbb…`. Ramdisk = minimal initrd, gzip cpio with `/init`
+    (1,321,716 B, sha `52c7d580…`). NOTE: old build's 14,108,276 B
+    kernel field was a different gzip encoding — identity verified via
+    the decompressed sha, so the new image is the same #329 kernel.
+  - `system.img` 1,640,366,080 B (1.53 GiB) — sha256
+    `cf13e8bc45e3f2b21f2f405bbd213f25ea72cec6db6229b69a6148ecb0ef0952`;
+    ext4 label `NIXOS_SYSTEM`; generation inside the image =
+    `/nix/store/xy5m38g0…-nixos-system-gemini-26.11pre1031299.0bb7ec54c848`
+    == current `.#toplevel` (carries the 2026-09-07 outstanding.md
+    fixes: ssh key, hostname, keymap, logind, DRM order, backlight, R10).
+- **Device state recorded (live over g_ether, kernel
+  `6.6.0-00048-g188aade698dd` = #329)**: eMMC = mmcblk0 58.2 GiB,
+  boot0/boot1 **4 MiB each** (live measure — resolves the 2-vs-4 MiB
+  open question in inventory.md: DA-log figure confirmed, legacy 2 MiB
+  superseded; inventory annotation updated); para (p2) = all zeros
+  (cleared → NORMAL boot); p29 = Debian 14 G / 28 G used (54 %);
+  battery bq25890 voltage_now = 3.884 V (≥ 3.8 V precondition OK).
+- **Tooling re-verified**: devshell closure built (adb, mtkclient store
+  pkg fetched); ssh key `~/.ssh/id_ed25519_gemini` present; patched
+  mtkclient at `/usr/local/lib/mtkclient-patched`; `flash-nixos.sh
+  status` → `device state : linux`, both artifacts present.
+- **Flash-safety machinery re-read**: `boot-switch.sh flash` backs up
+  the current `boot` to `stock-dump/boot-<ts>.img` before writing;
+  para backed up once per session only if `stock-dump/para.bin` is
+  absent (it exists — 08-30 readback never clobbered); `restore`
+  returns the latest backup. `flash-nixos.sh` leaves para =
+  boot-recovery (TWRP sticky) until `boot-nixos` is run.
+
+Versions (targets for the next session's version lines): kernel #329
+(borrowed, decompressed sha `96d0cbbb…`); boot.img sha
+`7f346637…`; system.img sha `cf13e8bc…`; generation `xy5m38g0`;
+Mesa 25.0.7 fork; wlroots 0.18.2; gemwl 1.0; Mobile NixOS `2c132754`;
+nixpkgs `nixos-26.11pre1031299.0bb7ec54c848`.
+
+Next action (awaiting user go-ahead): `bash bin/flash-nixos.sh
+status` → `boot` → (decide: `--backup-rootfs` of Debian p29 first?)
+→ `rootfs --yes` → verify serial/fbcon in TWRP-sticky state →
+`boot-nixos` → on-glass checks (ssh `uname -r`, generation, growfs,
+§13 items). Optional-but-recommended DR before the flash: gather.md
+step 2 (preloader dump via DA session, device off) — step 1 now done
+(live 4 MiB boot areas).
+
 ## 2026-09-07 — GOLDEN-REPO PIVOT: gemini-nixos declared the primary repo for the whole Gemini PDA project; DR playbook ported here from the sibling (no revert of GeminiPDA)
 
 User decision this session: gemini-nixos will **eventually completely

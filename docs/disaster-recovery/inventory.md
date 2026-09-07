@@ -19,9 +19,13 @@
   SECURITY-UNLOCKED** — no signature barriers on any image we write
   (verified in the DA log; this is why a stock-zip preloader/LK restore
   is legal).
-- ⚠️ **Open question 2026-09-07:** the legacy hardware.md says the mmcblk
-  boot areas are "2 MiB each; rpmb 2 MiB" — the DA log above says 4 MiB.
-  Measure live (`gather.md` step 1) before trusting either.
+- ⚠️ **Open question 2026-09-07 → resolved 2026-09-07 (live measure):**
+  the legacy hardware.md says the mmcblk boot areas are "2 MiB each;
+  rpmb 2 MiB" — the DA log says 4 MiB. Measured on the live unit
+  (kernel #329, g_ether ssh): `mmcblk0boot0` and `mmcblk0boot1` =
+  **4 MiB each** (`/sys/class/block/…/size` = 8192 sectors) — agrees
+  with the DA log (0x400000); legacy 2 MiB claim superseded
+  (port-fix when M1 lands).
 
 ## Partition map and dump status (GPT: `stock-dump/gpt-2026-08-30.txt`,
 sha `7b4e3615…`)

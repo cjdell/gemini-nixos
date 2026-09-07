@@ -35,12 +35,19 @@ Read this file first, then `README.md`,
 ## Status (device, unchanged by the pivot)
 
 Phases 0/1/3 done at the **build level** — the flake's `boot.img` +
-`rootfs.img` build green and match the bring-up boot contract — but
-**nothing has been flashed/verified on glass yet**. The real device
-currently runs the GeminiPDA Debian rootfs on the borrowed kernel #329
-(p29 + `boot`). Flash tooling is in `bin/` and ready; the "moment of
-truth" (phase 2: SSH to a NixOS shell on hardware) is the next
-milestone.
+`rootfs.img` build green and match the bring-up boot contract — and
+**phase 2 is now on glass (2026-09-07 milestone: NixOS boots, sshd over
+g_ether from p32)**; the rootfs `growfs`, several services and the
+`nixos-rebuild` round-trip are the remaining on-glass work (TODO:
+`docs/phase-2-on-glass.md`). Rootfs target (2026-09-07): NixOS → p32
+`userdata` with a dual-boot boot.img, Debian stays on p29 (see
+`docs/repartition-android-space.md` §10 decisions).
+
+⚠️ **Boot.img cmdline field: KEEP `bootopt=64S3,32N2,64N2` in it** — LK
+consumes it via `platform_parse_bootopt`; without it the boot hangs on
+the LK logo (~15 s WDT loop) before any kernel output (discovered
+2026-09-07; `config/gemini.nix` kernelParams + `docs/phase-2-on-glass.md`
+§2a).
 
 ## Golden rules
 
@@ -116,7 +123,7 @@ milestone.
    stalls sessions: `pgrep -f` matches the polling shell's own cmdline →
    the loop spins until the tool timeout. Job state: `logs/jobs/<name>/`
    (gitignored); `wait-file LOG END_REGEX` salvages already-running ops.
-   Long flash ops (rootfs push+dd, p29 backup) MUST run under run-job.
+   Long flash ops (rootfs push+dd) MUST run under run-job.
 8b. **Poll, never long-sleep (agent rule).** While a job/build runs,
    poll with `bash bin/run-job.sh wait NAME` (it returns immediately with
    rc=2 while running) — do NOT `sleep 60`/`sleep 90` between checks
@@ -132,6 +139,8 @@ milestone.
 | Repo purpose, layout, boot chain, flash flow, phase status | `README.md` |
 | Feasibility study + the phased plan (phase table = roadmap) | `docs/mobile-nixos-port-feasibility.md` |
 | Plain-language boot explainer (receipt pointers) | `docs/boot-process.md` |
+| **Phase-2 on-glass knowledge + TODO** (2026-09-07 milestone: bootopt discovery, recovery receipts, not-quite-working list) | `docs/phase-2-on-glass.md` |
+| **NixOS-on-p32 + dual-boot design** (decided + implemented repo-side 2026-09-07; §10 choices, §9 change list) | `docs/repartition-android-space.md` |
 | "Published base + in-repo delta" pattern (mesa done; kernel next) | `docs/library-deltas.md` |
 | **What was actually tried / happened** (dated entries; golden log) | `docs/session-log.md` |
 | **Disaster recovery** — full-flash-erase → TWRP playbook (levels 0–2), image ledger + sha256, gather checklist, drills | `docs/disaster-recovery/` (README · inventory · gather · drills) |
@@ -147,8 +156,8 @@ milestone.
 | boot.img header inspection | `bin/dump-bootimg-header.sh` |
 | **Recovery tooling** — patched-mtkclient launcher (preloader/BROM), USB-state watcher | `bin/run-mtk.sh`, `bin/usb-watch.sh` (+ devshell `mtkclient` = store pkg + DAs) |
 | **g_ether net-up / SSH / WDT-EXRST reboot** (host side) | `bin/net-up.sh`, `bin/device-ssh.sh`, `bin/device-reboot.sh` |
-| **Boot-target switching + boot-partition flash** (adb/TWRP) | `bin/boot-switch.sh` |
-| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p29 rootfs) | `bin/flash-nixos.sh` |
+| **Boot-target switching + boot-partition flash** (adb/TWRP; twrp/android/debian/flash/restore) | `bin/boot-switch.sh` |
+| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p32 userdata rootfs; Debian p29 preserved) | `bin/flash-nixos.sh` |
 | **Detached job runner** (rule 8) | `bin/run-job.sh`; state `logs/jobs/` |
 | Device partition backups pulled over adb/dd (gitignored; nvram/IMEI private — never commit) | `stock-dump/` (ledger + copy status: `docs/disaster-recovery/inventory.md`) |
 | Legacy hardware/boot receipts (port pending M1) | `/home/cjdell/Projects/GeminiPDA/docs/` (read-only reference until ported) |
@@ -193,16 +202,19 @@ self-boots: `busybox devmem 0x10007004 32 0x48` (2 s WDT). From the host:
 **Boot targets** (adb state machine in `bin/boot-switch.sh`; para = p2
 of the largest mmcblk, 32-byte command at offset 0):
 - `boot-recovery\0` + 18 zero bytes → **TWRP on every power-on (sticky —
-  TWRP does not clear it)**; 32 zero bytes → NORMAL boot of the `boot`
-  partition. Only `para` and `boot` are ever written; never
-  nvram/proinfo/protect*.
-- `bash bin/boot-switch.sh status|twrp|android|flash [img]|restore`.
-  NOTE: `android` = para-clear + reboot → NORMAL → boots whatever is in
-  `boot` — i.e. it is ALSO how you boot the flashed NixOS boot.img.
-  "Linux" is not a separate slot: our kernel goes in `boot` itself
-  (boot2/boot3 are legacy reference slots, untouched).
+  TWRP does not clear it)**; `boot-debian\0` + 20 zero bytes → NORMAL
+  boots the boot image's **Debian branch (p29)**; 32 zero bytes → NORMAL
+  boots the boot image's **NixOS branch (p32 — the default)** [dual-boot
+  selector 2026-09-07, docs/repartition-android-space.md]. Only `para`
+  and `boot` are ever written; never nvram/proinfo/protect*.
+- `bash bin/boot-switch.sh status|twrp|android|debian|flash [img]|restore`.
+  NOTE: `android`/`boot-nixos` = para-clear + reboot → NORMAL → boots the
+  NixOS p32 default with the dual-boot boot.img installed; `debian` =
+  para=boot-debian. "Linux" is not a separate slot: our kernel goes in
+  `boot` itself (boot2/boot3 are legacy reference slots, untouched).
 - Device running Linux (no adbd — the current real state): converge via
-  `bin/flash-nixos.sh` (para write over ssh + WDT EXRST → TWRP).
+  `bin/flash-nixos.sh` (para write over ssh + WDT EXRST → TWRP); OS
+  switching over ssh = `flash-nixos.sh debian|boot-nixos`.
 - A hung boot image has NO software path back (para cleared = normal
   boot) → recovery = mtkclient preloader mode (`bin/run-mtk.sh`;
   full playbook `docs/disaster-recovery/drills.md`) — this is why the
@@ -212,11 +224,13 @@ of the largest mmcblk, 32-byte command at offset 0):
 
 **Flash pipeline (no fastboot on this device):** images go to partitions
 from the patched no-swipe TWRP (root adbd) by-name paths:
-`/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/{boot,linux,para}`.
-NixOS rootfs → p29 `linux` (27.7 GiB, ext4 label `NIXOS_SYSTEM` — wipes
-the current Debian rootfs on p29; Android p27/p32 untouched). Boot
-image → p22 `boot` (16 MiB). Orchestrated by `bin/flash-nixos.sh
-status|boot|rootfs|all|boot-nixos` (see its header for the safety
+`/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/{boot,linux,userdata,para}`.
+NixOS rootfs → p32 `userdata` (27.3 GiB, ext4 label `NIXOS_SYSTEM` —
+**destroys Android's FDE userdata only**; the Debian rootfs on p29
+`linux` is never written and stays bootable via the `boot-debian`
+marker). Boot image (dual-boot boot.img) → p22 `boot` (16 MiB).
+Orchestrated by `bin/flash-nixos.sh
+status|boot|rootfs|all|boot-nixos|debian` (see its header for the safety
 model + run-job usage).
 
 **Battery/charger truth** (OS-dependent; verified live on the legacy

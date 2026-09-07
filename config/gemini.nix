@@ -57,7 +57,17 @@ in
   # Same parameters, declared on the NixOS side too. Inert while the
   # kernel enforces CONFIG_CMDLINE; this is the bridge for dropping
   # CMDLINE_FORCE (LK appends the boot.img cmdline to /chosen/bootargs).
+  #
+  # bootopt/log_buf_len are NOT for the kernel — they are consumed by
+  # LK's platform_parse_bootopt (platform/mt6797/load_image.c:839) from
+  # the boot.img cmdline FIELD before handoff. Without "bootopt=" the
+  # boot hangs on the LK logo (~15 s, LK-WDT loop) before the kernel
+  # console ever appears — observed + bisected 2026-09-07 (a boot.img
+  # identical except for the field booted fine). Value copied from the
+  # verified GeminiPDA image: bootopt=64S3,32N2,64N2 log_buf_len=4M.
   boot.kernelParams = [
+    "bootopt=64S3,32N2,64N2"
+    "log_buf_len=4M"
     "console=tty0"
     "console=ttyS0,921600n1"
     "earlycon"

@@ -8,7 +8,8 @@
 # the `__GEMINI_UTILS__` placeholder (each script's own bin dir, so the
 # CLIs find their siblings regardless of the store path they end up in),
 # gemini-wdt-reboot (a new device-side reboot helper, see the script's
-# header) and the bash shebang rewrite below (R10). They are wired into
+# header), gemini-boot-debian (2026-09-07: the para=boot-debian half of
+# the dual-boot selector — see docs/repartition-android-space.md §5) and the bash shebang rewrite below (R10). They are wired into
 # the system as systemd services + CLIs by services/gemini-pda.nix,
 # services/audio.nix and services/wifi.nix.
 #
