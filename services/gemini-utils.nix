@@ -5,16 +5,27 @@
 # build/rootfs-files/{backlight,battery-guard,gemini-boot-recovery,
 # pipewire,speaker-amp,wifi,wifi-consys}), copied verbatim except for
 # the `__GEMINI_UTILS__` placeholder (each script's own bin dir, so the
-# CLIs find their siblings regardless of the store path they end up in)
-# and gemini-wdt-reboot, a new device-side reboot helper (see the
-# script's header). They are wired into the system as systemd services
-# + CLIs by services/gemini-pda.nix, services/audio.nix and
-# services/wifi.nix.
+# CLIs find their siblings regardless of the store path they end up in),
+# gemini-wdt-reboot (a new device-side reboot helper, see the script's
+# header) and the bash shebang rewrite below (R10). They are wired into
+# the system as systemd services + CLIs by services/gemini-pda.nix,
+# services/audio.nix and services/wifi.nix.
 #
 # The speaker-amp C helpers (gpioout/spkamp) are cross-compiled by
 # pkgs/speaker-amp.nix and copied in here so the `speaker` CLI finds
 # them next to itself.
-{ runCommand, callPackage, ... }:
+#
+# R10 (port delta, 2026-09-07 — see docs/mobile-nixos-port-feasibility.md
+# §7 R10): the Debian-rootfs scripts shebang `#!/bin/bash`, but a NixOS
+# stage-2 only creates `/bin/sh` (via `environment.binsh`), never
+# `/bin/bash` — and systemd ExecStart execs the script directly (kernel
+# resolves the `#!` line), so every bash-shebanged unit (gpu-poweron,
+# a72-up/cl2-up, battery-guard, audio-defaults, backlight-default) would
+# fail on glass with ENOENT (status=203). Rewrite bash shebangs to the
+# store bash at package time (the NixOS-idiomatic patchShebangs
+# equivalent). `#!/bin/sh` scripts keep their shebang: NixOS provides
+# /bin/sh.
+{ runCommand, callPackage, bash, ... }:
 
 let
   speakerAmp = callPackage ../pkgs/speaker-amp.nix { };
@@ -28,6 +39,18 @@ runCommand "gemini-pda-utils" { } ''
   # Scripts reference their siblings by the bin-dir placeholder:
   for f in speaker audio-output audio-defaults.sh; do
     substituteInPlace $out/bin/$f --replace-fail __GEMINI_UTILS__ $out/bin
+  done
+  # R10: rewrite `#!/bin/bash` and `#!/usr/bin/env bash` shebangs to the
+  # store bash (the aarch64 one in this package set — the interpreter
+  # that will exist in the closure). Line 1 only; leave #!/bin/sh alone.
+  for f in $out/bin/*; do
+    [ -f "$f" ] || continue
+    first=$(head -n1 "$f")
+    case "$first" in
+      "#!/bin/bash"|"#!/usr/bin/env bash")
+        sed -i "1c#!${bash}/bin/bash" "$f"
+        ;;
+    esac
   done
   # Speaker-amp helpers (aarch64, see pkgs/speaker-amp.nix):
   cp ${speakerAmp}/bin/gpioout $out/bin/

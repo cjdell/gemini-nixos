@@ -5,14 +5,17 @@
 #
 #   gemwl.service   the wlroots-0.18 compositor that OWNS the LK
 #                   framebuffer: opens /dev/gemfb (kernel #329,
-#                   CONFIG_FB_GEMINIPDA=y) + /dev/dri/renderD129
-#                   (panfrost), renders the Wayland scene graph
-#                   GPU-direct (shadow dma-buf + compute blit), unbinds
-#                   fbcon while it runs. Starts a smoke-test client
-#                   (tinytest-anim) so the first boot visibly proves the
-#                   chain on glass; replace with a real session
-#                   (weston-terminal, then the nested KWin/Plasma or
-#                   labwc/LXQt session — docs R3/phase 4) once verified.
+#                   CONFIG_FB_GEMINIPDA=y) + the panfrost render node
+#                   (/dev/dri/renderD128 — gemwl.c tries renderD129 first
+#                   and falls back to renderD128; this device exposes only
+#                   renderD128, so the D129 attempt fails harmlessly),
+#                   renders the Wayland scene graph GPU-direct (shadow
+#                   dma-buf + compute blit), unbinds fbcon while it runs.
+#                   Starts a smoke-test client (tinytest-anim) so the
+#                   first boot visibly proves the chain on glass; replace
+#                   with a real session (weston-terminal, then the nested
+#                   KWin/Plasma or labwc/LXQt session — docs R3/phase 4)
+#                   once verified.
 #
 # Differences from the Debian unit (semantics preserved):
 #   - After=gemini-gpu-poweron.service (the Debian unit spelled it
@@ -25,8 +28,19 @@
 #
 # Kernel prerequisites (all present in the borrowed kernel #329):
 #   CONFIG_FB_GEMINIPDA=y   (/dev/gemfb, GEMFB_IOC_EXPORT)
-#   CONFIG_DRM_PANFROST=m    (/dev/dri/renderD129, loaded via
-#                            gemini-gpu-poweron ordering)
+#   CONFIG_DRM_PANFROST=m    (/dev/dri/renderD128, loaded early via
+#                            boot.kernelModules, services/gemini-pda.nix)
+#
+# KNOWN RISK (gpu-warmup; outstanding.md item 8): gemwl is the
+# FIRST GL client of the boot, and the Mali-T880 tiler can come out of a
+# cold boot in a "bad state" — the first client whose tiler batches exceed
+# 1024 px in one axis drops the region beyond 1024 px (black band). The
+# tinytest-anim startup client draws a small window and likely does NOT
+# absorb it. Whether kernel #329 still exhibits this (observed on #284 +
+# Mesa 25.0.7 debug, 2026-09-02) is an on-glass question to answer at the
+# first gemwl boot; if it bands, add a throwaway full-frame warmup as the
+# first GL client Before=gemwl (pattern: GeminiPDA
+# build/rootfs-files/gpu-warmup/, PAN_MESA_DEBUG=noafbc kept).
 # Serial console (ttyS0) is unaffected by the fbcon unbind — the NixOS
 # bring-up/debug path stays available while the compositor owns the fb.
 # To fall back to the console-only boot: systemctl disable gemwl.
