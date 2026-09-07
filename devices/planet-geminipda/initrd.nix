@@ -170,12 +170,33 @@ let
             case "$blk" in
             *boot0|*boot1|*rpmb) continue ;;
             esac
-            if mount -t ext4 -o ro "$blk" /newroot 2>/dev/null || \
+            if mount -t ext4 -o ro,noload "$blk" /newroot 2>/dev/null || \
                mount -t ext4 -o rw "$blk" /newroot 2>/dev/null; then
                 is_nixos=""
-                if [ -d /newroot/nix/store ] && \
-                   { [ -f /newroot/nix-path-registration ] || [ -e /newroot/nix/var/nix/profiles/system ]; }; then
-                    is_nixos=1
+                if [ -d /newroot/nix/store ]; then
+                    # nixos only counts with a resolvable system profile OR the
+                    # first-boot registration file. RESOLVE the profile chain by
+                    # hand: the final target is an ABSOLUTE /nix/store path, so
+                    # plain `[ -e ]` on the symlink fails inside this initrd
+                    # (no /nix/store here) — NixOS could only ever boot once
+                    # per flash (first boot via nix-path-registration), every
+                    # later boot silently fell back to Debian. [fixed 2026-09-07]
+                    # Chain: system -> system-N-link -> /nix/store/gen.
+                    p=$(readlink /newroot/nix/var/nix/profiles/system 2>/dev/null) || p=""
+                    case "$p" in
+                        /nix/store/*) : ;;
+                        *)
+                            q=$(readlink "/newroot/nix/var/nix/profiles/$p" 2>/dev/null)
+                            case "$q" in
+                                /nix/store/*) p="$q" ;;
+                            esac
+                        ;;
+                    esac
+                    if { [ -f /newroot/nix-path-registration ] ||
+                         case "$p" in /nix/store/*) [ -x "/newroot$p/init" ] ;; *) false ;; esac
+                       }; then
+                        is_nixos=1
+                    fi
                 fi
                 is_debian=""
                 [ -f /newroot/etc/os-release ] && is_debian=1

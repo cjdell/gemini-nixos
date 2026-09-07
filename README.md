@@ -49,10 +49,14 @@ adb.
 | `bin/boot-switch.sh` | Boot-target switching + boot-partition flash over adb/TWRP (status/twrp/android/debian/flash/restore; `debian` = para=boot-debian → p29, 2026-09-07) |
 | `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and system.img → p32 (`userdata`, Android erased — Debian p29 untouched); verbs status/boot/rootfs/all/boot-nixos/debian; safe TWRP-sticky default |
 | `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
+| `bin/deploy.sh` | **Workstation-style generation loop (2026-09-07)**: host cross-builds the toplevel (pinned via gc-pin), `nix copy` delta → device store over ssh, profile switch + activate. Verbs status/build/deploy [PATH]/rollback [N]. Reboot lands on the new gen; old gens stay selectable — no reflash, no TWRP |
+| `bin/gc-pin.sh` | GC-root a build (NAME STORE_PATH | list | unpin) so host `nix-collect-garbage` can't sweep the cross closure (happened once — gen3 silently rebuilt ~259 packages) |
+| `bin/flash-nixos.sh` `grow-rootfs` | Offline-grow the p32 rootfs to the full partition from TWRP (e2fsck + resize2fs, static musl e2fsprogs) — the recovery path for make_ext4fs-geometry fs the kernel can't online-grow (R13); images since 2026-09-07 grow on first boot via growfs-root |
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
 | `docs/repartition-android-space.md` | NixOS rootfs on Android's p32 `userdata` (Debian stays on p29) + dual-boot boot.img via a para marker; boot-budget analysis. **Decided + implemented repo-side 2026-09-07** (§10 decisions; flash is the next milestone) |
 | `docs/boot-process.md` | Plain-language explainer: how the Gemini boots for this port — one boot slot, shared kernel, initrd-as-rootfs-selector, cmdline storage/`CMDLINE_FORCE`, para marker, initramfs builds |
 | `docs/phase-2-on-glass.md` | **Phase-2 milestone (2026-09-07): NixOS boots on glass** — version lines, the bootopt discovery (§2a), recovery/fix receipts, device state, and the open TODO list of not-quite-working items |
+| `docs/session-log.md` | Dated entries; the 2026-09-07 evening sweep: R12/R13/R14 + initrd multi-boot fix + panfrost ordering + gens 2-5 via deploy.sh, rootfs grown to 27.3 GiB |
 | DR (device disaster recovery) | `docs/disaster-recovery/` — full-flash-erase restore to TWRP (levels 0–2); image ledger + sha256 in `inventory.md` (blobs in `stock-dump/`, gitignored), gather checklist + drills. NixOS flashing after a restore = `bin/flash-nixos.sh` |
 | `repos/mobile-nixos/` | Mobile NixOS clone (see pins below) |
 

@@ -38,6 +38,15 @@
 #       Switch to the Debian rootfs on p29: para=boot-debian + reboot
 #       (from running Linux: WDT EXRST self-boot; from TWRP: adb reboot).
 #       Reverse (back to NixOS): boot-nixos (or clear para + reboot).
+#   bash bin/flash-nixos.sh grow-rootfs
+#       Converge to TWRP → OFFLINE-grow the p32 rootfs filesystem to the
+#       full partition size (e2fsck -fy + resize2fs with a pushed static
+#       e2fsprogs). This is the recovery path for make_ext4fs-geometry
+#       images whose fs the kernel can only online-grow to 2x (R13 —
+#       images built since 2026-09-07 use mke2fs and grow on first boot
+#       via systemd-growfs-root). NOT destructive (grows in place), but
+#       it IS a TWRP cycle: reboots the device. Follow with `boot-nixos`
+#       to boot the grown rootfs.
 #
 # Default images: result/boot.img + result/system.img (the `default`
 # flake output's android-fastboot-images layout). Built with:
@@ -83,6 +92,11 @@ ROOTFS_IMG_DEFAULT="$ROOT/result/system.img"
 # TWRP by-name partition directory (verified path on this unit)
 P=/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name
 BACKUP_DIR="$ROOT/stock-dump"
+# Static (musl) aarch64 e2fsprogs for offline rootfs growth from TWRP
+# (grow-rootfs verb). Rebuild + pin if GC'd:
+#   nix build nixpkgs#legacyPackages.x86_64-linux.pkgsCross.aarch64-multiplatform.pkgsStatic.e2fsprogs
+#   bash bin/gc-pin.sh e2fsprogs-static-aarch64 <out>
+E2FS_STATIC=/nix/store/k0wplgv6nwhcp710y5z7zh37c6rvk87j-e2fsprogs-static-aarch64-unknown-linux-musl-1.47.4-bin
 YES=0
 
 adb_q()  { timeout 30 adb "$@"; }
@@ -277,6 +291,35 @@ cmd_boot_nixos() {
   say "recovery = mtkclient preloader mode OR re-power-on (para cleared now = normal boot)."
 }
 
+cmd_grow_rootfs() {
+  converge_twrp
+  [ -d "$E2FS_STATIC/bin" ] || die "static e2fsprogs not present: $E2FS_STATIC (rebuild + gc-pin, see header)"
+  local tgt base kb
+  tgt=$(adb_sh "readlink -f $P/userdata" | tr -d '\r' || true)
+  base=$(basename "$tgt")
+  kb=$(adb_sh 'cat /proc/partitions' | tr -d '\r' | awk -v b="$base" '$4==b{print $3}')
+  if [ -z "$tgt" ] || [ -z "$kb" ] || [ "$kb" -lt $((20 * 1024 * 1024)) ]; then
+    die "p32 (by-name/userdata) missing or too small (readlink=$tgt, blocks=$kb) — refusing"
+  fi
+  say "target: $P/userdata -> $tgt = $((kb / 1024 / 1024)) GiB (p32)"
+  # TWRP auto-mounts userdata as /data; offline growth needs it unmounted.
+  adb_sh "umount /data 2>/dev/null; umount $tgt 2>/dev/null; umount $P/userdata 2>/dev/null; true" >/dev/null
+  say "pushing static e2fsprogs (e2fsck + resize2fs)..."
+  adb_push push "$E2FS_STATIC/bin/e2fsck" /tmp/e2fsck >/dev/null
+  adb_push push "$E2FS_STATIC/sbin/resize2fs" /tmp/resize2fs >/dev/null
+  adb_sh "chmod +x /tmp/e2fsck /tmp/resize2fs" >/dev/null
+  say "e2fsck -fy (journal replay + health check — offline, no online-resize limits)"
+  # e2fsck exits 1 when it MODIFIED the fs (journal replay / repairs) —
+  # that is success here; don't let set -euo pipefail kill the run.
+  adb_sh "/tmp/e2fsck -fy $P/userdata" 2>&1 | tail -3 || true
+  say "resize2fs -> full partition size"
+  adb_sh "/tmp/resize2fs $P/userdata" 2>&1 | tail -3
+  say "verify: fs state + free space"
+  adb_sh "/tmp/e2fsck -fn $P/userdata" 2>&1 | tail -3 || true
+  say "grow done. Device is in TWRP. Boot the grown rootfs when ready:"
+  say "  bash bin/flash-nixos.sh boot-nixos"
+}
+
 # ---- para helpers ------------------------------------------------------------
 # Write a 32-byte boot command to the para partition (offset 0) from TWRP:
 # "" clears (zeros = NixOS default), otherwise "<marker>\0" + zero padding to
@@ -336,6 +379,7 @@ case "${1:-}" in
   rootfs)      cmd_rootfs "${2:-$ROOTFS_IMG_DEFAULT}" ;;
   all)         cmd_all "${2:-$BOOT_IMG_DEFAULT}" "${3:-$ROOTFS_IMG_DEFAULT}" ;;
   boot-nixos)  cmd_boot_nixos ;;
+  grow-rootfs) cmd_grow_rootfs ;;
   debian)      cmd_debian ;;
   -h|--help|help|"") usage ;;
   *) echo "!! unknown command: ${1:-}" >&2; usage; exit 1 ;;

@@ -40,8 +40,13 @@ in
   # The kernel config bakes the console setup
   # (console=tty0 console=ttyS0,921600n1 earlycon fbcon=rotate:3
   #  fbcon=font:TER16x32) via CONFIG_CMDLINE + CMDLINE_FORCE until the
-  # docs-R4 A/B switch happens. Keep the NixOS side consistent with it.
-  console.font = "TER16x32";
+  # docs-R4 A/B switch happens. Keep the NixOS side consistent with it:
+  # console.font stays null (the default) so systemd-vconsole-setup does
+  # NOT run setfont — TER16x32 is a KERNEL fbcon font name, not a kbd
+  # consolefont, so setting it here made setfont exit 66 and the unit
+  # fail (phase-2 TODO P2). The kernel font (what the LCD shows) is
+  # untouched by vconsole-setup either way. [fixed 2026-09-07]
+  # console.font = "TER16x32";
 
   # Gemini built-in keyboard layout: UK base + the Fn layer as
   # AltGr/Shift combos (outstanding.md item 3). Vendored verbatim from the sibling
@@ -127,6 +132,19 @@ in
   # =m — the kernel builder's config validator rejects that mismatch.
   networking.firewall.enable = false;
 
+  # ---- Root partition growth -------------------------------------------
+  # mnx modules/rootfs.nix sets boot.growPartition = mkDefault true (and
+  # fileSystems."/".autoResize = true) for its rootfs. autoResize is
+  # what we want: systemd-growfs-root grows the fs to the FULL partition
+  # (p32 is already 27.3 GiB; the fs inside the flashed image is small).
+  # boot.growPartition is NOT: it runs cloud-utils `growpart` on the root
+  # DEVICE to enlarge the *partition*, which is meaningless here (the
+  # partition is already full-size and the by-label device path is not
+  # something growpart can parse) — its unit failed on every boot
+  # ("must supply partition-number"). Disable it; growfs-root does the
+  # real fs growth. [fixed 2026-09-07]
+  boot.growPartition = false;
+
   # ---- Cross-build workaround ------------------------------------------
   # The pinned nixpkgs systemd (261) cross-build for aarch64 fails in the
   # BPF programs: meson invokes the *host* clang with `-target bpf` and no
@@ -145,7 +163,22 @@ in
   # List-typed option: definitions from all modules (including Mobile
   # NixOS's own overlays) are concatenated in module order, so a plain
   # definition here appends after theirs.
-  nixpkgs.overlays = [
+  # Overlays run in list order (last wins); the mnx base modules also
+  # append overlays here, so mkAfter guarantees OUR entries (the shim in
+  # particular) come after theirs and actually take effect.
+  nixpkgs.overlays = lib.mkAfter [
+    (final: prev: {
+      # mobile-nixos builds the rootfs image with the Android
+      # make_ext4fs tool, whose ext4 geometry the kernel can only
+      # online-grow to exactly 2x the image size (then EINVAL — the fs
+      # stops at 819200 blocks/25 groups; observed on glass AND
+      # reproduced on the host kernel with the real image). Replace it
+      # with an mke2fs shim that produces a normal growable ext4
+      # (defaults: flex_bg/64bit/metadata_csum) — every mke2fs geometry
+      # tested grows 1.5G -> 27G online cleanly. See
+      # pkgs/make-ext4fs-shim.nix (R13).
+      make_ext4fs = final.callPackage ../pkgs/make-ext4fs-shim.nix { };
+    })
     (final: prev: {
       systemd = prev.systemd.override { withLibBPF = false; };
     })

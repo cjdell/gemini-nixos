@@ -62,6 +62,7 @@ let
     inherit mesaGeminipda;
   };
   gemwl = pkgs.callPackage ../pkgs/gemwl.nix { inherit wlroots; };
+  utils = pkgs.callPackage ./gemini-utils.nix { };
 
   # What to run inside the compositor at startup. The default is the
   # animated xdg-shell client (cycles red/green/blue on frame
@@ -86,6 +87,10 @@ in
     after = [ "gemini-gpu-poweron.service" "systemd-udevd.service" ];
     wants = [ "gemini-gpu-poweron.service" ];
     wantedBy = [ "multi-user.target" ];
+    path = [
+      pkgs.kmod # modprobe/rmmod (panfrost-load.sh)
+      pkgs.coreutils # seq/sleep (panfrost-load.sh)
+    ];
     serviceConfig = {
       Type = "simple";
       # Private runtime dir holding the wayland socket (clients connect
@@ -94,6 +99,13 @@ in
       # documents why /run/gemwl-audio exists separately).
       RuntimeDirectory = "gemwl";
       RuntimeDirectoryMode = "0700";
+      # panfrost is blacklisted at boot (services/gemini-pda.nix) because
+      # an early probe times out on the un-powered mali; load it here,
+      # after gemini-gpu-poweron (see the After= above) with rmmod+retry:
+      # a probe that lands too close to power-on also times out (soft
+      # reset) and leaves the module stuck — panfrost-load.sh keeps
+      # re-probing until /dev/dri/renderD128 appears. [2026-09-07]
+      ExecStartPre = "${utils}/bin/panfrost-load.sh";
       Environment = [
         "PAN_MESA_DEBUG=noafbc" # AFBC readback workaround (must stay)
         "XDG_RUNTIME_DIR=/run/gemwl"

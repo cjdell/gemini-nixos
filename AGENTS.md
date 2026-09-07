@@ -157,7 +157,9 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | **Recovery tooling** — patched-mtkclient launcher (preloader/BROM), USB-state watcher | `bin/run-mtk.sh`, `bin/usb-watch.sh` (+ devshell `mtkclient` = store pkg + DAs) |
 | **g_ether net-up / SSH / WDT-EXRST reboot** (host side) | `bin/net-up.sh`, `bin/device-ssh.sh`, `bin/device-reboot.sh` |
 | **Boot-target switching + boot-partition flash** (adb/TWRP; twrp/android/debian/flash/restore) | `bin/boot-switch.sh` |
-| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p32 userdata rootfs; Debian p29 preserved) | `bin/flash-nixos.sh` |
+| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p32 userdata rootfs; Debian p29 preserved) | `bin/flash-nixos.sh` (verbs incl. `grow-rootfs` — offline p32 fs growth from TWRP, R13) |
+| **Build/switch/rollback generations like a workstation** (host cross-build → delta `nix copy` → device profile switch + activate; NO reflash) | `bin/deploy.sh` (status/build/deploy/rollback) |
+| **GC-pin builds** (host `nix-collect-garbage` protection — every deploy pins itself; list/unpin) | `bin/gc-pin.sh` |
 | **Detached job runner** (rule 8) | `bin/run-job.sh`; state `logs/jobs/` |
 | Device partition backups pulled over adb/dd (gitignored; nvram/IMEI private — never commit) | `stock-dump/` (ledger + copy status: `docs/disaster-recovery/inventory.md`) |
 | Legacy hardware/boot receipts (port pending M1) | `/home/cjdell/Projects/GeminiPDA/docs/` (read-only reference until ported) |

@@ -630,6 +630,52 @@ Related latent issue (same root cause, still OPEN): any *other*
 verbatim bash script that ends up executed outside the gemini-pda-utils
 package needs the same treatment.
 
+### R12 — systemd 261 removed the unit `Path=` key (status=127 on glass)
+
+**FOUND + FIXED (2026-09-07).** Every service PATH declared as
+`serviceConfig.Path = lib.makeBinPath [...]` was a silent no-op: the
+device's systemd 261 rejects the `Path=` key outright (journal:
+`Unknown key 'Path' in section [Service], ignoring`) — upstream removed
+it (replaced by `ExecSearchPath=`, added v250) and nixpkgs migrated its
+own modules to `serviceConfig.ExecSearchPath`/the module-level `path`
+option. Result on glass: gemini-audio-defaults (amixer), wifi-internal
+(modprobe), gpu-poweron (busybox) all failed with "command not found"
+even though `systemctl cat` showed the dirs. Fix: all 11 service
+`Path=` uses migrated to the module option `path = [ pkgs... ]` (list
+of packages -> Environment PATH prepended to the unit default), the
+nixpkgs-idiomatic form for this pin. Confirmed on glass: audio/GPU/wifi
+units now find their tools.
+
+### R13 — make_ext4fs image geometry cannot grow past 2x (growfs EINVAL)
+
+**FOUND + FIXED (2026-09-07).** mobile-nixos builds ext4 rootfs images
+with the Android make_ext4fs tool (image-builder ext4.nix). The kernel
+can online-grow that geometry only to exactly 2x the image size, then
+ext4_resize_fs fails -EINVAL (819200 blocks / 25 groups on the 1.5 GiB
+Gemini image; fs stops there, systemd-growfs-root dies, "/" stays
+~3.1 GiB). Mechanism: adding the next sparse_super backup group needs
+reserved-GDT entries the resize inode was never given
+(reserve_backup_gdb/verify_reserved_gdb in fs/ext4/resize.c). Reproduced
+on the host kernel with the real image (geometry-intrinsic). Every
+mke2fs geometry tested grows 1.5G->27G cleanly. Fix: `pkgs/make-ext4fs-
+shim.nix` re-implements the make_ext4fs CLI on mke2fs (default ext4
+features: flex_bg/64bit/metadata_csum), hooked via a `lib.mkAfter`
+nixpkgs.overlays override (plain overlay defs lost to mnx's overlay
+list — order matters). New images grow on first boot via
+growfs-root. Offline `resize2fs` also rescues already-flashed
+make_ext4fs fs (no geometry limits) — the grow-rootfs verb in
+bin/flash-nixos.sh (static musl aarch64 e2fsprogs, TWRP).
+
+### R14 — service Type/RemainAfterExit under unitConfig = ignored
+
+**FOUND + FIXED (2026-09-07).** gemini-pda.nix put `Type`,
+`RemainAfterExit`, `Restart`/`RestartSec` under `unitConfig`, which maps
+to the unit's `[Unit]` section where systemd ignores those keys — the
+units ran as Type=simple and deactivated the moment their script
+exited (systemctl show: RemainAfterExit=no). battery-guard only worked
+by accident (long-running simple service). Moved to `serviceConfig`
+([Service]); oneshots now stay active(exited).
+
 ### Non-risks (checked, no action needed)
 
 - **Serial/console**: ttyS0 921600 via kernel params; `earlycon` OK.

@@ -40,7 +40,7 @@ in
   # Load the out-of-tree A72 module at boot (systemd-modules-load, via
   # the NixOS-wrapped modprobe that searches the store module tree).
   #
-  # The DRM core chain + panfrost load EARLY and deterministically here
+  # The DRM core chain loads EARLY and deterministically here
   # (systemd-modules-load runs before gemini-wifi-internal.service, which
   # already declares After=systemd-modules-load). The vendor wlan_gen3
   # driver registers chrdev major 226 ("ampc0", BT-over-WiFi), which
@@ -52,14 +52,26 @@ in
   # over udev modalias autoload. All modules verified present in the
   # borrowed #329 module tree (drm{, _shmem_helper}.ko, gpu-sched.ko,
   # panfrost.ko, mt6351-keys.ko).
+  #
+  # panfrost is deliberately NOT here (and blacklisted below): the mali
+  # device probes at module-load time, which at boot precedes
+  # gemini-gpu-poweron (MFG MTCMOS power-on) — an early probe soft-reset
+  # TIMES OUT ("gpu soft reset timed out" / -110, observed on glass
+  # 2026-09-07, gen2) and the GPU stays dead for the boot. panfrost is
+  # loaded late by gemwl.service's ExecStartPre (after gemini-gpu-poweron
+  # is up), which probes cleanly. [fixed 2026-09-07]
   boot.kernelModules = [
     "sramldo-smc"
     "drm" # major-226 race (see header + outstanding.md item 4)
     "drm_shmem_helper"
     "gpu-sched"
-    "panfrost"
     "mt6351-keys" # deterministic side keys (silver button)
   ];
+
+  # Keep udev/systemd-modules-load from probing panfrost early (it would
+  # probe the un-powered mali at device-add time, long before
+  # gemini-gpu-poweron). gemwl.service modprobes it after the GPU is up.
+  boot.extraModprobeConfig = "blacklist panfrost";
 
   # B-19 USB host mode: runtime-PM autosuspend on the MT6797 USB host
   # controllers clears IPPC HOST_SEL and power-cycles the U2 PHY; there
@@ -78,20 +90,22 @@ in
     description = "Gemini PDA GPU power-on (Mali-T880 MFG MTCMOS domains, VGPU rails)";
     after = [ "systemd-udevd.service" ];
     wantedBy = [ "multi-user.target" ];
-    unitConfig = {
+    # R14 (2026-09-07): Type/RemainAfterExit/Restart are [Service]
+    # keys — putting them under unitConfig ([Unit]) made systemd ignore
+    # them (unit ran as Type=simple and deactivated the moment the
+    # script exited). They belong in serviceConfig.
+    path = [
+      pkgs.busybox # devmem
+      pkgs.i2c-tools # i2cset/i2cget (RT5735 VGPU rail)
+      pkgs.coreutils # od, sleep
+      pkgs.gnused # i2c bus resolution
+    ];
+    serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = "yes";
       Restart = "on-failure";
       RestartSec = "30";
-    };
-    serviceConfig = {
       ExecStart = "${utils}/bin/gemini-gpu-poweron.sh";
-      Path = lib.makeBinPath [
-        pkgs.busybox # devmem
-        pkgs.i2c-tools # i2cset/i2cget (RT5735 VGPU rail)
-        pkgs.coreutils # od, sleep
-        pkgs.gnused # i2c bus resolution
-      ];
     };
   };
 
@@ -106,32 +120,36 @@ in
   # with `cl2-up.sh`. WDT-armed (20 s) inside the script.
   systemd.services.gemini-a72-up = {
     description = "Gemini PDA A72 cluster bring-up (cpu8/cpu9 online)";
-    # The reference service runs After=multi-user.target: the DA9214 i2c6
-    # bus is contended by SCP for the first ~2 minutes after boot, so
-    # running late (and retrying with backoff) is deliberate.
+    # OPT-IN (2026-09-07 decision, phase-2-on-glass.md P2): this unit is
+    # NOT started at boot. The Debian handoff deliberately disables the
+    # boot-time A72 bring-up (wedge risk while boot is still busy — RCU
+    # stall / eMMC+i2c timeouts; observed on glass) and the reference
+    # service runs late for the same reason (the DA9214 i2c6 bus is
+    # contended by SCP for the first ~2 minutes). Bring the cluster up
+    # from a settled system: `systemctl start gemini-a72-up` (or the
+    # cl2-up.sh CLI). [previously wantedBy = multi-user.target]
     after = [ "systemd-udevd.service" "multi-user.target" ];
-    wantedBy = [ "multi-user.target" ];
-    unitConfig = {
+    path = [
+      pkgs.bash
+      pkgs.busybox # devmem
+      pkgs.i2c-tools # i2cset (DA9214 BUCKB)
+      pkgs.coreutils # od, sleep, cat
+      pkgs.gnused
+      pkgs.util-linux # logger
+      pkgs.kmod # modprobe, insmod
+    ];
+    serviceConfig = {
+      # R14: Type/RemainAfterExit/Restart are [Service] keys (were under
+      # unitConfig -> ignored).
       Type = "oneshot";
       RemainAfterExit = "yes";
       Restart = "on-failure";
       RestartSec = "30";
-    };
-    serviceConfig = {
       # belt and braces: boot.kernelModules already loads it; re-assert
       # here so a failed modules-load does not wedge the bring-up.
       ExecStartPre =
         "/bin/sh -c 'modprobe sramldo-smc 2>/dev/null || insmod ${kernelModulePath} 2>/dev/null || true'";
       ExecStart = "${utils}/bin/cl2-up.sh";
-      Path = lib.makeBinPath [
-        pkgs.bash
-        pkgs.busybox # devmem
-        pkgs.i2c-tools # i2cset (DA9214 BUCKB)
-        pkgs.coreutils # od, sleep, cat
-        pkgs.gnused
-        pkgs.util-linux # logger
-        pkgs.kmod # modprobe, insmod
-      ];
     };
   };
 
@@ -139,6 +157,13 @@ in
     description = "Gemini PDA battery safety guard (safe level + USB-charge check)";
     after = [ "multi-user.target" ];
     wantedBy = [ "multi-user.target" ];
+    path = [
+      pkgs.bash
+      pkgs.coreutils # date, stat, sleep, cat
+      pkgs.gawk # state file parsing
+      pkgs.util-linux # logger
+      pkgs.systemd # systemctl poweroff
+    ];
     serviceConfig = {
       ExecStart = "${utils}/bin/battery-guard.sh";
       Restart = "always";
@@ -147,13 +172,6 @@ in
         "BATTERY_GUARD_POLL_S=10"
         "BATTERY_GUARD_WARN_LOW_MV=3650"
         "BATTERY_GUARD_CRIT_MV=3500"
-      ];
-      Path = lib.makeBinPath [
-        pkgs.bash
-        pkgs.coreutils # date, stat, sleep, cat
-        pkgs.gawk # state file parsing
-        pkgs.util-linux # logger
-        pkgs.systemd # systemctl poweroff
       ];
     };
   };
@@ -173,17 +191,17 @@ in
     description = "Gemini display backlight = power-saving default (10 %)";
     after = [ "systemd-udevd.service" ];
     wantedBy = [ "multi-user.target" ];
-    unitConfig = {
+    path = [
+      pkgs.bash
+      pkgs.busybox # devmem (fallback path)
+      pkgs.coreutils # ls/cat/head (sysfs path)
+    ];
+    serviceConfig = {
+      # R14: Type/RemainAfterExit are [Service] keys (were under
+      # unitConfig -> ignored; the unit deactivated right after running).
       Type = "oneshot";
       RemainAfterExit = "yes";
-    };
-    serviceConfig = {
       ExecStart = "${utils}/bin/backlight set 10";
-      Path = lib.makeBinPath [
-        pkgs.bash
-        pkgs.busybox # devmem (fallback path)
-        pkgs.coreutils # ls/cat/head (sysfs path)
-      ];
     };
   };
 
@@ -209,9 +227,12 @@ in
       Type = "oneshot";
       ExecStart = "${utils}/bin/gemini-wdt-reboot 20";
       TimeoutStartSec = "35"; # 20 s arm + margin; the WDT fires first
-      # busybox (devmem arm) + coreutils (sync/sleep while waiting).
-      Path = lib.makeBinPath [ pkgs.busybox pkgs.coreutils ];
     };
+    path = [
+      # busybox (devmem arm) + coreutils (sync/sleep while waiting).
+      pkgs.busybox
+      pkgs.coreutils
+    ];
   };
   systemd.services.gemini-boot-recovery = {
     description = "Gemini PDA reboot into TWRP (para=boot-recovery)";
@@ -219,9 +240,13 @@ in
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${utils}/bin/gemini-boot-recovery";
-      # coreutils (dd/sync) + systemd (reboot, via its sw/bin symlink).
-      Path = lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.systemd ];
     };
+    path = [
+      # coreutils (dd/sync) + systemd (reboot, via its sw/bin symlink).
+      pkgs.coreutils
+      pkgs.util-linux
+      pkgs.systemd
+    ];
   };
   systemd.services.gemini-boot-debian = {
     description = "Gemini PDA reboot into Debian p29 (para=boot-debian)";
@@ -229,8 +254,13 @@ in
     serviceConfig = {
       Type = "oneshot";
       ExecStart = "${utils}/bin/gemini-boot-debian";
-      # coreutils (dd/sync) + gnugrep (para verify) + systemd (reboot).
-      Path = lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.gnugrep pkgs.systemd ];
     };
+    path = [
+      # coreutils (dd/sync) + gnugrep (para verify) + systemd (reboot).
+      pkgs.coreutils
+      pkgs.util-linux
+      pkgs.gnugrep
+      pkgs.systemd
+    ];
   };
 }

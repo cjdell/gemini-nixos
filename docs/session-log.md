@@ -507,3 +507,73 @@ kernel #329 `6.6.0-00048-g188aade698dd` (borrowed, pin
 Next action: phase 2 — on-glass verification. When the device is next on
 the bench: `bin/flash-nixos.sh status` → `boot` → `rootfs --yes` → verify
 serial/fbcon → `boot-nixos`; log the outcome here with image hashes.
+
+## 2026-09-07 (evening) — OUTSTANDING-ISSUES SWEEP + DEPLOY MECHANISM: gens 2-5 on glass, every documented failure root-caused; R12/R13/R14 + initrd multi-boot bug + panfrost ordering fixed; rootfs grown to 27.3 GiB; first-ever multi-boot NixOS cycle
+
+Worked the phase-2-on-glass.md TODO from a LIVE gen1 NixOS. Outcome:
+**NixOS now boots reliably on every power-on** (a latent initrd bug had
+silently made every post-first boot fall back to Debian), rootfs is
+27.3 GiB, GPU/audio/vconsole/backlight/battery all green on a clean
+boot, and a workstation-style build/switch/deploy loop exists.
+
+Root causes found + fixed (all verified on glass, gens 2-5):
+- **R12 — systemd 261 removed the unit `Path=` key.** Every service
+  PATH via `serviceConfig.Path = lib.makeBinPath [...]` was ignored
+  (journal: `Unknown key 'Path'`): audio (amixer), wifi (modprobe),
+  GPU (busybox) all status=127. Migrated 11 uses to the nixpkgs module
+  option `path = [ pkgs... ]`. New finding → feasibility doc R12.
+- **R13 — make_ext4fs image geometry can't grow past 2x.** Kernel
+  online-resize EINVAL at 819200 blocks/25 groups (next sparse_super
+  backup group's reserved-GDT entries missing from the resize inode);
+  reproduced on the host kernel with the real image. mke2fs geometries
+  grow cleanly → `pkgs/make-ext4fs-shim.nix` (make_ext4fs CLI on
+  mke2fs) via a `lib.mkAfter` overlay (plain overlay defs lost to mnx's
+  overlay list). New system.img = flex_bg/64bit/metadata_csum, grows
+  1.5G→27G. Current install grown OFFLINE from TWRP
+  (`bin/flash-nixos.sh grow-rootfs` NEW verb: static musl aarch64
+  e2fsprogs, e2fsck + resize2fs; fs now 7,164,155 blocks = 27.3 GiB,
+  e2fsck -fn clean).
+- **R14 — service Type/RemainAfterExit under `unitConfig` ([Unit]) is
+  ignored** → oneshots ran Type=simple and deactivated on exit; moved
+  to serviceConfig. New finding → feasibility doc R14.
+- **panfrost boot ordering**: probed at modules-load (16 s) before GPU
+  power-on → "gpu soft reset timed out" -110 → no /dev/dri ever.
+  Blacklisted at boot + `services/scripts/panfrost-load.sh` retry
+  (rmmod+reprobe until renderD128, up to 60 s) as gemwl ExecStartPre.
+  gemwl now runs on glass (renderD128). Desktop = first real on-glass
+  GPU chain on NixOS.
+- **initrd multi-boot bug**: is_nixos used `[ -e profiles/system ]`,
+  which fails in the initrd (nix-env profile chain ends in an ABSOLUTE
+  /nix/store path; no /nix/store in the initrd namespace). First boot
+  only ever worked via nix-path-registration; EVERY later boot fell
+  back to Debian. Fixed with readlink-based resolution. Probe mounts
+  also now `-o ro,noload` (no 30x journal replay of dirty partitions
+  after WDT resets — killed the "orphan cleanup on readonly fs" flood).
+- Minor: console.font TER16x32 removed (kernel font, not kbd); a72-up
+  opt-in (no wantedBy); boot.growPartition=false (growpart unit was
+  failing on the by-label root); wifi `auto` quiet no-op without an
+  interface. wifi-internal REMAINS genuinely broken (deep CONSYS issue:
+  modules + WMT pwr-on run, wlan0 never appears — "live client resync
+  FAIL"/STP-not-ready; needs its own session).
+
+Mechanism (the "workstation" ask): **bin/deploy.sh** — host cross-
+builds the toplevel (bounded --max-jobs 8 --cores 8), pins it
+(**bin/gc-pin.sh**, per-user gcroots), ships the delta via
+`nix copy --to ssh://10.15.19.82`, switches the device system profile
+(`nix-env -p /nix/var/nix/profiles/system --set`) + activates.
+Generations 2-5 built + deployed this way; old gens stay bootable /
+rollback = `deploy.sh rollback`. Host GC hygiene: the operator's
+earlier `nix-collect-garbage` swept the whole cross closure (gen3
+silently re-cross-compiled ~259 packages) — every deploy is now pinned.
+
+Version lines (rule 0): gens = gen2 `4glxja3x…`, gen3 `81pdlpvx…`,
+gen4 `wlyqyp6…`, gen5 `c10qkjdw…` (current);
+boot.img p22 now sha `f3050e06…` (fixed initrd; backed up to
+stock-dump/); current rootfs fs = 7,164,155 blocks. Kernel unchanged
+#329. Deployed through deploy.sh + reboot-verified; device left:
+**gen5 booted on p32 (27.3 GiB), para cleared, NixOS default; only
+failed unit = gemini-wifi-internal; Debian p29 untouched.**
+
+Next: wifi-internal deep-dive (CONSYS bringup); commit this session's
+changes; consider the self-heal profile unit + native on-device
+nixos-rebuild plumbing (flake aarch64 outputs) as follow-ups.

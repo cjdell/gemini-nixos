@@ -128,8 +128,79 @@ the destructive dd (TWRP's busybox `stat` has no `-c`). [bin/flash-nixos.sh]
 
 ## 4. TODO — things not quite working yet (2026-09-07)
 
+> Worked 2026-09-07 evening (gen2-gen5 round-trip; see session-log):
+> P0 growfs done (offline resize + R13 image geometry), vconsole done
+> (R-fix: console.font stays null), audio/GPU/service 127s done (R12),
+> a72-up opt-in done, panfrost boot ordering done (blacklist +
+> panfrost-load.sh retry), boot-partition multi-boot bug done (initrd
+> readlink-based is_nixos). Remaining: wifi-internal (deep), serial
+> capture, gemwl on-glass banding watch, e2fsck-after-grow round trip.
+
 Priorities P0 (blocking full use) → P3. Each gets a dated line when
 worked.
+
+- ~~[P0] growfs: `/` is 3.1 GiB, not 27.3 GiB~~ **[done 2026-09-07]** —
+  two stacked causes, both fixed: (1) the udev by-label coldplug race
+  is irrelevant once the fs can grow (the initrd's `noload` probe + rw
+  boot mount handle journal state; the label link is created by the
+  initrd for systemd); (2) the real blocker was make_ext4fs image
+  geometry — the kernel can only online-grow it to 2x (EINVAL at the
+  next sparse_super backup group; R13 in the feasibility doc). Fix:
+  images now built with mke2fs (pkgs/make-ext4fs-shim.nix) and grow on
+  first boot; the CURRENT install was grown offline from TWRP
+  (`flash-nixos.sh grow-rootfs`: e2fsck + resize2fs with static
+  e2fsprogs; fs now 7,164,155 blocks = 27.3 GiB, e2fsck -fn clean).
+- ~~[P1] nixos-rebuild round-trip on the device~~ **[done 2026-09-07 —
+  host-cross + device-switch]** — `bin/deploy.sh`: build toplevel
+  (cross, pinned via `bin/gc-pin.sh`), `nix copy` delta over ssh,
+  profile `nix-env --set` + `switch-to-configuration`. Gens 2-5 built,
+  shipped, switched + reboot-verified on glass. Full native on-device
+  nixos-rebuild stays a follow-up (fork packages would need native PDA
+  builds — mesa etc. — no cache).
+- ~~[P2] systemd-vconsole-setup fails — TER16x32~~ **[done 2026-09-07]** —
+  TER16x32 is a kernel fbcon font, not a kbd font; `console.font` is
+  now left null (default) and the unit passes (kernel font unchanged).
+- ~~[P2] gemini-audio-defaults fails (status=127)~~ **[done 2026-09-07 —
+  R12 Path fix; active on glass]**
+- ~~[P2] gemini-wifi-internal fails~~ **[PARTIAL — R12 unblocked it from
+  "modprobe not found" to the real bringup: modules load + WMT pwr-on
+  runs, but wlan0 does not appear (30 s); chip-state/resync issue
+  ("live client resync FAIL", STP not ready), needs its own session]**
+- ~~[P2] gemini-a72-up failed at boot~~ **[done 2026-09-07 — opt-in
+  (no wantedBy), like the Debian handoff; `systemctl start
+  gemini-a72-up`]**
+- [P2] gemini-wifi-auto — now a quiet no-op without an interface
+  (script fix); with wlan0 up it proceeds (pending wifi-internal).
+- [P2] gemini-wifi-nvram / battery-guard / backlight — all active on
+  glass after the R12/R14 fixes.
+
+New items from the evening session:
+- **[NEW] panfrost boot ordering (FIXED 2026-09-07)**: panfrost probed
+  at modules-load time (16 s) BEFORE gemini-gpu-poweron → "gpu soft
+  reset timed out" -110 → no /dev/dri ever. Blacklisted at boot
+  (boot.extraModprobeConfig), loaded by gemwl ExecStartPre
+  (services/scripts/panfrost-load.sh: rmmod+reprobe until
+  /dev/dri/renderD128, up to 60 s — a probe too close to power-on also
+  times out). gemwl now runs on glass; watch the §9 banding question.
+- **[NEW] initrd multi-boot bug (FIXED 2026-09-07)**: is_nixos used
+  `[ -e profiles/system ]`, which fails inside the initrd because the
+  nix-env profile chain ends in an ABSOLUTE /nix/store path (no
+  /nix/store in the initrd namespace). NixOS could only ever boot ONCE
+  per flash (first boot passes via nix-path-registration); every later
+  boot silently fell back to Debian. Fixed with readlink-based chain
+  resolution. ALSO: probe mounts now use `-o ro,noload` so scanning a
+  dirty partition (WDT hard-reset is the only self-boot reboot — never
+  unmounts) doesn't replay its journal 30x ("orphan cleanup on readonly
+  fs" flood).
+- **[NEW] R14 (service Type/RemainAfterExit under unitConfig was
+  ignored)** — oneshots now stay active(exited); see feasibility doc.
+- [P3] wifi-internal deep-dive session; serial ttyS0 capture; gemwl
+  banding watch; GC-hygiene note (nix-collect-garbage on the HOST swept
+  the cross closure once — bin/gc-pin.sh now pins every deploy).
+
+> The ORIGINAL 2026-09-07 list below is kept as the dated snapshot;
+> items are superseded by the summary above (each marked done above).
+> The only still-open device item is wifi-internal (P2).
 
 - **[P0] growfs: `/` is 3.1 GiB, not 27.3 GiB.** Two stacked causes:
   1. **udev by-label coldplug race** — at boot, `/dev/disk/by-label/`

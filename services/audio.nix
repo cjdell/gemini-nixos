@@ -122,13 +122,15 @@ in
       Type = "oneshot";
       RemainAfterExit = "yes";
       ExecStart = "${utils}/bin/audio-defaults.sh";
-      Path = lib.makeBinPath [
-        pkgs.bash
-        pkgs.alsa-utils # amixer
-        pkgs.util-linux # logger
-        pkgs.coreutils
-        utils # audio-output (-> speaker -> gpioout)
-      ];
     };
+    # R12: systemd 261 dropped the `Path=` unit key; use the module
+    # option (packages list -> Environment PATH).
+    path = [
+      pkgs.bash
+      pkgs.alsa-utils # amixer
+      pkgs.util-linux # logger
+      pkgs.coreutils
+      utils # audio-output (-> speaker -> gpioout)
+    ];
   };
 }

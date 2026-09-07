@@ -36,8 +36,11 @@ let
   utils = pkgs.callPackage ./gemini-utils.nix { };
   firmware = pkgs.callPackage ../pkgs/gemini-firmware.nix { };
 
-  # Shared CLI PATH: the scripts call ip/iw/wpa_supplicant/dhcpcd by name.
-  cliPath = lib.makeBinPath [
+  # Shared CLI path (R12: module-level `path`, not the removed
+  # serviceConfig.Path unit key): the scripts call ip/iw/wpa_supplicant/
+  # dhcpcd by name. Systemd turns this into an Environment PATH prepended
+  # to the unit's default PATH.
+  cliPath = [
     pkgs.bash
     pkgs.coreutils # sleep, cat, grep
     pkgs.gnused # sed
@@ -105,8 +108,8 @@ in
           mkdir -p /etc/wifi
           [ -e /etc/wifi/profiles.conf ] || cp ${../etc/wifi/profiles.conf} /etc/wifi/profiles.conf
         ' '';
-      Path = lib.makeBinPath [ pkgs.coreutils pkgs.bash ];
     };
+    path = [ pkgs.coreutils pkgs.bash ];
   };
 
   systemd.services.gemini-wifi-internal = {
@@ -120,8 +123,8 @@ in
       Type = "oneshot";
       RemainAfterExit = "yes";
       ExecStart = "${utils}/bin/wifi-internal start";
-      Path = cliPath;
     };
+    path = cliPath;
   };
 
   systemd.services.gemini-wifi-auto = {
@@ -138,7 +141,7 @@ in
       Type = "oneshot";
       RemainAfterExit = "yes";
       ExecStart = "${utils}/bin/wifi auto";
-      Path = cliPath;
     };
+    path = cliPath;
   };
 }

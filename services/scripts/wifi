@@ -160,7 +160,13 @@ forget)
     echo "forgot $SSID"
     ;;
 auto)
-    check_if
+    # Quiet no-op without an interface: no internal wlan0 (CONSYS
+    # bring-up is a work in progress on this port) and no USB dongle
+    # plugged. The boot unit must not fail just because the radio is
+    # absent — profiles or not, there is nothing to associate.
+    # [2026-09-07: previously check_if died → gemini-wifi-auto failed]
+    IF=$(ifname) || :
+    [ -n "${IF:-}" ] || { echo "wifi: no wifi interface — skipping auto-connect"; exit 0; }
     [ -s "$PROFILES" ] || { echo "wifi: no saved profiles — skipping"; exit 0; }
     wpa_ensure
     # wpa_supplicant picks the strongest known network itself; just get a lease
