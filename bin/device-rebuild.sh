@@ -36,12 +36,6 @@ set -eu
 
 repo=/root/gemini-nixos
 profile=/nix/var/nix/profiles/system
-# belt+braces: features come from /etc/nix/nix.conf since gen29, but the
-# flag keeps this script working against a pre-gen29 config too. Single
-# quoted token: --extra-experimental-features takes ONE argv value
-# (space-separated list inside it) — unquoted, 'flakes' parses as a
-# command (verified 2026-09-08).
-FEATURES='--extra-experimental-features "nix-command flakes"'
 
 build() {
     # stdout = the toplevel store path ONLY (callers capture it).
@@ -52,7 +46,11 @@ build() {
         exit 2
     fi
     echo "device-rebuild: $(git log -1 --format='%h %s')" >&2
-    nix $FEATURES build .#packages.aarch64-linux.toplevel \
+    # experimental-features come from /etc/nix/nix.conf (config/gemini.nix
+    # since gen29) — no CLI flag: --extra-experimental-features takes ONE
+    # argv token, so a multi-feature value needs quoting that word-splits
+    # away; the config file is the robust carrier (2026-09-08).
+    nix build .#packages.aarch64-linux.toplevel \
         --print-out-paths --no-link
 }
 
