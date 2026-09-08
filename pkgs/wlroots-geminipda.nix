@@ -32,10 +32,12 @@
 # labwc needs a drm-enabled wlroots BUILD (its headers) even though it
 # runs nested (WLR_BACKENDS=wayland) and never opens a DRM device. The
 # labwc variant is a separate store path (services/lxqt.nix passes
-# withDrmBackend = true); gemwl keeps the trimmed build. Userspace only —
-# no kernel DRM drivers are involved and the LCD core rule (LK-initialized
-# panel) is untouched: the drm backend is never instantiated here.
-# [2026-09-07]
+# withDrmBackend = true) and ALSO builds the gbm allocator
+# (-Dallocators=gbm, mesonFlags) — labwc's nested outputs allocate client
+# buffers through it on the panfrost render node; gemwl keeps the trimmed
+# build. Userspace only — no kernel DRM drivers are involved and the LCD
+# core rule (LK-initialized panel) is untouched: the drm backend is never
+# instantiated here. [2026-09-07, allocators note 2026-09-08]
 #
 # gles2 renderer consequences (verified against wlroots-0.18.2
 # meson.build while writing this):
@@ -164,6 +166,17 @@ stdenv.mkDerivation (finalAttrs: {
     "-Dxcb-errors=disabled"
     "-Dcolor-management=disabled"
     "-Dexamples=false"
+  ] ++ lib.optionals withDrmBackend [
+    # -Dallocators=gbm: the gbm allocator is REQUIRED by labwc at runtime
+    # — its nested (wayland-backend) outputs allocate client buffers on
+    # the panfrost render node (/dev/dri/renderD128) via libgbm. The
+    # meson 'allocators' option defaults to ['auto'] and mesonAutoFeatures
+    # = disabled resolves 'auto' to [] (no allocator compiled) — first
+    # on-glass run failed: "Skipping gbm allocator: disabled at
+    # compile-time" / "unable to create allocator" (2026-09-08). gemwl's
+    # trimmed build does NOT get this (it never allocates buffers through
+    # wlr_allocator — its own gemfb output path).
+    "-Dallocators=gbm"
   ];
 
   # wlroots 0.18 links with --version-script (wlroots.syms) which
