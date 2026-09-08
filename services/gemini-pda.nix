@@ -26,6 +26,12 @@
 
 let
   utils = pkgs.callPackage ./gemini-utils.nix { };
+  # gemcli — the Rust consolidation of the device CLIs (backlight,
+  # battery/guard, a72, wdt, boot target, gpu, speaker) — docs/gemcli.md.
+  # Ships NEXT TO the scripts (2026-09-08): no unit ExecStart has been
+  # flipped yet; the on-glass parity pass (`gemcli selfcheck` + the
+  # per-command diff recipe in docs/gemcli.md) precedes every flip.
+  gemcli = pkgs.callPackage ../pkgs/gemcli.nix { };
   kernelModulePath =
     # Runtime path of the A72 bring-up module in the booted system's
     # module tree (NixOS's kmod searches /run/booted-system/kernel-modules
@@ -34,8 +40,9 @@ let
 in
 {
   # busybox (devmem) + i2c-tools are used by the scripts and by hand on
-  # the serial console.
-  environment.systemPackages = [ utils pkgs.busybox pkgs.i2c-tools ];
+  # the serial console; gemcli is the in-progress native replacement for
+  # the device CLIs (the scripts stay in the closure until migrated).
+  environment.systemPackages = [ utils pkgs.busybox pkgs.i2c-tools gemcli ];
 
   # Load the out-of-tree A72 module at boot (systemd-modules-load, via
   # the NixOS-wrapped modprobe that searches the store module tree).

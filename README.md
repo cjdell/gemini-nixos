@@ -37,6 +37,7 @@ adb.
 | `pkgs/wlroots-geminipda.nix` | wlroots 0.18.2 pinned from source (the version the verified desktop used; nixpkgs in the pin floats 0.20.1) — libinput backend + gles2 renderer only (no DRM on this device) for gemwl, built against the mesa fork; `withDrmBackend=true` variant for labwc 0.8.3 (its wlr_drm_lease compile needs the header; never instantiated on hardware) |
 | `pkgs/labwc-geminipda.nix` | labwc 0.8.3 pinned from source against the pinned wlroots 0.18.2 (the on-glass verified pair; nixpkgs floats labwc 0.20/wlroots 0.20) — the nested compositor hosting the LXQt session |
 | `pkgs/gemwl.nix` + `pkgs/gemwl/` | gemwl, the GPU-direct LK-framebuffer Wayland compositor (wlroots 0.18) + the tinytest xdg-shell smoke clients; sources byte-identical to the verified GeminiPDA `build/wayland/` files (tinytest-anim/tinytest listener-lifetime crash fixed 2026-09-07) |
+| `pkgs/gemcli.nix` + `pkgs/gemcli/` | **gemcli — Rust device-control CLI (2026-09-08, ON GLASS gen20+)**: one native binary for the device functions the shell CLIs handle (backlight/battery/guard/a72/wdt/boot/gpu/speaker). clap+libc only; script-parity exit codes; selfcheck ALL PASS on the device; gpio v1 ioctl numbers fixed for v6.6 (docs/gemcli.md). Units NOT flipped yet |
 | `config/lxqt/` | The LXQt-session user configs (lxqt.conf, session.conf, labwc rc.xml + autostart, the vendored “Gemini” openbox themerc, desktop launchers) seeded to `/root` by `services/scripts/start-lxqt-nested` |
 | `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp); cc resolved via stdenv.cc.targetPrefix (cross + native) |
 | `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
@@ -196,12 +197,16 @@ rules, the 10 % backlight-default unit, and hand-started
 | `gemini-wifi-internal` | Internal MT6630 CONSYS stack: mtk_wcn + wlan_gen3 (load order matters, B-33) + the WMT pwr-on → wlan0. Runs after `gemini-gpu-poweron` (the CONSYS chip's chrdev, major 226, collides with the GPU's if the wlan modules probe first) |
 | `gemini-wifi-auto` | `wifi auto`: associate with the strongest saved profile (`/etc/wifi/profiles.conf`) + dhcpcd lease; silent no-op without profiles |
 | `wifi` / `wifi-internal` | CLIs: USB RTL8821CU dongle (scan/connect/networks/forget) and the internal CONSYS stack (start/status/stop) |
+| **`gemcli`** | **Rust consolidation of the device CLIs (2026-09-08, docs/gemcli.md)**: backlight/battery/charger/power/guard/a72/gpu/wdt-reboot/boot/speaker + `status` + read-only `selfcheck` parity harness. In the closure next to the scripts; units NOT flipped yet |
 
 `sramldo-smc.ko` is loaded at boot via `boot.kernelModules` (the
 kernel derivation builds it in `postInstall` and ships it under
 `extra/`, depmod-indexed);
 `busybox` + `i2c-tools` are system packages for the scripts and hand
-use on the serial console.
+use on the serial console. **gemcli** (2026-09-08) — the Rust
+consolidation of the device CLIs (`pkgs/gemcli.nix`, docs/gemcli.md) —
+ships in the same closure NEXT TO the scripts; no unit ExecStart has
+been flipped yet (the on-glass `selfcheck` parity pass comes first).
 
 Beyond the bring-up units above, the rootfs carries the
 `outstanding.md` audit deltas: `boot.kernelModules` also loads the DRM

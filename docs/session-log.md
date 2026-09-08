@@ -5,6 +5,123 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (6th) — GEMCLI ON GLASS (gens 16–21): deployed via deploy.sh, selfcheck ALL PASS, battery/backlight/charger parity byte-identical, a72 up/down round-trip verified — gpio v1 ioctl bug found (v6.6 renumbering) + host disk-full incident
+
+The (5th) entry's next step: get gemcli onto the device. Version
+lines (rule 0): gemcli 0.1.0 everywhere; gens 16–21 in order
+`ac5hn0p3` → `78lq8ki` → `yqzfd51` → `838j92y` → `ias4zzi` →
+`243v8bs` (current). Kernel unchanged (6.6.0 lean, boot partition
+touched by nothing — config/package deploys only). Device left:
+gen21 current, para clear (NixOS p32 default), A72 cores back offline
+(0-7), backlight 10 %, battery fast-charging ~4.06 V.
+
+**Host disk-full incident** (first deploy failed): root fs `/` (which
+holds /nix) was 100 % — the gc-pin symlink after the toplevel build
+failed ENOSPC. Freed ~7 G of leftover kernel A/B scratch in /tmp
+(kfull/kclean/kbase/kernsrc/kobj + kernel dumps from the
+borrow-retirement session; nothing referenced them) and re-ran. Host
+/nix is 212 G/246 G — a `nix-collect-garbage` is owed soon (the
+pinned-deploy gcroots make it safe; deferred to keep this session
+focused).
+
+**Deploy mechanism** worked as designed the rest of the way:
+run-job + `bash bin/deploy.sh deploy` (~50 s each: build cached,
+delta nix copy, profile switch + activate — no flash, no reboot
+needed for the new systemPackages entry to land).
+
+**On-glass results**: `gemcli selfcheck` = ALL PASS (8/8: devmem SPM/
+WDT reads, bq25890 psy, raw BQ25896 i2c read, backlight 9 %, cpu map
+0-7, para present, gpio pads 243/244, gpu regs). Byte-identical
+parity: battstat vs `gemcli battery status`, bq25896-raw.sh vs
+`gemcli charger raw`, `backlight get`; write round-trip
+`set 20` → 20 everywhere → restored 10. `gemcli a72 up both`: cpu8
+cold on attempt 1 (DA9214 bus i2c-2, SPM pre-seq, sramldo, WDT-armed
+PSCI) + cpu9 warm → 0-9; `a72 down both`: cpu9 per-core, cpu8
+last-A72 secure teardown (ISO bit1 re-asserted, PWR_CON bit0 clear),
+DA9214 BUCKB rail dropped → 0-7, cold-boot state. rc 0 both ways.
+
+**THE bug**: gpio probes failed EINVAL while the C gpioout succeeded
+on the same pads. Bisected with an aarch64 strace (shipped via the
+repo's `nix copy --to ssh://10.15.19.82` mechanism from the pinned
+rev): strace decoded the C call as GPIO_GET_LINEHANDLE_IOCTL but left
+the Rust one raw — and the v6.6 UAPI header shows the v1 ioctl
+numbers were REORGANISED after the pre-5.x kernels:
+`GPIO_GET_LINEHANDLE_IOCTL` is nr 0x03 (nr 0x02 is now
+GPIO_GET_LINEINFO_IOCTL). My nr-0x02 request hit the lineinfo ioctl
+with a linehandle struct → EINVAL. Fixed in pkgs/gemcli/src/gpio.rs
+(nr 0x03) + a regression test pinning the exact _IOC literals
+(8 tests green). Also: chip resolution now scans
+GPIO_GET_CHIPINFO_IOCTL ngpio per chip (this kernel: gpiochip0
+pinctrl_paris 262 lines + gpiochip1 aw9523b 16) instead of assuming
+chip0. Cosmetic: cl2-up warm log now says OK/FAILED (the "rc=1" form
+was a success-boolean that read backwards).
+
+Units still ExecStart the scripts — the flips (backlight-default →
+wdt/boot/a72 hand-runs → gpu-poweron → battery-guard LAST) are the
+remaining step per docs/gemcli.md; nothing in this session flipped
+one. strace 7.2 left in the device store (debug tool, harmless).
+
+Next: host nix-collect-garbage (gcroots are in place), then the
+lowest-risk unit flip (gemini-backlight-default → `gemcli backlight
+set 10`) with a WDT-reboot A/B.
+
+## 2026-09-08 (5th) — GEMCLI LANDED (Rust device-control CLI): clap-based tool with script-parity ports of backlight/battery/charger/power/guard/a72/wdt/boot/gpu/speaker; native aarch64 build rc=0 — nothing flashed, no unit flipped
+
+Asked-for consolidation: one native Rust binary ON the device for the
+functions the bring-up shell scripts handle (services/scripts/*), built
+in-repo as `pkgs/gemcli.nix` + `pkgs/gemcli/` (the pkgs/* vendored-source
+pattern, like gemwl/speaker-amp). Deps are clap 4.5 (derive — the asked-
+for "nice CLI parser crate") + libc 0.2 only; access model = /dev/mem mmap
+(devmem-equivalent), i2c-dev ioctls incl. DT-base adapter resolution +
+`-f` force semantics, gpio chardev v1 for the speaker pads, sysfs for psy/
+backlight/cpu. Docs: docs/gemcli.md (map, exit codes, corrections,
+parity + flip recipe).
+
+**Scope**: `backlight` (sysfs-first, DISP_PWM0 devmem fallback + clock
+gates), `battery status` (battstat exit codes 0/2/3/4/5), `charger raw`
+(BQ25896 conversion-trigger + register decode), `power`
+(status/watch/charge/dim-to-charge), `guard run` (the safety daemon —
+same env knobs, same /run/battery-guard/state + history CSV),
+`a72 up/down` (cl2-up/down: DA9214 BUCKB via i2c, SPM pre-sequence,
+sramldo SMC, WDT-armed PSCI hotplug/teardown), `gpu poweron/status`
+(full MTCMOS vendor sequence), `wdt-reboot`, `boot` (para marker:
+recovery/debian/nixos + --no-reboot), `speaker`, `status` aggregate,
+`selfcheck` (read-only on-glass parity harness), `version` (rule-0
+banner). wifi/wifi-internal + audio-output/defaults deliberately NOT
+ported yet (daemon/card orchestrators, not register control) — phase 2.
+
+**Corrections over the scripts (all `[corrected 2026-09-08]`, noted in
+module headers + docs/gemcli.md)**: (1) cl2-up.sh always exited 0
+(trailing `log` echo rc) even after GAVE UP — gemcli returns the real
+outcome; (2) gemini-boot-recovery wrote a SHORT 15-byte para record (no
+conv=sync) — gemcli always writes the full padded 32-byte command like
+gemini-boot-debian; (3) battery-guard's bash rotation wrote a 7-column
+header over 8-field rows — gemcli always writes the 8-column header.
+
+**Build receipt** (build-level only, nothing on the device): run-job
+`gemcli-build`, rc=0 in 86 s — rustc/cargo 1.97.1 + llvm substituted
+from cache.nixos.org at the pinned rev dc5d91f84032, compiled on the
+192.168.49.191 aarch64 builder, out
+`ldl1j87ks6s09qzzvbhvhkzqrb00fv53-gemcli-0.1.0` (bin 1.34 MB,
+stripped, opt-level s). 6 hardware-free unit tests (civil-time,
+cpu-range parse, para decode, charger ichgr parse, CON1 duty->pct) ran
+green in-sandbox via buildRustPackage's default checkPhase. Local
+`cargo check`/`test` clean on the host too.
+
+**Wiring**: flake package `.#packages.aarch64-linux.gemcli` + eval
+verified; services/gemini-pda.nix adds gemcli to
+environment.systemPackages NEXT TO the scripts (busybox + i2c-tools
+stay for console hand use); README layout table + phase-3 services
+table + AGENTS.md where-things-live row; this log. The systemd units
+still ExecStart the scripts — flipping is an on-glass job:
+`gemcli selfcheck` first, then the lowest-risk-first flip order in
+docs/gemcli.md (backlight-default -> wdt/boot/a72 hand-runs ->
+gpu-poweron -> battery-guard LAST -> a72-up).
+
+Next: deploy a gen with gemcli in the closure (bin/deploy.sh), run
+`gemcli version` + `gemcli selfcheck` on glass, log the version line,
+then start the parity diffs.
+
 ## 2026-09-08 (4th) — repin closure built + deployed: gen15 (nixpkgs dc5d91f84032) live, desktop healthy — 11-min build vs multi-hour
 
 Executed the (3rd) entry's next step: build the repinned toplevel,

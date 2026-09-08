@@ -1,0 +1,29 @@
+# gemcli — Gemini PDA device-control CLI (Rust).
+#
+# The native (aarch64) device-side manager for the functions the bring-up
+# shell scripts handle: backlight, battery/charger, A72 cluster bring-up,
+# WDT reboot, boot-target (para) selection, GPU power, speaker amps.
+# Script-parity semantics; see ../../docs/gemcli.md and the module headers.
+#
+# Dependency policy: minimal + build-cached. clap (derive) for the CLI
+# tree; libc for the handful of raw syscalls (mmap on /dev/mem, i2c-dev
+# ioctls, gpio chardev ioctls, reboot). No other runtime deps — the
+# on-device closure stays lean and every crate below is hydra-cached.
+[package]
+name = "gemcli"
+version = "0.1.0"
+edition = "2021"
+description = "Gemini PDA device control (backlight/battery/A72/WDT/boot/GPU)"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
+
+# Small + deterministic binary (version-hygiene rule 0: every flashed/run
+# artifact carries an identity — `gemcli version` prints this + the
+# build-id banner).
+[profile.release]
+opt-level = "s"
+strip = true
+panic = "abort"

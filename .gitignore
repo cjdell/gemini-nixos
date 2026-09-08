@@ -16,3 +16,6 @@ stock-dump/
 # glass-verified; the submodule content at kernel/base is fetched on
 # demand (`git submodule update --init --depth 1 kernel/base`).
 *.tar.gz
+
+# Rust build artifacts (pkgs/gemcli/)
+pkgs/gemcli/target/

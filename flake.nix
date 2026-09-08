@@ -141,6 +141,11 @@
       # services/lxqt.nix). Standalone here for keymap checks
       # (xkbcli compile-keymap --layout gemini -I <dir>).
       geminiXkb = eval.pkgs.callPackage ./pkgs/gemini-xkb.nix { };
+
+      # gemcli — Rust device-control CLI (backlight/battery/A72/WDT/boot/
+      # GPU/speaker; script-parity ports, see docs/gemcli.md). In the rootfs
+      # closure via services/gemini-pda.nix; standalone for builds/checks.
+      gemcli = eval.pkgs.callPackage ./pkgs/gemcli.nix { };
     in
     {
       packages.${buildSystem} = {
@@ -162,6 +167,9 @@
         gemwl   = gemwl;   # GPU-direct fb compositor + tinytest clients
         labwc   = labwc;   # 0.8.3 nested compositor (pinned wlroots 0.18.2)
         gemini-xkb = geminiXkb; # xkb layout include dir (XKB_CONFIG_EXTRA_PATH)
+        # Rust device-control CLI (script-parity ports; in the rootfs via
+        # services/gemini-pda.nix — standalone build/iteration target).
+        gemcli = gemcli;
       };
 
       # Host tooling stays x86_64 (this flake is evaluated from an x86_64
