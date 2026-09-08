@@ -66,9 +66,11 @@ headroom ~1.3 MiB → ~6.5 MiB. Module tree 388 .ko (~288 MB unstripped;
 strip/DEBUG_INFO follow-up considered).
 
 NOT flashed. The kernel is unverified on glass (as is any rebuild):
-next step = build boot.img from the flake, boot with para=boot-recovery
-sticky discipline (bin/flash-nixos.sh), A/B vs the current #329 image;
-keep kernel/borrowed + config.full-329 until then (rollback). Also
+next step = the on-glass A/B run documented in
+`docs/handover-2026-09-08-kernel-on-glass.md` (build boot.img + new
+nixos gen, flash both in lock-step — §3 pairing rule, para=boot-
+recovery discipline, rule-5 eyes check); keep kernel/borrowed +
+config.full-329 until then (rollback). Also
 still owed: docs sweep (README “Kernel phase”, AGENTS M5/M1 rows,
 library-deltas kernel entry, .gitignore snapshot comments) — partially
 done this session.
