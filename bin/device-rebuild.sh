@@ -37,8 +37,11 @@ set -eu
 repo=/root/gemini-nixos
 profile=/nix/var/nix/profiles/system
 # belt+braces: features come from /etc/nix/nix.conf since gen29, but the
-# flag keeps this script working against a pre-gen29 config too.
-FEATURES="--extra-experimental-features nix-command flakes"
+# flag keeps this script working against a pre-gen29 config too. Single
+# quoted token: --extra-experimental-features takes ONE argv value
+# (space-separated list inside it) — unquoted, 'flakes' parses as a
+# command (verified 2026-09-08).
+FEATURES='--extra-experimental-features "nix-command flakes"'
 
 build() {
     # stdout = the toplevel store path ONLY (callers capture it).
