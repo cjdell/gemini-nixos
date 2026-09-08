@@ -57,6 +57,8 @@ adb.
 | `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and system.img → p32 (`userdata`, Android erased — Debian p29 untouched); verbs status/boot/rootfs/all/boot-nixos/debian; safe TWRP-sticky default |
 | `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
 | `bin/deploy.sh` | **Workstation-style generation loop (2026-09-07 → native)**: builds the NATIVE aarch64 toplevel (root `--store local` distributed build to the 192.168.49.191 remote builder, pinned via gc-pin), `nix copy` delta → device store over ssh, profile switch + activate. Verbs status/build/deploy [PATH]/rollback [N]. Reboot lands on the new gen; old gens stay selectable — no reflash, no TWRP |
+| `bin/device-rebuild.sh` | **The SAME loop, run ON the PDA** (2026-09-08, from a repo clone at `/root/gemini-nixos`): native aarch64 build straight into the device store (cache.nixos.org substitutes; the custom drvs compile locally only when changed) + profile switch/activate. Verbs status/build/switch [PATH]/rollback [N]/channels/gc. `build` refuses a dirty repo (rule 0) |
+| `bin/device-repo.sh` | Seed + sync the repo between host and the device clone over g_ether as a git bundle (no github round-trip; works offline). Verbs seed/push/pull — directional, nothing silently lost |
 | `bin/gc-pin.sh` | GC-root a build (NAME STORE_PATH | list | unpin) so host `nix-collect-garbage` can't sweep the aarch64 closure (happened once — gen3 silently rebuilt ~259 packages); milestone closures get a root-level root too (`sudo nix-store --add-root /nix/var/nix/gcroots/<name> -r <out>`) |
 | `bin/flash-nixos.sh` `grow-rootfs` | Offline-grow the p32 rootfs to the full partition from TWRP (e2fsck + resize2fs, static musl e2fsprogs) — the recovery path for make_ext4fs-geometry fs the kernel can't online-grow (R13); images since 2026-09-07 grow on first boot via growfs-root |
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
@@ -83,7 +85,12 @@ adb.
   shim forbids `system` + `pkgs` together). Bump = take the rev behind
   `https://channels.nixos.org/nixos-unstable/git-revision`, re-verify the
   narHash (`nix flake prefetch github:NixOS/nixpkgs/<rev>`). Host
-  tooling devShell stays on MNX's npins (x86_64, independent).
+  tooling devShell stays on MNX's npins (x86_64, independent). **The
+  device's `nix-shell -p` channel is pinned to this SAME rev**
+  (`bin/device-rebuild.sh channels`, 2026-09-08): legacy `nix-shell -p`
+  packages therefore match the running system and substitute from the
+  cache (rule 9). When the flake pin moves, re-run `channels` on the
+  device.
 - **Kernel**: built in-repo from upstream Linux **v6.6** (kernel.org
 tarball, fetch-pinned; base commit `ffc253263a…`, also the `kernel/base`
 submodule) + the tracked delta (`kernel/delta` == geminipda-bringup @
@@ -316,6 +323,33 @@ p32; see `docs/phase-2-on-glass.md` for the bootopt discovery + the
 open TODO). The device runs the NixOS rootfs on p32 (Debian stays on
 p29); the rootfs `growfs` (TODO P0), a few services and the
 `nixos-rebuild` round-trip are the remaining on-glass work.
+
+## On-device build/switch (2026-09-08, gen30 verified)
+
+The PDA is a first-class flake target: a repo clone at
+`/root/gemini-nixos` (sync with this host via `bin/device-repo.sh`
+seed/push/pull or the github origin) can iterate the config and add
+programs with NO host involved:
+
+```sh
+# on the device (repo clone at /root/gemini-nixos):
+bash /root/gemini-nixos/bin/device-rebuild.sh status   # generations
+# edit config/gemini.nix, git add+commit, then:
+bash /root/gemini-nixos/bin/device-rebuild.sh build    # flake eval + build on the PDA
+bash /root/gemini-nixos/bin/device-rebuild.sh switch   # nix-env --set + activate (no reflash)
+# and the classic ad-hoc shell:
+nix-shell -p pkgname        # pinned to the same nixpkgs rev as the flake (rule 9)
+```
+
+Builds are native aarch64 into the device store (store writes flow
+through the socket-activated nix-daemon — `/nix/store` is bind-mounted
+ro in the main namespace by design). The pinned nixpkgs rev substitutes
+from cache.nixos.org over the device's wifi/USB NAT; only the custom
+drvs (mesa fork, kernel, wlroots/labwc/gemwl, firmware) and config glue
+compile locally — config tweaks switch in minutes, kernel/mesa changes
+are long on the A72/A53 mix (prefer the host `deploy.sh` loop for
+theirs). gen30 was built + switched entirely on the device (session
+log 2026-09-08); a cold-reboot check is owed.
 
 ## Known constraints (docs §7)
 

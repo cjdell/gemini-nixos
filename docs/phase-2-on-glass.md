@@ -154,9 +154,12 @@ worked.
   host-cross + device-switch]** — `bin/deploy.sh`: build toplevel
   (cross, pinned via `bin/gc-pin.sh`), `nix copy` delta over ssh,
   profile `nix-env --set` + `switch-to-configuration`. Gens 2-5 built,
-  shipped, switched + reboot-verified on glass. Full native on-device
-  nixos-rebuild stays a follow-up (fork packages would need native PDA
-  builds — mesa etc. — no cache).
+  shipped, switched + reboot-verified on glass. **2026-09-08: the full
+  NATIVE on-device round-trip is ALSO done** — `bin/device-rebuild.sh`
+  (flake eval + build straight into the device store, cache
+  substitutions) + `bin/device-repo.sh` (clone sync); gen30 built +
+  switched entirely on the PDA; `nix-shell -p` pinned to the flake
+  nixpkgs rev (session log 2026-09-08).
 - ~~[P2] systemd-vconsole-setup fails — TER16x32~~ **[done 2026-09-07]** —
   TER16x32 is a kernel fbcon font, not a kbd font; `console.font` is
   now left null (default) and the unit passes (kernel font unchanged).
@@ -220,10 +223,14 @@ New items from the evening session:
      builder), offline-resize-before-flash option, or build the image
      with a much larger `extraPadding`. Until fixed: `/` fills at 3.1 GiB
      (1.5 GiB used) — NOT boot-blocking but space-limited.
-- **[P1] nixos-rebuild round-trip on the device** (the phase-2 exit
-  criterion's second half). Needs a story for sources + binary cache on
-  glass (no stage-1 USB networking; the g_ether link + host NAT exist —
-  `bin/usb-tether-nat.sh`).
+- ~~**[P1] nixos-rebuild round-trip on the device**~~ **[done 2026-09-08 —
+  device-native]** — sources on the PDA = the repo clone at
+  /root/gemini-nixos (bin/device-repo.sh); binary cache = the flake's
+  hydra-built channel rev over the device wifi/g_ether NAT;
+  store writes through the socket-activated nix-daemon (the store is
+  bind-mounted ro by design). `bin/device-rebuild.sh build|switch`;
+  custom drvs (mesa/kernel) compile on-device only when changed —
+  prefer the host deploy.sh loop for those.
 - **[P1] Verify the Debian branch on the FINAL fixed boot.img** —
   boot-debian through `3965955f…` (P3 proved the branch with the old
   header + our ramdisk; the fixed image should behave identically —

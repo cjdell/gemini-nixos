@@ -37,9 +37,14 @@ Read this file first, then `README.md`,
 Phases 0/1/3 done at the **build level** — the flake's `boot.img` +
 `rootfs.img` build green and match the bring-up boot contract — and
 **phase 2 is now on glass (2026-09-07 milestone: NixOS boots, sshd over
-g_ether from p32)**; the rootfs `growfs`, several services and the
-`nixos-rebuild` round-trip are the remaining on-glass work (TODO:
-`docs/phase-2-on-glass.md`). Rootfs target (2026-09-07): NixOS → p32
+ g_ether from p32)**; the rootfs `growfs`, several services and the
+`nixos-rebuild` round-trip were the remaining on-glass work (TODO:
+`docs/phase-2-on-glass.md`). **2026-09-08: the round-trip is closed
+BOTH ways** — host `bin/deploy.sh` (gens ≤ 28) and device-native
+build/switch (`bin/device-rebuild.sh`; gen30 was built + switched
+entirely on the PDA from a repo clone at `/root/gemini-nixos`;
+`nix-shell -p` works, pinned to the flake's nixpkgs rev — see README
+"On-device build/switch"). Rootfs target (2026-09-07): NixOS → p32
 `userdata` with a dual-boot boot.img, Debian stays on p29 (see
 `docs/repartition-android-space.md` §10 decisions).
 
@@ -185,6 +190,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | **Boot-target switching + boot-partition flash** (adb/TWRP; twrp/android/debian/flash/restore) | `bin/boot-switch.sh` |
 | **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p32 userdata rootfs; Debian p29 preserved) | `bin/flash-nixos.sh` (verbs incl. `grow-rootfs` — offline p32 fs growth from TWRP, R13) |
 | **Build/switch/rollback generations like a workstation** (native-aarch64 distributed build → delta `nix copy` → device profile switch + activate; NO reflash) | `bin/deploy.sh` (status/build/deploy/rollback) |
+| **Same loop, run ON the PDA** (2026-09-08, gen30): build straight into the device store (cache substitutes; custom drvs compile locally when changed) + profile switch/activate, from a repo clone at `/root/gemini-nixos`; `channels` pins the `nix-shell -p` nixpkgs to the flake rev | `bin/device-rebuild.sh` (status/build/switch/rollback/channels/gc); clone sync: `bin/device-repo.sh` (seed/push/pull over g_ether as a git bundle) |
 | **GC-pin builds** (host `nix-collect-garbage` protection — every deploy pins itself; list/unpin) | `bin/gc-pin.sh` |
 | **Detached job runner** (rule 8) | `bin/run-job.sh`; state `logs/jobs/` |
 | Device partition backups pulled over adb/dd (gitignored; nvram/IMEI private — never commit) | `stock-dump/` (ledger + copy status: `docs/disaster-recovery/inventory.md`) |

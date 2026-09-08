@@ -1443,3 +1443,84 @@ failed unit = gemini-wifi-internal; Debian p29 untouched.**
 Next: wifi-internal deep-dive (CONSYS bringup); commit this session's
 changes; consider the self-heal profile unit + native on-device
 nixos-rebuild plumbing (flake aarch64 outputs) as follow-ups.
+## 2026-09-08 (on-device build/switch, gens 29-30) — THE PDA BUILDS + SWITCHES ITSELF: gen30 built AND switched entirely on-device; `nix-shell -p` works against the flake-pinned nixpkgs; device-rebuild.sh + device-repo.sh
+
+Follow-up to the "native on-device nixos-rebuild plumbing" note from
+the 2026-09-07 evening sweep. User ask: iterate the config/add programs
+on-the-go (no host) and have `nix-shell -p pkg` work on the PDA.
+
+Facts verified on glass gen28 (before any change):
+- `/nix/store` is bind-mounted **ro in the MAIN mount namespace** while
+  the socket-activated nix-daemon runs in a **private mount namespace
+  that sees it rw** (mountinfo: main `ro,…`, daemon ns `rw,…`, different
+  mnt ids — the MNX/NixOS read-only-store design). The daemon is the
+  only store writer; **root nix clients auto-connect to the daemon when
+  the socket exists** (plain `nix-store --add` as root succeeded on
+  gen28 — no `store = daemon` line needed).
+- The nix module is enabled (nix.conf is generated) but
+  `experimental-features` was EMPTY on gen28 → flake builds failed.
+
+Changes (host commit `6b017bd`, deployed as gen29):
+- `config/gemini.nix` new "On-device Nix" section:
+  `experimental-features = nix-command flakes`; `max-jobs = 2`,
+  `cores = 2` (3.6 GiB RAM bound); `sandbox = false` (trusted
+  single-user root PDA); daemon build temp on disk via
+  `systemd.services.nix-daemon.environment.TMPDIR = /var/tmp` (/tmp is
+  a 1.9 GiB tmpfs — a kernel/mesa build needs GBs). Eval receipt:
+  putting it under `serviceConfig.environment` failed ("cannot coerce a
+  set to a string") — the option is `systemd.services.X.environment`,
+  a SIBLING of serviceConfig.
+- `nix.nixPath` + nix.conf `nix-path` → the per-user channels dir
+  (root's login-shell NIX_PATH + every nix client).
+- systemPackages: `git` 2.55.0 + `micro` (device repo + on-the-go
+  editing).
+- New `bin/device-rebuild.sh` (runs ON the PDA from
+  /root/gemini-nixos; verbs status/build/switch PATH/rollback [N]/
+  channels/gc; `build` refuses a dirty repo — rule 0) and new
+  `bin/device-repo.sh` (host side; seed/push/pull the repo over g_ether
+  as a git BUNDLE — no github round-trip, works offline).
+- Gotchas hit + fixed during bring-up (all committed):
+  `--extra-experimental-features` takes ONE argv token (multi-feature
+  values can't survive word-splitting → drop the flag; nix.conf carries
+  the features since gen29); bundle-path fetches need an explicit
+  refspec (`git fetch bundle main:refs/remotes/host/main` — git won't
+  fetch a bundle's implicit HEAD); amending host commits after seeding
+  diverges the device clone (reseeded; device had no unique work).
+
+`nix-shell -p` on the device (the ask): `nix-channel` is BROKEN on this
+NixOS 26.11 per-user channels layout (EINVAL/"reading symbolic link
+…/channels/nixos" against the dangling ~/.nix-defexpr/channels
+symlink — nix-channel abandoned). `device-rebuild.sh channels` installs
+the channel MANUALLY: the pinned-rev github tarball fetched by nix
+itself (`nix-instantiate --eval` of `builtins.fetchTarball`) → symlink
+`/nix/var/nix/profiles/per-user/root/channels/nixpkgs` → the SAME
+content-addressed store source the flake's fetchTree unpacks to (no
+double download) + a GC root. VERIFIED: `nix-shell -p hello --run …`
+substitutes + runs on the PDA (note: legacy `-p` builds a stdenv shell
+env, so it pulls gcc/binutils from cache each time — cached, but not
+free).
+
+On-device build receipts (rule 0):
+- gen29 (host-built via deploy.sh): `b54gw7a…` (config change above;
+  87 s host build). Device left running it while the repo was seeded.
+- **gen30 (DEVICE-built + DEVICE-switched)**: config change made ON the
+  device (`8936db5` "add ripgrep" — device git identity mirrored from
+  the host), built with `device-rebuild.sh build` → full flake eval on
+  the PDA (mnx tarball fetched into the Git cache; config-glue drvs
+  compiled locally) → `8vwpdpz…` in ~4.5 min; `device-rebuild.sh
+  switch` activated it. Desktop gemwl + lxqt-nested stayed up through
+  the switch (NRestarts=0). ripgrep 15.2.0 live. The device commit was
+  pulled back to the host (fast-forward) — host main now contains the
+  on-the-go work.
+- Kernel/boot.img/flash: NONE this session (profile-only switches;
+  para untouched).
+
+Device left: gen30 current (`8vwpdpz…`), repo clone /root/gemini-nixos
+@ `b58721d` clean, channels pinned to the flake nixpkgs rev
+`dc5d91f84032`, desktop up, gens 27-29 selectable for rollback
+(`device-rebuild.sh rollback`).
+
+Next: big custom-drv compiles (kernel/mesa) stay on the host/Pi loop
+(deploy.sh) — the PDA compiles them only when their sources change
+(expect ~30+ min; RAM-bound 2×2 jobs; a zram/swapfile is the open
+improvement for desktop-up compiles). Cold-reboot check of gen30 owed.
