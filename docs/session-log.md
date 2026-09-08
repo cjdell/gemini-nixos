@@ -5,6 +5,111 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (afternoon) — LEAN KERNEL ON GLASS (A/B run done): self-built 6.6.0 boots + desktop verified; boot-log display quirk observed; wifi/keyboard handover written
+
+Executed `docs/handover-2026-09-08-kernel-on-glass.md` — the first boot of the
+self-built lean kernel (no #329 borrow). Outcome: **PASS on all §6 criteria**
+except wifi-internal — which this session re-diagnosed as rootfs-packaging
+gaps, not the deep CONSYS issue previously assumed (see below). Version lines
++ receipts:
+
+- boot.img `/nix/store/b0a7lvxxbq13ryfzh8i1267rzyda7wcs-…_boot.img` —
+  8.93 MiB (9,367,552 B), sha256 `be6f4d2192d8a95ef762cd17b910fa3af98d3fb98f76a91eef3decd4da4a2e51`,
+  gc-pinned `boot-img-lean-20260908`; cmdline carries
+  `bootopt=64S3,32N2,64N2`; header geom (kernel 0x40200000, ramdisk
+  0x45000000, tags 0x44000000, pagesize 2048) verified pre-flash via
+  `bin/dump-bootimg-header.sh`; **flash bytes verified post-flash from
+  TWRP**: image-sized prefix of p22 `boot` sha256 == local image
+  (whole-partition sha differs only by leftover bytes of the old
+  14.7 MiB #329 image past the 8.93 MiB end — benign).
+- generation **gen9** `r2mr8hf2l3k7l3029yhb8dgc27i7m84g-nixos-system-
+gemini-26.11pre1031299.0bb7ec54c848` — gc-pinned
+  `toplevel-20260908-1342`; deployed via `bin/deploy.sh` (5-path delta:
+  `linux-6.6.0` + `linux-6.6.0-modules` + etc + toplevel) while gen8 ran,
+  then flashed + rebooted to land kernel+gen together (§3 pairing).
+- On glass: `uname -r` = **6.6.0 #1-mobile-nixos** (banner not #329);
+  `/run/booted-system` kernel-modules = 6.6.0; `modprobe sramldo-smc`
+  OK; panfrost at 17.3 s → renderD128 + card0; gemwl + labwc +
+  lxqt-session/panel + pcmanfm running, **NRestarts=0**; battery-guard
+  active (charging 4.06 V); boot 7.4 s kernel + 56.3 s userspace.
+- Failed unit (systemctl --failed): only `gemini-wifi-internal`;
+  additionally `gemini-wifi-nvram` is **bad-setting** (malformed unit —
+  never ran on any boot; root-caused below). Old #329 `boot`
+  auto-backed-up to `stock-dump/boot-20260908-134552.img` during the
+  flash.
+
+**fbcon boot-log display quirk (OBSERVED, unverified regression):**
+operator noted the kernel boot logs appear **only in the bottom third of
+an otherwise-healthy landscape display** (desktop full-screen and proper
+→ panel/rule-5 clean). Evidence it may be *inherited*, not a lean
+regression: cmdline is byte-identical to the #329 image
+(`fbcon=rotate:3 fbcon=font:TER16x32` in both), fb driver + fbcon config
+options identical between lean and full-329 configs (only FB_EFI/
+FB_CORE/FB_DEVICE/FB_MODE_HELPERS pruned — `/dev/fb*` now absent, fbcon
+unaffected). fbcon took over at 0.29 s at 135×33 (full landscape width in
+fbcon's rotated accounting; TER16x32 font), then gemwl released it at
+19.7 s. LK fb = 1080×2160 portrait buffer, OVL-scanned to landscape;
+fbcon's software-rotation glyph grid lands only partially in the visible
+window — the desktop (gemwl) renders correctly because it writes pixels
+with full knowledge of the OVL layout. Operator: "I think it started with
+the new kernel but I'm not completely sure" — NOT confirmed either way;
+re-check against a #329 boot when convenient. Cosmetic only (fbcon
+console window pre-gemwl). Follow-up if wanted: compare a #329/gen8 boot
+visually, or probe alternate rotate values on a bench boot.
+
+**Wifi/keyboard ROOT-CAUSE SPOTS (both "never worked in NixOS" items
+re-diagnosed — they are ROOTFS-PACKAGING gaps, not the deep CONSYS
+chip issue the 2026-09-07 log assumed):**
+
+- `gemini-wifi-nvram.service` has been **malformed since the original
+  port** (c6afc5c): its multi-line `''/bin/sh -c '…' ''` ExecStart lands
+  in the unit file with real newlines/indent → systemd
+  "Unbalanced quoting"/"Invalid section header" → **bad-setting, never
+  ran on ANY boot** (verified: systemd-analyze verify fails on ALL
+  stored gens 2/7/8/9; journal receipts Sep 07 15:41 + every boot).
+  Consequence: `/data/nvram/APCFG/APRDEB/WIFI` (factory MAC+TX cal)
+  and `/etc/wifi/profiles.conf` were never installed (`/etc/wifi` does
+  not even exist on glass).
+- wlan_gen3 probe fails on **two missing files**, per this boot's dmesg:
+  (1) `nvram_read: failed to open!!` / `glLoadNvram fail` ← the dead
+  nvram unit above; (2) `kalFirmwareOpen: Open FW image
+  WIFI_RAM_CODE_6797 failed` at all three HARDCODED paths
+  `/storage/sdcard0`, `/vendor/firmware`, `/lib/firmware` — none exist
+  on NixOS (firmware lives in the nix store; the firmware_class param
+  path serves request_firmware — the WMT/ROMv3 leg loaded fine via it
+  ("live client re-synced to the patched full-mode MCU") — but
+  wlan_gen3's kalFirmwareOpen uses its own hardcoded list, not
+  request_firmware). The legacy Debian rootfs satisfied it by
+  installing blobs into `/lib/firmware/` (GeminiPDA
+  `build/rootfs-files/wifi-consys/install-wifi-consys.sh`). Fix
+  direction: symlink `/lib/firmware` → the firmware dir (e.g.
+  `/run/current-system/firmware`) via systemd-tmpfiles/activation +
+  repair the nvram unit ExecStart (single-line or a script).
+  **The CONSYS MCU link itself is healthy on this kernel** (resync OK,
+  func-on leg 0) — the "deep CONSYS issue" framing from 2026-09-07
+  needs re-testing after the two packaging fixes; the 30 s wlan0
+  timeout is downstream (wlan_gen3 probe).
+- Keyboard mappings never worked because **the Gemini xkb layout is
+  not in the NixOS closure**: gemwl hardcodes layout "gemini"
+  (`pkgs/gemwl/gemwl.c`, GEMWL_XKB_LAYOUT override) but xkbcommon
+  fails every boot: `[XKB-338] Couldn't find file "symbols/gemini"`
+  (include paths = the stock xkeyboard-config-2.47 + `/root/.config/xkb`,
+  `/root/.xkb`, `/etc/xkb` — all absent). gemwl then falls back to the
+  default keymap → wrong UK keysyms / no Fn (level3) layer. The legacy
+  Debian rootfs shipped `symbols/gemini` (GeminiPDA
+  `build/rootfs-files/xkb/symbols/gemini`, deploy-xkb-gemini.sh) — no
+  NixOS equivalent exists yet. Kernel side is FINE: the matrix device
+  is event2 "keyboard" (114-key bitmap), NT36772 touch = event0,
+  mt6351-keys = event3, USB mouse = event1. Console keymap
+  (`console.keyMap = gemini-uk.map`) is set but only covers the VT
+  console, not the gemwl/LXQt desktop path.
+
+Device left: **gen9 on p32, para cleared, NixOS default, booted on the
+lean 6.6.0 kernel**, desktop up, wifi-internal failed + wifi-nvram
+bad-setting (both root-caused above), Debian p29 untouched. Next:
+mediatek wifi + keyboard mappings workstream — see
+`docs/handover-2026-09-08-wifi-keyboard.md`.
+
 ## 2026-09-08 — Kernel SELF-CONTAINED + LEAN: published-base + delta-tree source model; borrow retired; kernel now builds in-nix (aarch64) in ~6 min
 
 **Goal reached:** the rootfs no longer borrows kernel #329 artifacts from
