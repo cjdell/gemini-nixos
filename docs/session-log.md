@@ -5,6 +5,70 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-07 (night) — LXQt desktop ported in-tree (committed); cross toplevel abandoned at nixpkgs-cross walls; native-aarch64 branch + Pi-builder build running (handover: docs/handover-2026-09-07-lxqt-native.md)
+
+User goal: LXQt running like on the GeminiPDA Debian (labwc-nested).
+Repo-side port done + committed on `main` 7a5bf23 (device untouched,
+still gen5 `c10qkjdw`); the on-glass/closure build went the native
+route. **Check-up doc for tomorrow: `docs/handover-2026-09-07-lxqt-native.md`.**
+
+Done / landed (commit 7a5bf23):
+- The black screen from the previous session was root-caused: gemwl ran
+  fine but its startup client tinytest-anim SEGV'd ~1 s after map
+  (dangling listener vtable — libwayland stores the pointer, the
+  function-scope compound literals died before the async release/done
+  event → wl_closure_invoke crash). Fixed in pkgs/gemwl/tinytest-anim.c
+  + tinytest.c (file-scope statics).
+- **LXQt nested desktop in-tree**: pkgs/labwc-geminipda.nix (labwc 0.8.3
+  pinned, on wlroots 0.18.2), services/lxqt.nix (lxqt-nested.service:
+  labwc -S lxqt-session hosting nixpkgs lxqt 2.4/Qt 6.11; XDG_CONFIG_
+  DIRS = lxqt etc/xdg autostart assembly, Papirus icon theme,
+  QT_PLUGIN_PATH, HOME=/root env), config/lxqt/ (session configs +
+  vendored Gemini openbox themerc, seeded by services/scripts/
+  start-lxqt-nested), gemwl now runs with no -s client. desktop.nix/
+  config/gemini.nix/README/AGENTS/feasibility updated.
+- pkgs/wlroots-geminipda.nix gained withDrmBackend (labwc 0.8.3 needs
+  wlr_drm_lease_v1 headers; runs nested, never opens a DRM device).
+- Built clean (aarch64): labwc-geminipda (a189p0f7…), gemwl (w70sh6in…).
+- Overlays (committed, main): openblas 0.3.33 cross DYNAMIC_ARCH
+  ARMV9SME missing-file fix (single ARMV8 when host isAarch64);
+  libfm/libfm-extra/menu-cache autoreconf AM_GLIB_GNU_GETTEXT fix
+  (native glib.dev/gettext/intltool).
+- Host disk cleaned (~14 G on `/`; no GC run — roots intact).
+
+Cross toplevel build (main) ABANDONED after: shiboken6/pyside6 (KF6
+python bindings — nixpkgs: "cross is currently very broken") fixed by a
+kguiaddons hasPythonBindings=false overrideScope overlay (evaluated
+clean, then LOST when config/gemini.nix was git-checkout-ed during the
+shutdown — re-derive if cross resumes); final wall Qt6CoreTools missing
+for the whole lxqt scope under cross (prototype whole-scope
+CMAKE_PREFIX_PATH override recursed — unresolved). See the handover for
+the full blocker chain.
+
+Native-aarch64 route (user decision):
+- Branch `native-aarch64` + worktree /home/cjdell/Projects/
+  gemini-nixos-native (flake: buildSystem = aarch64-linux, native eval;
+  devShell stays x86_64). Native toplevel drv 5br2r178… (deterministic).
+- speaker-amp.nix cc fix (stdenv.cc.targetPrefix) — commit a689b96.
+- Distributed build running: host root `--store local` + `--option
+  builders @/etc/nix/machines` → Pi 192.168.49.191 (8-core NixOS)
+  compiles, host substitutes from cache.nixos.org (Pi's own cache link
+  drops large NARs — HTTP 206 — so Pi-local builds were abandoned).
+- **Cache truth (asked):** our nixpkgs pin 26.11pre1031299.0bb7ec54c848
+  is NOT on hydra's cache (qtbase narinfo 404 for x86_64-native AND
+  aarch64-native) → Qt6/LXQt outputs compile once per platform; 1315
+  paths still came from cache.nixos.org during the native build. Fix =
+  repin nixpkgs to a hydra-built rev (decision pending; native-aarch64
+  is the model that benefits).
+- Device state unchanged (gen5 on p32, para cleared, Debian p29 intact;
+  nothing flashed).
+
+Next (tomorrow, per handover): poll build-native-host from the native
+worktree; on rc=0 PIN the toplevel (per-user gc-pin + root-level
+`/nix/var/nix/gcroots/gemini-lxqt-native-20260907` root, verify with
+nix-store -q --roots); record the version line; then decide nixpkgs
+repin vs deploy-native-closure vs reconcile branches.
+
 ## 2026-09-07 — PHASE-2 MILESTONE: FIRST NIXOS BOOT ON GLASS (ssh to a NixOS shell over g_ether); the bootopt discovery; full saga + TODO in docs/phase-2-on-glass.md
 
 The moment of truth happened and mostly worked. **NixOS boots and runs on
