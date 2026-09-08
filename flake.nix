@@ -5,11 +5,17 @@
 # system = aarch64-linux — built on the aarch64 remote builder
 # (192.168.49.191, /etc/nix/machines ssh://cjdell@…; run as root with
 # `--store local` + `--option builders @/etc/nix/machines --fallback`,
-# e.g. bin/deploy.sh build) with cache.nixos.org substitution where the
-# pinned nixpkgs rev is cached. NOTE: this nixpkgs snapshot
-# (26.11pre1031299.0bb7ec54c848) is NOT on hydra's cache (native x86_64
-# + aarch64 narinfo both 404), so most of the Qt6/LXQt closure compiles
-# on the builder regardless. The CROSS toplevel model (x86_64 host,
+# e.g. bin/deploy.sh build) with cache.nixos.org substitution. NOTE:
+# nixpkgs is pinned BY THIS FLAKE (below), not by MNX's npins, since
+# 2026-09-08 — to the nixos-unstable CHANNEL snapshot dc5d91f84032
+# (26.11pre1068949, cut 2026-09-07), whose FULL aarch64 closure hydra
+# built and published (qtbase/qtwayland/lxqt-*/systemd/pipewire/…
+# narinfos all 200, verified 2026-09-08). Under the old npins rev
+# (0bb7ec54c848) those compiled outputs were 404 for x86_64 AND aarch64
+# (base closure only — glibc 200, qtbase 404), so Qt6/LXQt compiled
+# from source every time. The only remaining local compiles are the
+# custom drvs: mesa-geminipda fork, wlroots/labwc/gemwl pins, the
+# kernel, gemini-firmware. The CROSS toplevel model (x86_64 host,
 # buildSystem=x86_64-linux) is ABANDONED — it hit the nixpkgs cross
 # walls (Qt6CoreTools missing for the lxqt scope, etc.; see
 # docs/handover-2026-09-07-lxqt-native.md). Native aarch64 drvs hash-
@@ -29,8 +35,11 @@
 # We fetch the pinned commit as a tarball instead — the same mechanism
 # Mobile NixOS itself uses to pin nixpkgs (npins, builtins.fetchTarball).
 # The full commit SHA in the URL is the pin (deterministic tarball).
-# Nixpkgs is then resolved by Mobile NixOS's own npins pin
-# (nixos-unstable 26.11pre1031299.0bb7ec54c848).
+# Nixpkgs is NOT taken from Mobile NixOS's npins anymore (its pin,
+# nixos-unstable 26.11pre1031299.0bb7ec54c848, is only base-closure-
+# cached on hydra — see the header): this flake pins its own rev below
+# and hands it to the MNX eval via the eval shim's `pkgs` argument
+# (the shim forbids system + pkgs together; system is carried by pkgs).
 {
   description = "Mobile NixOS for the Planet Computers Gemini PDA (MT6797X, LK framebuffer, no DRM)";
 
@@ -59,10 +68,29 @@
         narHash = "sha256-CzwmiKxuh1u+H8hDnrVeUl/fL59PvsgLbr2l0FhqWK0=";
       };
 
+      # Nixpkgs pin (2026-09-08 repin — see the header): the current
+      # nixos-unstable CHANNEL snapshot, i.e. the newest rev whose FULL
+      # closure hydra published (raw master commits newer than the
+      # channel cut only get per-commit trunk-combined coverage — the
+      # exact slow situation this repin fixes). Bump by taking the rev
+      # behind https://channels.nixos.org/nixos-unstable/git-revision,
+      # then re-verify the narHash:
+      #   nix flake prefetch github:NixOS/nixpkgs/<rev>
+      nixpkgs = builtins.fetchTree {
+        type = "tarball";
+        url =
+          "https://github.com/NixOS/nixpkgs/archive/dc5d91f840324650bac8c379428c7037a416959a.tar.gz";
+        narHash = "sha256-VaWGJ6+cIYN2erfSecbRV+4ljI185Ty2wUrXyvQbgOw=";
+      };
+
       # Out-of-tree device + system configuration. `nixpkgs.buildPlatform`
-      # = aarch64-linux: native eval (build machine == device arch).
+      # = aarch64-linux: native eval (build machine == device arch). The
+      # MNX eval shim builds pkgs from its own npins unless `pkgs` is
+      # passed; pass ours (system comes from pkgs.stdenv.hostPlatform,
+      # and the nixpkgs module re-imports the same source via pkgs.path,
+      # so module pkgs == eval pkgs == this rev).
       eval = import (mnx + "/lib/eval-with-configuration.nix") {
-        system = buildSystem;
+        pkgs = import nixpkgs { system = buildSystem; };
         device = ./devices/planet-geminipda;
         configuration = [
           { nixpkgs.buildPlatform = buildSystem; }

@@ -72,8 +72,17 @@ adb.
   as a pinned tarball by `flake.nix` (it is not a flake, so nix 2.34
   cannot use it as a flake input). Bump the SHA in `flake.nix` to
   update.
-- **Nixpkgs**: resolved by Mobile NixOS's own `npins` pin
-  (`nixos-unstable` @ `nixos-26.11pre1031299.0bb7ec54c848`).
+- **Nixpkgs**: pinned by **this flake** (`flake.nix`, since 2026-09-08)
+  — no longer Mobile NixOS's npins pin. Chosen rev = the nixos-unstable
+  **channel snapshot** `dc5d91f84032` (`26.11pre1068949`, cut 2026-09-07):
+  hydra built+p published its FULL aarch64 closure, so the Qt6/LXQt set
+  that compiled from source under the old npins rev (`0bb7ec54c848` —
+  base-only coverage, qtbase 404 verified) now substitutes from
+  cache.nixos.org. The MNX eval shim's `pkgs` argument carries it (the
+  shim forbids `system` + `pkgs` together). Bump = take the rev behind
+  `https://channels.nixos.org/nixos-unstable/git-revision`, re-verify the
+  narHash (`nix flake prefetch github:NixOS/nixpkgs/<rev>`). Host
+  tooling devShell stays on MNX's npins (x86_64, independent).
 - **Kernel**: built in-repo from upstream Linux **v6.6** (kernel.org
 tarball, fetch-pinned; base commit `ffc253263a…`, also the `kernel/base`
 submodule) + the tracked delta (`kernel/delta` == geminipda-bringup @
@@ -144,16 +153,17 @@ on the aarch64 builder; the full #329 config takes much longer — the
 lean config drops 61 % of enabled symbols). Mesa is the other heavy
 build (cached in the local store once built).
 
-aarch64 note: `ffmpeg`/`ffmpeg-headless` in this nixpkgs pin
-default to `withCudaLLVM = true` (`withHeadlessDeps && !isDarwin`) and
-fail to configure for a non-Darwin aarch64 target ("cuda_llvm
-requested but not found") — they are hard build inputs of
-`alsa-plugins` (→ `alsa-utils`, in `environment.systemPackages`).
-`config/gemini.nix` carries a `nixpkgs.overlays` entry overriding both
-to `withCudaLLVM = false`; the override is applied through
-nixpkgs's extensible-derivation machinery (the package attrs are a
-derivation, and `override` re-runs the overlay chain with the merged
-attrs, so the drv hash does change).
+aarch64 note (historical): under the OLD npins rev,
+`ffmpeg`/`ffmpeg-headless` defaulted to `withCudaLLVM = true` and failed
+for aarch64 ("cuda_llvm requested but not found"), so
+`config/gemini.nix` carried an overlay forcing `withCudaLLVM = false`.
+**Removed 2026-09-08 with the repin**: the new pinned channel rev's
+aarch64 ffmpeg builds are on the cache (hydra built the defaults), and
+the override only forced non-cached drv hashes down the
+pipewire/alsa-plugins subtree. Same story for the systemd `withLibBPF`
+and openblas `dynamicArch` workaround overlays (old-rev/cross-era; see
+`config/gemini.nix`). If a real build of this rev re-hits one of the
+old bugs, re-add the specific override with a date + receipt.
 
 ## Phase 3 device services (in the rootfs)
 
@@ -324,9 +334,15 @@ p29); the rootfs `growfs` (TODO P0), a few services and the
   verified GeminiPDA LXQt/labwc stack. ON GLASS 2026-09-08 (gen8,
   native closure): full session up after two repo fixes (config-seed
   layout; wlroots -Dallocators=gbm for labwc) + a cold-boot check.
-  Remaining: the optional nixpkgs
-  repin to a hydra-built rev (native aarch64 drvs would then mostly
-  substitute; the current 26.11pre1031299 pin is not on any cache).
+  Remaining: nixpkgs repin DONE 2026-09-08 (flake pins the
+  hydra-built channel rev `dc5d91f84032`, see Pins — Qt6/LXQt + the
+  systemd/ffmpeg/openblas/libfm overrides' subtrees now substitute;
+  dry-run: 1447→792 fetched paths and the toplevel's local compiles
+  drop to ~242 config-glue + custom-pkg drvs). Repin build + deploy
+  DONE 2026-09-08 (gen15 live; 11-min build vs hours; post-switch
+  desktop healthy, NRestarts=0; eyes-on-glass DONE by user — session-
+  log (4th)). Owed: cold-reboot gen check. The old-rev workaround
+  overlays were pruned with the repin (see config/gemini.nix).
   The Plasma-6-nested alternative stays an open A/B (kwin 6.3.6 /
   Plasma 6 — nixpkgs 26.11pre floats newer, unverified versions).
 - **R3**: no DRM — the desktop is `gemwl` (custom wlroots compositor)

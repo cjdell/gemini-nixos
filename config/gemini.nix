@@ -164,14 +164,20 @@ in
   # real fs growth. [fixed 2026-09-07]
   boot.growPartition = false;
 
-  # ---- Cross-build workaround ------------------------------------------
-  # The pinned nixpkgs systemd (261) cross-build for aarch64 fails in the
-  # BPF programs: meson invokes the *host* clang with `-target bpf` and no
-  # sysroot ("fatal error: 'errno.h' file not found" in
-  # src/bpf/restrict-fs.bpf.c). Disable the BPF framework for the whole
-  # package set (not just `systemd.package`): packages like dbus-broker
-  # depend on `pkgs.systemd` directly and would otherwise pull the
-  # BPF-enabled build back into the closure. The systemd-bpf LSM units
+  # ---- Overlays (2026-09-08: pruned to the ones still needed) ----------
+  # The cross-build workaround overlays (systemd withLibBPF=false,
+  # ffmpeg/ffmpeg-headless withCudaLLVM=false, openblas dynamicArch=false,
+  # the libfm/libfm-extra/menu-cache autoreconf AM_GLIB_GNU_GETTEXT fix)
+  # were written against the OLD npins rev (26.11pre1031299) and the
+  # abandoned cross model [2026-09-07]. After the 2026-09-08 nixpkgs
+  # repin (flake.nix -> channel snapshot dc5d91f84032) they were REMOVED:
+  # hydra built the un-overridden defaults for aarch64-linux in that
+  # channel (their narinfos are 200), so each override only forced
+  # non-cached drv hashes down its dependency subtree (systemd -> the
+  # whole closure, ffmpeg -> pipewire/alsa-plugins, openblas ->
+  # numpy/python3, libfm-* -> pcmanfm-qt) and cost cache misses. If a
+  # real build of this rev hits one of the old bugs, re-add the specific
+  # override (with a date + receipt). The systemd-bpf LSM units
   # (restrict-fs, io_uring restrictions) are irrelevant for a trusted
   # single-user PDA.
   # The Wi-Fi firmware blobs (MediaTek WMT/ROMv3/CONSYS + Realtek
@@ -197,66 +203,6 @@ in
       # tested grows 1.5G -> 27G online cleanly. See
       # pkgs/make-ext4fs-shim.nix (R13).
       make_ext4fs = final.callPackage ../pkgs/make-ext4fs-shim.nix { };
-    })
-    (final: prev: {
-      systemd = prev.systemd.override { withLibBPF = false; };
-    })
-    (final: prev: {
-      # nixpkgs' ffmpeg builds (ffmpeg + ffmpeg-headless; the latter is a
-      # hard buildInput of pipewire/chromaprint, the former of
-      # alsa-plugins) enable cuda-llvm by default, which is broken for
-      # cross-aarch64 in this pin ("ERROR: cuda_llvm requested but not
-      # found" — no CUDA toolchain exists for the target). This device
-      # has no CUDA (Mali-T880, panfrost only), so disable it.
-      ffmpeg = prev.ffmpeg_8.override { withCudaLLVM = false; };
-      ffmpeg-headless = prev.ffmpeg_8-headless.override { withCudaLLVM = false; };
-    })
-    (final: prev: {
-      # openblas 0.3.33 with DYNAMIC_ARCH=true (nixpkgs forces it for
-      # aarch64-linux) cross-compiles every target kernel, including the
-      # ARMV9SME (SVE/SME) set, whose generated sgemm_kernel_ARMV9SME.S
-      # includes kernel/arm64/sgemm_kernel_sve_v2x4.S — a file missing
-      # from the v0.3.33 release tarball -> fatal error (observed cross-
-      # building for the LXQt closure 2026-09-07, via lxqt-panel -> KF6
-      # kguiaddons' python output: numpy/pyside6/shiboken6). For the
-      # aarch64 target build the single ARMV8 kernel instead
-      # (dynamicArch=false): cross-clean AND correct for the Cortex-A72
-      # (ARMv8.0-A, no SVE/SME). The condition keeps the native x86_64
-      # openblas (buildPackages toolchain) at its default — x86_64 has
-      # no single-target KERNEL.ATHLON file, so disabling DYNAMIC_ARCH
-      # there breaks configure. The python-bound numpy is build-time
-      # only (never referenced by the system closure).
-      openblas = if final.stdenv.hostPlatform.isAarch64
-        then prev.openblas.override { dynamicArch = false; }
-        else prev.openblas;
-    })
-    (final: prev: {
-      # LXDE-era autotools (libfm-extra/menu-cache — pulled into the LXQt
-      # closure by pcmanfm-qt -> libfm-qt, for desktop-menu parsing) fail
-      # autoreconf under the pin's autoconf 2.73: "undefined or
-      # overquoted macro: AM_GLIB_GNU_GETTEXT". glib's glib-gettext.m4
-      # lives in glib.dev/share/aclocal, but glib is only a TARGET
-      # (buildInputs) dep, so the NATIVE autoreconf/aclocal run never
-      # sees it. Add the build-machine glib.dev (+ gettext/intltool, the
-      # rest of that macro family) as native inputs. [2026-09-07]
-      libfm-extra = prev.libfm-extra.overrideAttrs (o: {
-        nativeBuildInputs = (o.nativeBuildInputs or [ ])
-          ++ [ final.buildPackages.glib.dev final.buildPackages.gettext ];
-      });
-      # plain libfm (C, built for its menu-cache/gtk parts in this
-      # closure) hits the same autoreconf macro failure
-      libfm = prev.libfm.overrideAttrs (o: {
-        nativeBuildInputs = (o.nativeBuildInputs or [ ])
-          ++ [ final.buildPackages.glib.dev final.buildPackages.gettext ];
-      });
-      menu-cache = prev.menu-cache.overrideAttrs (o: {
-        nativeBuildInputs = (o.nativeBuildInputs or [ ])
-          ++ [
-            final.buildPackages.glib.dev
-            final.buildPackages.gettext
-            final.buildPackages.intltool
-          ];
-      });
     })
   ];
 

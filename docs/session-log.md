@@ -5,6 +5,104 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (4th) — repin closure built + deployed: gen15 (nixpkgs dc5d91f84032) live, desktop healthy — 11-min build vs multi-hour
+
+Executed the (3rd) entry's next step: build the repinned toplevel,
+deploy to the device, health-check. Kernel UNCHANGED (6.6.0
+#1-mobile-nixos — boot partition untouched, no flash; config-only
+deploy like gens 11-14). Eyes-on-glass still owed (see next).
+
+**Build** (run-job `repin-build`, rc=0 in **679 s**): toplevel
+`1ia0xwzq8smb88jxk7ig3hfaym7jfsn4-nixos-system-gemini-26.11pre-git`,
+gc-pinned `gemini-nixos-toplevel-20260908-1537`. The Qt6/LXQt closure
+came from cache.nixos.org (qtbase-6.11.2 `mpgq1xlh…`, lxqt-session
+2.4.0 `5ijcyvm3…`, lxqt-panel 2.4.1, pcmanfm-qt 2.4.1, systemd-261.2
+`awq6qdiy…`, pipewire 1.6.8 — store hashes EXACTLY match the narinfo-
+verified cached paths from the (3rd) entry; no local build logs).
+Custom drvs compiled on the Pi as expected: mesa-geminipda 25.0.7
+`yb4jq7sx…`, wlroots-geminipda 0.18.2 ×2, labwc-geminipda 0.8.3,
+gemwl 1.0 `l53xj1w0n…`. For contrast the same toplevel under the old
+pin compiled the whole Qt6/LXQt closure = hours.
+
+**Deploy** (run-job `repin-deploy`, rc=0 in 209 s): `nix copy` of the
+new closure over g_ether + `nix-env -p` set + `switch-to-configuration`
+switch → device profile **system-15-link**;
+`/run/current-system` = the new toplevel. Version float vs old pin
+(12th-gen docs): qtbase 6.11.1→6.11.2, lxqt-panel 2.4.0→2.4.1,
+systemd 261→261.2, pipewire 1.6.7→1.6.8, ffmpeg 8.x→9.0.1 default —
+the documented R2 trade-off; verified pins (kernel/mesa/wlroots/labwc/
+gemwl) unchanged.
+
+**Post-switch health (over ssh, no reboot)**: gemwl + lxqt-nested
+active, NRestarts=0 both; `systemctl --failed` empty; /run/gemwl
+sockets (bus, wayland-0) present; gemwl running from the new store
+path. Old generations stay selectable for rollback (profile list).
+
+**Next / owed**: eyes-on-glass DONE (user, gen15 — desktop renders,
+no flicker/uninitialised-LCD, core-rule-5 clearance). Still owed: one
+cold WDT reboot to confirm the dual-boot initrd gen-lookup lands on
+gen15; if green, this is the new cache-healthy baseline (golden rule 9).
+
+## 2026-09-08 (3rd) — NIXPKGS REPIN to the hydra-built channel rev dc5d91f84032 (26.11pre1068949): Qt6/LXQt now substitutes; old-rev workaround overlays pruned
+
+Executed the long-deferred handover/3a decision (repin nixpkgs to a
+hydra-built rev). Device UNTOUCHED (still gen14 on p32, para cleared,
+Debian p29 intact) — repo-side change only, no build/deploy run.
+
+**What and why.** The old pin came from MNX's npins
+(`nixos-26.11pre1031299.0bb7ec54c848`, a releases.nixos.org channel
+snapshot); its qtbase 404'd on cache.nixos.org for x86_64 AND aarch64
+(base closure only — glibc 200, qtbase/systemd/lxqt 404), so every
+Qt6/LXQt compile ran on the 8-core Pi builder. Fix = pin nixpkgs to
+the newest rev hydra built the FULL closure for: the nixos-unstable
+CHANNEL snapshot behind `channels.nixos.org/nixos-unstable` =
+**dc5d91f840324650bac8c379428c7037a416959a** (`26.11pre1068949`, cut
+2026-09-07). Raw master commits newer than the channel cut only get
+per-commit trunk-combined coverage — exactly the slow situation.
+
+**Receipts (verified 2026-09-08, `nix path-info --store
+https://cache.nixos.org` on aarch64 outPaths eval'd at the new rev):**
+qtbase/qtwayland/qtsvg/lxqt-session/lxqt-panel/pcmanfm-qt/qterminal/
+pavucontrol-qt/qpwgraph/papirus-icon-theme/systemd/nix/pipewire/
+alsa-utils/openblas/ffmpeg-headless — narinfos ALL 200. Old rev
+contrast: qtbase-6.11.1/lxqt-session-2.4.0/systemd-261 404, glibc 200.
+(First probe used curl and wrongly showed all-404 — the sandbox proxy
+mangles curl; nix's own HTTP client is the reliable check.)
+
+**flake.nix:** nixpkgs pinned via `builtins.fetchTree` (tarball,
+narHash `sha256-VaWGJ6+cIYN2erfSecbRV+4ljI185Ty2wUrXyvQbgOw=`,
+`nix flake prefetch`-verified) and handed to the MNX eval shim through
+its `pkgs` argument (shim forbids system+pkgs together; system comes
+from `pkgs.stdenv.hostPlatform`, module pkgs re-import the same source
+via `pkgs.path`). Bump recipe in the flake comment + README Pins:
+take the rev behind `channels.nixos.org/nixos-unstable/git-revision`.
+
+**config/gemini.nix:** pruned the old-rev/cross-era workaround
+overlays (each forced non-hydra drv hashes down its subtree =
+cache misses): systemd `withLibBPF=false`, ffmpeg(-headless)
+`withCudaLLVM=false`, openblas `dynamicArch=false`, and the
+libfm/libfm-extra/menu-cache autoreconf AM_GLIB_GNU_GETTEXT fix.
+Kept: the make_ext4fs shim (R13 — deliberate rootfs-geometry fix).
+Rationale: hydra built the un-overridden aarch64 defaults in this
+channel (that's why they're cached), so the old bugs are gone (or
+were cross-only). If a real build re-hits one, re-add it with a date.
+
+**Measured (dry-run, root `--store local`, new rev):** toplevel
+aarch64 — 379 derivations will be built → **242** (after the overlay
+prune), 1447 paths (2.7 GiB) will be fetched. The remaining 242 are
+NixOS per-config glue (unit-*/etc-*/udev/system-path — never cached)
++ the custom drvs (wlroots-geminipda ×2, labwc-geminipda, mesa fork,
+kernel, gemini-firmware/…). No qt/lxqt/systemd/ffmpeg/openblas/libfm
+compiles left. Eval green (MNX 2c132754 + device config compatible).
+
+**Cost/risk:** the whole closure re-hashes → one full rebuild + one
+full `nix copy` to the device; LXQt/Qt float slightly newer (R2
+trade-off — the verified kernel/mesa/wlroots/labwc/gemwl pins are
+independent of nixpkgs).
+
+**Next:** DONE — build + deploy + health-check recorded in the
+2026-09-08 (4th) entry below (gen15, 1ia0xwzq8s…).
+
 ## 2026-09-08 (2nd) — INTERNAL WI-FI (MT6630 CONSYS) WORKING ON NIXOS: wlan0 up, "The Lab" connected, internet ~4.5 ms — the wifi half of handover-2026-09-08-wifi-keyboard is DONE (gens 11-14)
 
 Executed `docs/handover-2026-09-08-wifi-keyboard.md` §2 (wifi

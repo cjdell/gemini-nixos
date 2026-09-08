@@ -131,6 +131,28 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
    settle between polls, cap sleeps at ~5–10 s. The `run-job.sh wait`
    rc protocol is the poll primitive: rc=0 done-ok, rc=1 done-failed,
    rc=2 still-running → re-run wait.
+9. **Cache-healthy nixpkgs pins (CORE RULE, added 2026-09-08).** Every
+   nixpkgs pin must be one hydra built the FULL closure for — always the
+   nixos-unstable (or a release) CHANNEL snapshot, never a raw
+   master/random commit: channel revs are only cut after hydra's
+   complete build, so the big closures (Qt6/LXQt — the multi-hour
+   compiles) substitute from cache.nixos.org. Raw commits get per-commit
+   trunk-combined (base) coverage only — verified 2026-09-08: the old
+   npins rev `0bb7ec54c848` qtbase 404'd for x86_64 AND aarch64 (Qt6/
+   LXQt compiled every time); the channel rev `dc5d91f84032`
+   (26.11pre1068949) has qtbase/qtwayland/lxqt-*/systemd/pipewire
+   narinfos all 200. Pin the rev behind
+   `https://channels.nixos.org/nixos-unstable/git-revision` (or the
+   release-branch equivalent) + narHash from `nix flake prefetch
+   github:NixOS/nixpkgs/<rev>`. VERIFY before committing with
+   `nix path-info --store https://cache.nixos.org <outPath>` on the
+   heavy packages eval'd at the candidate rev (qtbase first) — curl
+   narinfo 404s are NOT evidence (proxy); use nix's own HTTP client.
+   Also: don't let workaround overlays diverge from the channel
+   defaults — each override forces non-cached drv hashes down its
+   subtree (the systemd/ffmpeg/openblas/libfm overrides pruned with the
+   2026-09-08 repin cost 137+ builds; receipts in config/gemini.nix +
+   docs/session-log.md).
 
 ## Where things live
 
@@ -144,7 +166,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | "Published base + in-repo delta" pattern (mesa done; kernel next) | `docs/library-deltas.md` |
 | **What was actually tried / happened** (dated entries; golden log) | `docs/session-log.md` |
 | **Disaster recovery** — full-flash-erase → TWRP playbook (levels 0–2), image ledger + sha256, gather checklist, drills | `docs/disaster-recovery/` (README · inventory · gather · drills) |
-| Flake entry; Mobile NixOS pin (`2c132754`); nixpkgs via its npins; devShell | `flake.nix` |
+| Flake entry; Mobile NixOS pin (`2c132754`); **nixpkgs pinned in-flake** (`dc5d91f84032`, channel rev — see README Pins); devShell (host x86_64, MNX npins) | `flake.nix` |
 | Out-of-tree device definition (boot.img geometry, borrowed kernel, minimal initrd wiring) | `devices/planet-geminipda/` |
 | Stage-2 system config (headless + g_ether SSH, services, mesa fork, systemd-BPF/cudaLLVM overlays) | `config/gemini.nix` |
 | SoC fragment (out-of-tree MT6797) | `modules/hardware-soc-mediatek-mt6797.nix` |
@@ -181,9 +203,10 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 - **A flash/boot attempt happened** → `docs/session-log.md` (MANDATORY:
   versions flashed, hashes, exact behaviour, console output) +
   feasibility doc §9 phase notes.
-- **Pins moved** (Mobile NixOS rev/narHash, nixpkgs npins, kernel
+- **Pins moved** (Mobile NixOS rev/narHash, **nixpkgs flake pin** (channel rev, flake.nix), kernel
   snapshot) → `flake.nix`/README "Pins" + date it (npins drift breaks
-  the verified graphics stack — R2).
+  the verified graphics stack — R2; the flake nixpkgs pin should track
+  the nixos-unstable CHANNEL rev so hydra's full closure stays cached).
 - **DR ledger changed** (a dump taken/verified/copied) →
   `docs/disaster-recovery/inventory.md` + a version line in the log.
 

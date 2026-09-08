@@ -16,9 +16,11 @@
 # cores, /etc/nix/machines ssh://cjdell@…) compiles and the host pulls
 # each finished path back over ssh (the Pi's own cache.nixos.org link
 # drops large NARs — HTTP 206 — so never build directly on the Pi for
-# cache fetches). `--fallback`: substitute from cache.nixos.org where
-# the pinned nixpkgs rev is cached (mesa/wlroots/gemwl/labwc/lxqt are
-# NOT — they compile on the builder).
+# cache fetches). `--fallback`: substitute from cache.nixos.org — since
+# the 2026-09-08 repin the pinned nixpkgs rev IS the hydra-built channel
+# snapshot dc5d91f84032, so the Qt6/LXQt closure fetches; the custom
+# drvs (mesa-geminipda fork, wlroots/labwc/gemwl pins, kernel) are NOT
+# on any cache — they compile on the builder.
 #
 # GC hygiene (rule 0): every deployed toplevel is pinned with
 # bin/gc-pin.sh (per-user root) — and the milestone closures get a
