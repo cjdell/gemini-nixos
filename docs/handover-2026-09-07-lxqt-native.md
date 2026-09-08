@@ -1,5 +1,19 @@
 # Handover — LXQt native-aarch64 build (2026-09-07 night → check up 2026-09-08)
 
+> **STATUS: COMPLETED 2026-09-08.** The native toplevel build finished
+> rc=0 (b8hyqdvz…, 47790 s); it is pinned (per-user
+> `gemini-nixos-toplevel-20260907-native` + root-level
+> `/nix/var/nix/gcroots/gemini-lxqt-native-20260907`, both verified).
+> `native-aarch64` was merged into `main` (commit 88a2699) and the
+> worktree removed — the native build model is canonical (flake
+> `buildSystem = aarch64-linux`; `bin/deploy.sh build` runs the proven
+> root `--store local` distributed build). The LXQt desktop was then
+> deployed and tested on glass (gens 6→8): two repo bugs fixed on the
+> way (config-seed basenames, wlroots `-Dallocators=gbm`) and the
+> session verified after a cold reboot + eyes-on-glass — see
+> `docs/session-log.md` 2026-09-08. The 3a nixpkgs-repin question
+> remains open (deferred: would re-hash the verified closure).
+
 > The LXQt desktop (labwc-nested, `lxqt-nested.service`) is IN-TREE on
 > `main` (commit 7a5bf23) — that part is done repo-side. The open thread
 > is the **native-aarch64 closure build** (running, many hours left) and

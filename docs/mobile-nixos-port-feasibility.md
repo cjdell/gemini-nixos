@@ -556,6 +556,13 @@ for flashing, not feasibility (compressLargeArtifacts exists).
 
 ### R7 — Mobile NixOS maintenance burden
 
+> [corrected 2026-09-08] The last line no longer states the working
+> model: the x86_64 CROSS toplevel is ABANDONED (nixpkgs cross walls,
+> Qt6CoreTools for the lxqt scope); the canonical build is NATIVE
+> aarch64 drvs (flake buildSystem = aarch64-linux) built on the
+> 192.168.49.191 remote builder from the x86_64 host — same store
+> closure the device runs, see flake.nix header + bin/deploy.sh.
+
 Mobile NixOS is a moving target against nixpkgs unstable; the
 `gemini-nixos` repo should pin both (npins or flake lock) and treat
 updates deliberately. The device is `aarch64` and cross-builds from

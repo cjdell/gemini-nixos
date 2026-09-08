@@ -38,7 +38,7 @@ adb.
 | `pkgs/labwc-geminipda.nix` | labwc 0.8.3 pinned from source against the pinned wlroots 0.18.2 (the on-glass verified pair; nixpkgs floats labwc 0.20/wlroots 0.20) — the nested compositor hosting the LXQt session |
 | `pkgs/gemwl.nix` + `pkgs/gemwl/` | gemwl, the GPU-direct LK-framebuffer Wayland compositor (wlroots 0.18) + the tinytest xdg-shell smoke clients; sources byte-identical to the verified GeminiPDA `build/wayland/` files (tinytest-anim/tinytest listener-lifetime crash fixed 2026-09-07) |
 | `config/lxqt/` | The LXQt-session user configs (lxqt.conf, session.conf, labwc rc.xml + autostart, the vendored “Gemini” openbox themerc, desktop launchers) seeded to `/root` by `services/scripts/start-lxqt-nested` |
-| `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp), cross-compiled |
+| `pkgs/speaker-amp.nix` + `pkgs/speaker-amp/` | Speaker-amp GPIO helpers (gpioout/spkamp); cc resolved via stdenv.cc.targetPrefix (cross + native) |
 | `pkgs/gemini-firmware.nix` + `pkgs/gemini-firmware/` | Wi-Fi firmware: MT6630 CONSYS WMT blobs + RTL8821CU + factory NVRAM record |
 | `patches/` | The geminipda Mesa fork patch (byte-for-byte the GeminiPDA submodule commit `ac19be0`) |
 | `config/gemini.nix` | Stage-2 system configuration (headless + g_ether SSH, device services, Mesa fork + libglvnd) |
@@ -51,8 +51,8 @@ adb.
 | `bin/boot-switch.sh` | Boot-target switching + boot-partition flash over adb/TWRP (status/twrp/android/debian/flash/restore; `debian` = para=boot-debian → p29, 2026-09-07) |
 | `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and system.img → p32 (`userdata`, Android erased — Debian p29 untouched); verbs status/boot/rootfs/all/boot-nixos/debian; safe TWRP-sticky default |
 | `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
-| `bin/deploy.sh` | **Workstation-style generation loop (2026-09-07)**: host cross-builds the toplevel (pinned via gc-pin), `nix copy` delta → device store over ssh, profile switch + activate. Verbs status/build/deploy [PATH]/rollback [N]. Reboot lands on the new gen; old gens stay selectable — no reflash, no TWRP |
-| `bin/gc-pin.sh` | GC-root a build (NAME STORE_PATH | list | unpin) so host `nix-collect-garbage` can't sweep the cross closure (happened once — gen3 silently rebuilt ~259 packages) |
+| `bin/deploy.sh` | **Workstation-style generation loop (2026-09-07 → native)**: builds the NATIVE aarch64 toplevel (root `--store local` distributed build to the 192.168.49.191 remote builder, pinned via gc-pin), `nix copy` delta → device store over ssh, profile switch + activate. Verbs status/build/deploy [PATH]/rollback [N]. Reboot lands on the new gen; old gens stay selectable — no reflash, no TWRP |
+| `bin/gc-pin.sh` | GC-root a build (NAME STORE_PATH | list | unpin) so host `nix-collect-garbage` can't sweep the aarch64 closure (happened once — gen3 silently rebuilt ~259 packages); milestone closures get a root-level root too (`sudo nix-store --add-root /nix/var/nix/gcroots/<name> -r <out>`) |
 | `bin/flash-nixos.sh` `grow-rootfs` | Offline-grow the p32 rootfs to the full partition from TWRP (e2fsck + resize2fs, static musl e2fsprogs) — the recovery path for make_ext4fs-geometry fs the kernel can't online-grow (R13); images since 2026-09-07 grow on first boot via growfs-root |
 | `docs/library-deltas.md` | Long-standing goal + the “published base + in-repo delta” pattern (mesa done; kernel & co next) |
 | `docs/repartition-android-space.md` | NixOS rootfs on Android's p32 `userdata` (Debian stays on p29) + dual-boot boot.img via a para marker; boot-budget analysis. **Decided + implemented repo-side 2026-09-07** (§10 decisions; flash is the next milestone) |
@@ -118,14 +118,22 @@ hash from the published upstream archive by `pkgs/mesa-geminipda.nix`
 
 ## Build
 
-From an x86_64 host (cross-compiles to aarch64-linux):
+Build model = **native aarch64** (canonical since the 2026-09-08
+native-aarch64 merge; the x86_64 cross toplevel is ABANDONED — it hit
+nixpkgs cross walls, last one Qt6CoreTools missing for the lxqt scope;
+docs/handover-2026-09-07-lxqt-native.md). Every drv is
+system=aarch64-linux; builds run as root against the LOCAL store with
+`--option builders @/etc/nix/machines --fallback` so the 192.168.49.191
+remote builder (8-core Pi) compiles and the host pulls finished paths
+back over ssh (`bash bin/deploy.sh build` = exactly this; long builds
+under `bash bin/run-job.sh start <name> -- bash bin/deploy.sh build`):
 
 ```sh
-nix build .#packages.x86_64-linux.default   # boot.img + rootfs.img (+ flash script)
-nix build .#packages.x86_64-linux.bootimg   # boot.img only (borrowed kernel #329 payload)
-nix build .#packages.x86_64-linux.rootfs    # rootfs.img (→ `linux` partition)
-nix build .#packages.x86_64-linux.initrd    # minimal initrd (size measurement, docs R1)
-nix build .#packages.x86_64-linux.mesa      # Mesa 25.0.7 + geminipda panfrost fork
+sudo nix build --store local .#packages.aarch64-linux.default   # boot.img + rootfs.img (+ flash script)
+sudo nix build --store local .#packages.aarch64-linux.bootimg   # boot.img only (borrowed kernel #329 payload)
+sudo nix build --store local .#packages.aarch64-linux.rootfs    # rootfs.img (→ `linux` partition)
+sudo nix build --store local .#packages.aarch64-linux.initrd    # minimal initrd (size measurement, docs R1)
+sudo nix build --store local .#packages.aarch64-linux.mesa      # Mesa 25.0.7 + geminipda panfrost fork
 ```
 
 With the borrowed kernel, the rootfs build no longer compiles the
@@ -133,7 +141,7 @@ With the borrowed kernel, the rootfs build no longer compiles the
 Mesa is the remaining heavy build (cached in the local store once
 built).
 
-Cross-aarch64 note: `ffmpeg`/`ffmpeg-headless` in this nixpkgs pin
+aarch64 note: `ffmpeg`/`ffmpeg-headless` in this nixpkgs pin
 default to `withCudaLLVM = true` (`withHeadlessDeps && !isDarwin`) and
 fail to configure for a non-Darwin aarch64 target ("cuda_llvm
 requested but not found") — they are hard build inputs of
@@ -204,8 +212,8 @@ the build-time entries for `libdrm`/glibc) so its `DT_NEEDED` on
 check owed: `eglQueryString(EGL_EXTENSIONS)` must list
 `EGL_EXT_image_dma_buf_import` (the fork's headline feature).
 
-**Desktop — gemwl + nested LXQt (phase 4 preview, in-tree 2026-09-07).**
-The desktop is NOT a display manager: `gemwl.service` (services/desktop.nix) owns the LK framebuffer (/dev/gemfb, GPU-direct via panfrost + the mesa fork); the LXQt desktop runs NESTED inside it — `lxqt-nested.service` (services/lxqt.nix): labwc 0.8.3 (pkgs/labwc-geminipda.nix, wlroots 0.18.2 “wayland” backend) on gemwl's wayland-0 exporting wayland-1, hosting the nixpkgs lxqt 2.4 session (panel via wlr-layer-shell, pcmanfm-qt desktop, qterminal, pavucontrol-qt + qpwgraph audio GUIs). User configs/theme seeded from `config/lxqt/`; icon theme Papirus; session bus in /run/gemwl; PipeWire sockets from audio.nix (/run/gemwl-audio). Both units auto-start (wantedBy multi-user.target); console-only boot = `systemctl disable gemwl lxqt-nested`. Built repo-side 2026-09-07; on-glass verification pending (first LXQt boot = the gpu-warmup banding question, see services/desktop.nix header).
+**Desktop — gemwl + nested LXQt (phase 4 preview, in-tree 2026-09-07, ON GLASS 2026-09-08).**
+The desktop is NOT a display manager: `gemwl.service` (services/desktop.nix) owns the LK framebuffer (/dev/gemfb, GPU-direct via panfrost + the mesa fork); the LXQt desktop runs NESTED inside it — `lxqt-nested.service` (services/lxqt.nix): labwc 0.8.3 (pkgs/labwc-geminipda.nix, wlroots 0.18.2 “wayland” backend) on gemwl's wayland-0 exporting wayland-1, hosting the nixpkgs lxqt 2.4 session (panel via wlr-layer-shell, pcmanfm-qt desktop, qterminal, pavucontrol-qt + qpwgraph audio GUIs). User configs/theme seeded from `config/lxqt/`; icon theme Papirus; session bus in /run/gemwl; PipeWire sockets from audio.nix (/run/gemwl-audio). Both units auto-start (wantedBy multi-user.target); console-only boot = `systemctl disable gemwl lxqt-nested`. **First on-glass run 2026-09-08 (native closure gen8)**: two repo bugs fixed — config-seed layout (store-hashed basenames, services/lxqt.nix sessionConfig) and the labwc wlroots missing the gbm allocator (-Dallocators=gbm, pkgs/wlroots-geminipda.nix); verified over ssh after a cold WDT reboot: gemwl+lxqt-nested active, NRestarts=0, panel/desktop/polkit/notificationd/qterminal all up, EGL on Mali-T880 (Panfrost), continuous compositing. Eyes-on-glass confirmed 2026-09-08 (user): the desktop renders — no flicker/uninitialised-LCD.
 
 Measured boot image (build 2026-09-05): 15,431,680 B = **14.7 MiB** in
 the 16 MiB partition (kernel payload 13.45 MiB + DTB, initrd 1.26 MiB
@@ -310,10 +318,14 @@ p29); the rootfs `growfs` (TODO P0), a few services and the
   `services/desktop.nix`) is in the system closure. The nested
   session is now in-tree too (2026-09-07): labwc 0.8.3 +
   nixpkgs lxqt 2.4 as `lxqt-nested.service` (services/lxqt.nix) — the
-  verified GeminiPDA LXQt/labwc stack. Remaining: on-glass
-  verification; the Plasma-6-nested alternative stays an open A/B
-  (kwin 6.3.6 / Plasma 6 — nixpkgs 26.11pre floats newer, unverified
-  versions).
+  verified GeminiPDA LXQt/labwc stack. ON GLASS 2026-09-08 (gen8,
+  native closure): full session up after two repo fixes (config-seed
+  layout; wlroots -Dallocators=gbm for labwc) + a cold-boot check.
+  Remaining: the optional nixpkgs
+  repin to a hydra-built rev (native aarch64 drvs would then mostly
+  substitute; the current 26.11pre1031299 pin is not on any cache).
+  The Plasma-6-nested alternative stays an open A/B (kwin 6.3.6 /
+  Plasma 6 — nixpkgs 26.11pre floats newer, unverified versions).
 - **R3**: no DRM — the desktop is `gemwl` (custom wlroots compositor)
   with LXQt nested inside it on the LK framebuffer; packaged as
   services, not a display manager (`services/desktop.nix` + `services/lxqt.nix`,

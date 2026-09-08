@@ -5,6 +5,76 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 — Handover completed: native-aarch64 MERGED into main (native build model canonical); LXQt desktop first on glass (gen8); two repo bugs fixed on the way
+
+Handover (`docs/handover-2026-09-07-lxqt-native.md`) closed out + the
+native branch became canonical — full story below; the worktree
+`/home/cjdell/Projects/gemini-nixos-native` was removed once merged
+(the handover job log was preserved under `logs/jobs/`).
+
+Native toplevel build finished rc=0 (47790 s ≈ 13.3 h on the
+192.168.49.191 builder): `b8hyqdvz…-nixos-system-gemini-26.11pre…`
+(the deterministic drv `5br2r178…` from the handover). PINNED twice per
+the handover/user requirement — verified with `nix-store -q --roots`
+and `gc-pin.sh list`:
+- per-user: `/nix/var/nix/gcroots/per-user/cjdell/gemini-nixos-toplevel-20260907-native`
+- root-level: `/nix/var/nix/gcroots/gemini-lxqt-native-20260907`
+
+Merge (commit 88a2699): `native-aarch64` folded into `main` — flake
+`buildSystem = x86_64-linux → aarch64-linux` (devShells stay x86_64),
+`pkgs/speaker-amp.nix` cc via `stdenv.cc.targetPrefix`. Follow-ups in
+commit 7a5d6e8: `bin/deploy.sh` build verb = the proven native command
+(`sudo nix build --store local .#packages.aarch64-linux.toplevel
+--option builders @/etc/nix/machines --fallback`; daemon still has no
+`builders =` line); flake.nix/README/AGENTS/feasibility R7 corrected
+(cross toplevel ABANDONED — no longer the described model). Flake
+outputs are now `packages.aarch64-linux.*` only.
+
+**Desktop on glass — the actual test.** Deployed the native closure to
+the device (deploy.sh deploy PATH; `nix copy` 2.1 GiB closure took
+160 s over g_ether) and exercised the LXQt session live. Generation
+history + version lines (rule 0; kernel #329 + dual-boot boot.img on
+p22 UNCHANGED throughout — profile switches only):
+- gen6 `b8hyqdvz…` (native toplevel): lxqt-nested.service crash-
+  looped — `sessionConfig` in services/lxqt.nix did multi-source `cp
+  ${file} ${file} $out/dir`, keeping the STORE basenames
+  (`<hash>-lxqt.conf` …), so start-lxqt-nested's seed failed
+  (`cannot stat …/lxqt/lxqt.conf`). Fixed: cp each file to its exact
+  target name (flat layout $out/lxqt/{lxqt.conf,session.conf},
+  $out/labwc/{rc.xml,autostart}, $out/themerc) — commit 7a5d6e8.
+- gen7 `svwxm2bz…`: seeding OK, labwc died at startup — "Skipping gbm
+  allocator: disabled at compile-time / unable to create allocator".
+  wlroots 0.18.2's meson `allocators` option defaults to `['auto']`
+  and `mesonAutoFeatures=disabled` resolves it to `[]`. Fixed:
+  `-Dallocators=gbm` on the withDrmBackend (labwc) variant
+  (pkgs/wlroots-geminipda.nix; gemwl's trimmed build unchanged) —
+  commit 9a83d46.
+- gen8 `3bqy4v4…` (current): **desktop up**. Rebuilds were fast
+  (31 s / 28 s — config+wlroots delta only; the 13 h cost was the one-
+  off full closure). Verified after a cold WDT-EXRST reboot
+  (device-reboot.sh): booted gen8, gemwl + lxqt-nested active,
+  NRestarts=0; session = labwc (nested, wayland-1) + lxqt-session +
+  lxqt-panel + pcmanfm-qt --desktop + lxqt-policykit-agent +
+  lxqt-notificationd + qterminal (autostart); layer-shell surfaces
+  mapped; EGL 1.5 on Mali-T880 (Panfrost) Mesa 25.0.7 fork; gemwl
+  compositing continuously (noafbc readback path). Root configs seeded
+  to /root/.config/{lxqt,labwc} + LXQt runtime confs (panel.conf etc.).
+  No crashes/OOM in the boot journal. Only unit failing = the known
+  gemini-wifi-internal (CONSYS, pre-existing). **Eyes on glass
+  (2026-09-08, user): the desktop renders correctly — panel/desktop/
+  windows visible, no flicker/uninitialised-LCD** (core rule 5
+  clearance).
+
+**Still owed / next**: (1) The handover's 3a decision: repin nixpkgs
+to a hydra-built unstable rev so future native builds are mostly
+cache substitutes (current pin 26.11pre1031299 is 404 on cache for
+both platforms — that's why Qt/LXQt compiled). Deferred deliberately
+(would re-hash the whole verified closure). (2) Cosmetic: labwc built
+without libsfdo → titlebar icon falls back to menu button; 1.5x output
+scale is best-effort via the start script's wlr-randr probe. Device
+left safe: gen8 NixOS on p32, para cleared, Debian p29 intact.
+
+
 ## 2026-09-07 (night) — LXQt desktop ported in-tree (committed); cross toplevel abandoned at nixpkgs-cross walls; native-aarch64 branch + Pi-builder build running (handover: docs/handover-2026-09-07-lxqt-native.md)
 
 User goal: LXQt running like on the GeminiPDA Debian (labwc-nested).
