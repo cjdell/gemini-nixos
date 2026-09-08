@@ -87,13 +87,22 @@ let
 
   qtMods = [ qt.qtbase qt.qtwayland qt.qtsvg ];
 
-  # The repo's config/lxqt/ tree as one read-only store dir, laid out for
-  # services/scripts/start-lxqt-nested to seed to /root (idempotent).
+  # The repo's config/lxqt/ tree as one read-only store dir, laid out
+  # for services/scripts/start-lxqt-nested to seed to /root (idempotent).
+  # NOTE (2026-09-08, first on-glass run): the seed layout is FLAT —
+  # $out/lxqt/{lxqt.conf,session.conf}, $out/labwc/{rc.xml,autostart},
+  # $out/themerc, $out/Desktop/. The earlier `cp ${file} ${file} $out/d`
+  # multi-source copies kept the store basenames (<hash>-lxqt.conf …),
+  # so start-lxqt-nested's seed failed ("cannot stat …/lxqt/lxqt.conf")
+  # and lxqt-nested.service restart-looped. cp each file to its exact
+  # target name.
   sessionConfig = pkgs.runCommand "gemini-lxqt-config" { } ''
-    mkdir -p $out/lxqt $out/labwc $out/themes/Gemini/openbox-3 $out/Desktop
-    cp ${../config/lxqt/lxqt.conf} ${../config/lxqt/session.conf} $out/lxqt/
-    cp ${../config/lxqt/labwc-rc.xml} ${../config/lxqt/labwc-autostart} $out/labwc/
-    cp ${../config/lxqt/themerc} $out/themes/Gemini/openbox-3/themerc
+    mkdir -p $out/lxqt $out/labwc $out/Desktop
+    cp ${../config/lxqt/lxqt.conf} $out/lxqt/lxqt.conf
+    cp ${../config/lxqt/session.conf} $out/lxqt/session.conf
+    cp ${../config/lxqt/labwc-rc.xml} $out/labwc/rc.xml
+    cp ${../config/lxqt/labwc-autostart} $out/labwc/autostart
+    cp ${../config/lxqt/themerc} $out/themerc
     cp ${../config/lxqt/Desktop}/* $out/Desktop/
   '';
 in

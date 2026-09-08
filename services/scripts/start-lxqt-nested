@@ -16,12 +16,14 @@
 # labwc, lxqt-session, wlr-randr, ...) come from the unit's path=.
 #
 # GEMINI_LXQT_CONFIGS (set by the unit) = the repo's config/lxqt/ store
-# dir ($out/{lxqt,session.conf..., labwc/, themes/, Desktop/}) — seeded
-# to /root once (idempotent; never overwrites user changes):
-#   $…/lxqt/{lxqt.conf,session.conf}     -> /root/.config/lxqt/
-#   $…/labwc/{rc.xml,autostart}          -> /root/.config/labwc/
-#   $…/themerc                           -> /root/.local/share/themes/Gemini/openbox-3/
-#   $…/Desktop/*.desktop                 -> /root/Desktop/
+# dir ($out/{lxqt/, labwc/, themerc, Desktop/}) — seeded to /root once
+# (idempotent; never overwrites user changes):
+#   $…/lxqt/lxqt.conf            -> /root/.config/lxqt/lxqt.conf
+#   $…/lxqt/session.conf         -> /root/.config/lxqt/session.conf
+#   $…/labwc/rc.xml              -> /root/.config/labwc/rc.xml
+#   $…/labwc/autostart           -> /root/.config/labwc/autostart
+#   $…/themerc                   -> /root/.local/share/themes/Gemini/openbox-3/themerc
+#   $…/Desktop/*.desktop         -> /root/Desktop/
 set -e
 
 [ -n "${GEMINI_LXQT_CONFIGS:-}" ] || { echo "!! GEMINI_LXQT_CONFIGS not set" >&2; exit 1; }

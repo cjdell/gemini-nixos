@@ -1,32 +1,41 @@
 #!/bin/sh
 # deploy.sh — build/switch generations of the gemini-nixos flake the
-# workstation way: HOST cross-builds the toplevel (fast, cached, the
-# same pipeline that makes the images), ships the DELTA to the device's
-# nix store over ssh, then switches the device's system profile +
-# activates — no reflash, no TWRP. The device boots whatever
-# /nix/var/nix/profiles/system points at (dual-boot initrd gen lookup),
-# so a reboot lands on the new generation and old generations stay
-# selectable for rollback.
+# workstation way: build the NATIVE aarch64 toplevel (flake is now
+# buildSystem = aarch64-linux; cross toplevel abandoned 2026-09-07 at
+# the nixpkgs Qt6CoreTools wall — docs/handover-2026-09-07-lxqt-native.md),
+# ship the DELTA to the device's nix store over ssh, then switch the
+# device's system profile + activate — no reflash, no TWRP. The device
+# boots whatever /nix/var/nix/profiles/system points at (dual-boot
+# initrd gen lookup), so a reboot lands on the new generation and old
+# generations stay selectable for rollback.
 #
-# Rationale (2026-09-07): the flake is x86_64-cross; the fork packages
-# (mesa/wlroots/gemwl/firmware) are NOT on any binary cache, so a fully
-# NATIVE on-device `nixos-rebuild` would compile them on the PDA
-# (30-90+ min, thermal risk). Host-cross + device-switch reuses the
-# verified image pipeline and keeps per-iteration cost to a delta copy
-# (the device store DB already shares the closure).
+# Build model (2026-09-07 → native): every drv is system=aarch64-linux.
+# The host daemon has NO `builders =` line (adding it needs a daemon
+# restart), so the build runs as ROOT against the LOCAL store with
+# `--option builders @/etc/nix/machines`: the Pi (192.168.49.191, 8
+# cores, /etc/nix/machines ssh://cjdell@…) compiles and the host pulls
+# each finished path back over ssh (the Pi's own cache.nixos.org link
+# drops large NARs — HTTP 206 — so never build directly on the Pi for
+# cache fetches). `--fallback`: substitute from cache.nixos.org where
+# the pinned nixpkgs rev is cached (mesa/wlroots/gemwl/labwc/lxqt are
+# NOT — they compile on the builder).
 #
 # GC hygiene (rule 0): every deployed toplevel is pinned with
-# bin/gc-pin.sh before shipping — `nix-collect-garbage` on the HOST
-# would otherwise sweep the cross-built closure (observed 2026-09-07:
-# gen3 re-cross-compiled ~259 packages after a host GC).
+# bin/gc-pin.sh (per-user root) — and the milestone closures get a
+# root-level root too (`sudo nix-store --add-root
+# /nix/var/nix/gcroots/<name> -r <out>`) — before shipping.
+# `nix-collect-garbage` on the HOST would otherwise sweep the closure
+# (observed 2026-09-07: gen3 re-cross-compiled ~259 packages after a
+# host GC).
 #
 # Usage (run from the repo root):
 #   bash bin/deploy.sh status                 device generations + booted gen
-#   bash bin/deploy.sh build                  build the toplevel (cross) + pin it
+#   bash bin/deploy.sh build                  build the native toplevel + pin it
 #   bash bin/deploy.sh deploy                 build (if needed) + ship + switch
 #   bash bin/deploy.sh deploy PATH            ship + switch an existing toplevel
 #   bash bin/deploy.sh rollback [N]           switch device profile N gens back
-# Long ops: wrap in `bash bin/run-job.sh start <name> -- bash bin/deploy.sh ...`.
+# Long ops (the build, or a big first `nix copy` of a native closure):
+# wrap in `bash bin/run-job.sh start <name> -- bash bin/deploy.sh ...`.
 #
 # Device access: bin/device-ssh.sh (auto net-up), key ~/.ssh/id_ed25519_gemini
 # (host ~/.ssh/config entry '10.15.19.82' supplies it for plain nix copy).
@@ -36,18 +45,19 @@ repo=/home/cjdell/Projects/gemini-nixos
 dev=10.15.19.82
 profile=/nix/var/nix/profiles/system
 
+sudo_build() { sudo nix build --store local "$@"; }
+
 device_ssh() { bash "$repo/bin/device-ssh.sh" "$1"; }
 
-# Build limits: cross-compiles oversubscribe badly at nix's defaults on
-# this 16-core host (50+ cc1 processes; observed 2026-09-07).
 build() {
-    # stdout = the toplevel store path ONLY (callers capture it); the
-    # progress line goes to stderr. Build limits: cross-compiles
-    # oversubscribe badly at nix's defaults on this 16-core host (50+ cc1
-    # processes; observed 2026-09-07).
-    echo "deploy: building toplevel (cross)..." >&2
-    nix build "$repo#packages.x86_64-linux.toplevel" \
-        --print-out-paths --no-link --max-jobs 8 --cores 8 2>/dev/null
+    # stdout = the toplevel store path ONLY (callers capture it). Root
+    # + --store local: the daemon has no `builders =` line (restart
+    # deferred), so the distributed build must bypass it. The remote
+    # builder (192.168.49.191) compiles; the host substitutes + pulls.
+    echo "deploy: building native toplevel (aarch64, remote builder)..." >&2
+    sudo_build "$repo#packages.aarch64-linux.toplevel" \
+        --print-out-paths --no-link \
+        --option builders @/etc/nix/machines --fallback 2>/dev/null
 }
 
 pin() {

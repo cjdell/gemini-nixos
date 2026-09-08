@@ -1,15 +1,19 @@
 # Mobile NixOS for the Planet Computers Gemini PDA (MT6797X).
 #
-# Build NATIVE aarch64 (branch native-aarch64, 2026-09-07): every drv is
+# Build model = NATIVE aarch64 (canonical since the native-aarch64 merge
+# 2026-09-08; formerly a branch + worktree, now main): every drv is
 # system = aarch64-linux — built on the aarch64 remote builder
-# (192.168.49.191, /etc/nix/machines ssh://cjdell@…) with cache.nixos.org
-# substitution where the pinned nixpkgs rev is cached. NOTE: this
-# nixpkgs snapshot (26.11pre1031299.0bb7ec54c848) is NOT on hydra's
-# cache (native x86_64 + aarch64 narinfo both 404), so most of the
-# Qt6/LXQt closure compiles on the builder regardless; native hashes
-# differ from the cross-built main branch (no shared store paths). The
-# main branch cross-builds from x86_64 — that stays the device-flash
-# path until this native workflow proves out.
+# (192.168.49.191, /etc/nix/machines ssh://cjdell@…; run as root with
+# `--store local` + `--option builders @/etc/nix/machines --fallback`,
+# e.g. bin/deploy.sh build) with cache.nixos.org substitution where the
+# pinned nixpkgs rev is cached. NOTE: this nixpkgs snapshot
+# (26.11pre1031299.0bb7ec54c848) is NOT on hydra's cache (native x86_64
+# + aarch64 narinfo both 404), so most of the Qt6/LXQt closure compiles
+# on the builder regardless. The CROSS toplevel model (x86_64 host,
+# buildSystem=x86_64-linux) is ABANDONED — it hit the nixpkgs cross
+# walls (Qt6CoreTools missing for the lxqt scope, etc.; see
+# docs/handover-2026-09-07-lxqt-native.md). Native aarch64 drvs hash-
+# match nothing cross-built (no shared store paths with pre-merge gens).
 #
 #   nix build .#packages.aarch64-linux.default  # boot+recovery+system img (native aarch64 drvs)
 #   nix build .#packages.aarch64-linux.bootimg  # boot.img only
