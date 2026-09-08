@@ -164,6 +164,63 @@ in
   # real fs growth. [fixed 2026-09-07]
   boot.growPartition = false;
 
+  # ---- On-device Nix: self-sufficient build/switch + nix-shell -p ------
+  # (2026-09-08) Make the PDA a first-class build/switch target: a repo
+  # clone at /root/gemini-nixos can iterate config/programs on the go
+  # via `bash /root/gemini-nixos/bin/device-rebuild.sh build|switch` and
+  # `nix-shell -p <pkg>`. Background facts verified on glass gen28
+  # (2026-09-08):
+  # - /nix/store is bind-mounted ro in the MAIN mount namespace while
+  #   the nix-daemon runs in a PRIVATE mount namespace that sees it rw
+  #   (mnt ns + mountinfo verified) — the read-only-store design. The
+  #   socket-activated nix-daemon is therefore the only store writer,
+  #   and root clients AUTO-connect to it when the socket exists (plain
+  #   `nix-store --add` as root succeeded on gen28), so no `store =
+  #   daemon` line is needed.
+  # - The NixOS `nix` module is enabled (nix.conf is generated) but
+  #   experimental-features was EMPTY on gen28 → flake builds failed;
+  #   enabled below.
+  nix.settings = {
+    experimental-features = [ "nix-command" "flakes" ];
+    # RAM-bound mobile builds (3.6 GiB total, ~1-2 GiB free with the
+    # LXQt desktop up): bound the concurrent compilers. Normal on-device
+    # switches are config-glue + cache.nixos.org substitutions (the
+    # pinned nixpkgs rev IS the hydra-built channel snapshot — golden
+    # rule 9), so they are quick; the custom drvs (mesa fork, kernel,
+    # wlroots/labwc/gemwl, firmware, gemcli) only compile when their
+    # sources change — long on the A72/A53 mix, prefer the host
+    # deploy.sh loop for those.
+    max-jobs = 2;
+    cores = 2;
+    # Trusted single-user root PDA (same trust model as the root LXQt
+    # session): sandbox buys nothing here and risks lean-mobile-kernel
+    # namespace edge cases; store writes are daemon-mediated either way.
+    sandbox = false;
+  };
+  # Big on-device compiles (kernel/mesa when their sources change) need
+  # GBs of build-dir space; /tmp is a 1.9 GiB tmpfs (RAM). Point the
+  # nix daemon's build temp at the disk rootfs (/var/tmp — 20 GiB free
+  # on gen28). [2026-09-08]
+  systemd.services.nix-daemon.environment.TMPDIR = "/var/tmp";
+  # `nix-shell -p <pkg>` / `<nixpkgs>` resolution. NixOS's default
+  # NIX_PATH points at a `channels/nixos` entry that does not exist on
+  # this device (falls through to the unpinned flake registry = master
+  # nixpkgs — rule-9 violation + package drift). Point it at the
+  # per-user channels dir, populated by `device-rebuild.sh channels`
+  # with the SAME rev the flake pins (dc5d91f84032 — cache-healthy by
+  # construction, package versions match the running system). nixPath
+  # drives the login-shell NIX_PATH; belt+braces: the same list as the
+  # nix.conf `nix-path` so non-login contexts (device-ssh.sh, the LXQt
+  # system-service session) resolve <nixpkgs> too. [2026-09-08]
+  nix.nixPath = [
+    "nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs"
+    "nixos-config=/etc/nixos/configuration.nix"
+  ];
+  nix.settings."nix-path" = [
+    "nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs"
+    "nixos-config=/etc/nixos/configuration.nix"
+  ];
+
   # ---- Overlays (2026-09-08: pruned to the ones still needed) ----------
   # The cross-build workaround overlays (systemd withLibBPF=false,
   # ffmpeg/ffmpeg-headless withCudaLLVM=false, openblas dynamicArch=false,
@@ -255,6 +312,13 @@ in
     # (same trust model as the rest of the root desktop session).
     (pkgs.google-chrome.override { commandLineArgs = "--no-sandbox"; })
     pkgs.firefox
+  ] ++ [
+    # On-device iteration (2026-09-08): git for the device repo clone at
+    # /root/gemini-nixos (bin/device-rebuild.sh + bin/device-repo.sh) and
+    # micro as a small terminal editor for on-the-go config tweaks
+    # (swap for vim/neovim if preferred).
+    pkgs.git
+    pkgs.micro
   ];
 
   # ICD manifest discovery: the compiled-in libglvnd scan list is
