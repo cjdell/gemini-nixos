@@ -119,6 +119,18 @@ in
   security.sudo.wheelNeedsPassword = false;
   services.getty.autologinUser = "gemini";
 
+  # ---- Shells ----------------------------------------------------------
+  # Explicit bash (bashInteractive) as every account's login shell (ssh
+  # root, getty autologin gemini). NixOS's inherited default already
+  # resolves to /run/current-system/sw/bin/bash (bash-interactive in the
+  # system profile — verified on glass gen9), but pin the store path so
+  # the choice never depends on profile composition. The desktop session
+  # (services/lxqt.nix) additionally exports SHELL to the same binary so
+  # terminal apps (qterminal) spawn bash rather than /bin/sh (a systemd
+  # system service has no SHELL env; qterminal falls back to sh).
+  # [2026-09-08]
+  users.defaultUserShell = "${pkgs.bashInteractive}/bin/bash";
+
   services.openssh.enable = true;
 
   # No suspend/resume path exists on this unit (only the LK-configured WDT

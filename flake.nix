@@ -106,6 +106,13 @@
           withDrmBackend = true;
         };
       };
+      # gemini xkb symbols (layout "gemini", UK default / us variant;
+      # config/xkb/symbols/gemini, vendored byte-identical from
+      # GeminiPDA) as an xkbcommon include dir — wired into the gemwl +
+      # lxqt-nested units via XKB_CONFIG_EXTRA_PATH (services/desktop.nix,
+      # services/lxqt.nix). Standalone here for keymap checks
+      # (xkbcli compile-keymap --layout gemini -I <dir>).
+      geminiXkb = eval.pkgs.callPackage ./pkgs/gemini-xkb.nix { };
     in
     {
       packages.${buildSystem} = {
@@ -126,6 +133,7 @@
         wlroots = wlroots; # wlroots 0.18.2 pin (gemwl's library; R2)
         gemwl   = gemwl;   # GPU-direct fb compositor + tinytest clients
         labwc   = labwc;   # 0.8.3 nested compositor (pinned wlroots 0.18.2)
+        gemini-xkb = geminiXkb; # xkb layout include dir (XKB_CONFIG_EXTRA_PATH)
       };
 
       # Host tooling stays x86_64 (this flake is evaluated from an x86_64

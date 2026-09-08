@@ -21,6 +21,10 @@ lean 6.6.0 is on glass, desktop verified; see its session-log entry).
 
 ## 1. Current device state (gen9, lean 6.6.0 — this session's baseline)
 
+> **Updated 2026-09-08:** gen10 `y7v5z1sg…` deployed (keyboard xkb +
+> shell fixes below); the baseline facts here (input inventory, kernel
+> pairing, wifi root causes) are unchanged by that deploy.
+
 - p32 `userdata`: NixOS **gen9** `r2mr8hf2l3k7l3029yhb8dgc27i7m84g-…`,
   booted on the self-built kernel **`6.6.0 #1-mobile-nixos`**; para
   cleared; Debian p29 untouched; desktop (gemwl + labwc → LXQt) up,
@@ -142,9 +146,22 @@ The Gemini xkb symbols live in the legacy project
 Gemian's xkeyboard-config fork; keysym facts UK-verified 2026-09-04 in
 its header comment) and were deployed to the Debian rootfs by
 `build/deploy-xkb-gemini.sh` → `/usr/share/X11/xkb/symbols/gemini`.
-**No NixOS equivalent exists yet.**
+No NixOS equivalent existed.
 
-Fix direction (pick one; the compositor picks the layout up at next
+**DONE (2026-09-08, gen10 `y7v5z1sg…` — deployed + verified on glass):**
+`config/xkb/symbols/gemini` (vendored byte-identical + provenance README)
+→ `pkgs/gemini-xkb.nix` (xkbcommon include dir, flake pkg `gemini-xkb`)
+→ `XKB_CONFIG_EXTRA_PATH` on the gemwl + lxqt-nested units and
+`XKB_DEFAULT_LAYOUT=gemini` on lxqt-nested (labwc 0.8.3 builds its
+keymap from that env, src/input/keyboard.c `set_layout`). Session log:
+no XKB-338 after the gemwl restart, labwc logs "Found layout **Gemini
+English (UK)**". Shell ask also landed: `users.defaultUserShell` =
+bashInteractive store bash + `SHELL=` exported to the lxqt session
+(qterminal spawns bash, not /bin/sh). **User on-glass typing check
+owed:** Fn+K `@`, Fn+L `;`, shift+3 `£`, shift+' `~`, shift+. `?` and
+`echo $0` → bash.
+
+Fix direction (chosen one; the compositor picks the layout up at next
 start — no kernel change):
 - Package `symbols/gemini` (with provenance) and put it on xkbcommon's
   include path for gemwl/labwc. NixOS-idiomatic: an
@@ -174,21 +191,23 @@ start — no kernel change):
 
 ## 5. Run plan (next session)
 
-1. **Fix the nvram unit** (§2a): single-line ExecStart (script in the
+1. ~~Fix the nvram unit (§2a)~~ ⬜ still open (not touched this session) — single-line ExecStart (script in the
    utils package or writeShellScript). `deploy.sh deploy`; on the
    device: `systemd-analyze verify` clean, unit active, and
    `ls /data/nvram/APCFG/APRDEB/WIFI /etc/wifi/profiles.conf` exist.
-2. **Fix `/lib/firmware`** (§2b): tmpfiles symlink to the firmware dir.
+2. ~~Fix `/lib/firmware` (§2b)~~ ⬜ still open (not touched this session) — tmpfiles symlink to the firmware dir.
    `deploy.sh deploy`; then `bash bin/device-ssh.sh
    'wifi-internal start'` — expect wlan0 (30 s wait). If it appears:
    `wifi auto` against a saved profile or wpa_supplicant manual
    connect; log the result (see §2c if it does not).
-3. **Ship the xkb layout** (§3): port `symbols/gemini` into the
-   closure + wire xkbcommon's include path for gemwl/lxqt-nested.
-   Verify keymap compile (no XKB-338 in `journalctl -u gemwl`) and
-   keysyms on glass (UK + Fn layer).
-4. Record version lines + outcomes in `docs/session-log.md`
-   (per rule 0) and update this doc's state.
+3. ~~Ship the xkb layout (§3)~~ ✅ **DONE 2026-09-08 (gen10)** — see
+   §3 DONE note; remaining = user on-glass typing check.
+4. ~~Default shell bash~~ ✅ **DONE 2026-09-08 (gen10)** —
+   `users.defaultUserShell = "${pkgs.bashInteractive}/bin/bash"`
+   (`config/gemini.nix`) + `SHELL=` on the lxqt-nested unit
+   (`services/lxqt.nix`); `/etc/passwd` + unit env verified on glass.
+5. Record version lines + outcomes in `docs/session-log.md`
+   (per rule 0) and update this doc's state. → done (entry 2026-09-08).
 
 ## 6. References
 

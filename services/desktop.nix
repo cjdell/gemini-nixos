@@ -69,6 +69,12 @@ let
   };
   gemwl = pkgs.callPackage ../pkgs/gemwl.nix { inherit wlroots; };
   utils = pkgs.callPackage ./gemini-utils.nix { };
+  # Gemini xkb symbols (layout "gemini") as an xkbcommon include dir
+  # (config/xkb/symbols/gemini; see config/xkb/README.md). gemwl
+  # compiles layout "gemini" itself (gemwl.c xkb_rule_names); without
+  # this on the include path xkbcommon logs XKB-338 and gemwl falls back
+  # to the default US keymap (Fn = Alt, no £/@ Fn layer).
+  geminiXkb = pkgs.callPackage ../pkgs/gemini-xkb.nix { };
 in
 {
   environment.systemPackages = [
@@ -109,6 +115,11 @@ in
         "PAN_MESA_DEBUG=noafbc" # AFBC readback workaround (must stay)
         "XDG_RUNTIME_DIR=/run/gemwl"
         "HOME=/root"
+        # Gemini keyboard layout: xkbcommon include path for
+        # symbols/gemini (gemwl compiles layout "gemini" by default).
+        # Without it: XKB-338 + fallback to the default US keymap
+        # (observed on glass gen9). [2026-09-08]
+        "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
       ];
       # -t 90: output transform (panel is physically landscape, fb is
       # portrait). No -s: the nested LXQt session (services/lxqt.nix) is

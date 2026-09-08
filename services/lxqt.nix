@@ -66,6 +66,12 @@ let
   lxqt = pkgs.lxqt;
   qt = pkgs.kdePackages;
   utils = pkgs.callPackage ./gemini-utils.nix { };
+  # Gemini xkb symbols (layout "gemini") as an xkbcommon include dir
+  # (config/xkb/symbols/gemini; see config/xkb/README.md). labwc 0.8.3
+  # compiles its keymap from XKB_DEFAULT_LAYOUT (src/input/keyboard.c
+  # set_layout); without symbols/gemini on the include path it logs XKB-
+  # 338 and falls back to US (Fn = Alt, shift+3 = #, no £/@ Fn layer).
+  geminiXkb = pkgs.callPackage ../pkgs/gemini-xkb.nix { };
 
   # The LXQt apps that make up the session (nixpkgs lxqt scope). Every
   # binary here is also on the unit PATH so autostart Exec= names and the
@@ -211,6 +217,20 @@ in
           "QT_ACCESSIBILITY=1"
           # AFBC readback workaround (must stay; same as gemwl).
           "PAN_MESA_DEBUG=noafbc"
+          # Gemini keyboard layout for the labwc keymap: xkbcommon
+          # include path for symbols/gemini + the layout name itself.
+          # Both are read by xkbcommon when labwc builds its keymap
+          # (XKB_DEFAULT_LAYOUT, src/input/keyboard.c set_layout).
+          # Without them: XKB-338 + US fallback (observed on glass
+          # gen9: labwc "Found layout English (US)"). [2026-09-08]
+          "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
+          "XKB_DEFAULT_LAYOUT=gemini"
+          # Terminal apps in the session (qterminal) spawn $SHELL; a
+          # systemd system service has no SHELL env, and without it
+          # qterminal falls back to /bin/sh (bash sh-mode). Match the
+          # accounts' login shell (users.defaultUserShell, config/
+          # gemini.nix). [2026-09-08]
+          "SHELL=${pkgs.bashInteractive}/bin/bash"
           # Seed configs dir for start-lxqt-nested.
           "GEMINI_LXQT_CONFIGS=${sessionConfig}"
         ];

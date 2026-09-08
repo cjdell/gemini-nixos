@@ -1,0 +1,111 @@
+// Gemini PDA physical keyboard xkb symbols (layout "gemini").
+//
+// The Gemini's 47-key matrix (AW9523, gpio-matrix-keypad) does not match any
+// standard PC layout 1:1: symbols like ? ~ @ ; are on shifted/Fn layers of
+// letter and punctuation keys that differ per regional silkscreen. This file
+// is adapted from the Gemian project's xkeyboard-config
+// (github.com/gemian/xkeyboard-config, symbols/planet_vndr/gemini) which has
+// years of real-Gemini user verification, trimmed to this repo's needs.
+//
+// Key mapping facts (this unit = UK silkscreen, verified 2026-09-04):
+//   - Fn key = matrix (4,3), kernel emits KEY_RIGHTALT  -> <RALT>. level3 is
+//     the Fn layer (included via level3(ralt_switch) below).
+//   - Kernel (5,0) emits KEY_APOSTROPHE (UK cap ' ~ ; the US cap is \ |).
+//     Gemian maps <AC11> = apostrophe/asciitilde/colon.
+//   - Kernel (4,5) emits KEY_DOT (UK cap . ?). <AB09> = period/question.
+//   - shift+3 = sterling (£) — UK variant. Fn+K = at, Fn+L = semicolon.
+//   - K = <AC08>, L = <AC09>.
+//
+// Layout name "gemini" (no variant) = the default "basic" block below = UK.
+// Variant "us" reproduces the US silkscreen deltas. Select with
+// layout=gemini, variant=us where needed.
+//
+// See docs/ for the full matrix keymap and the vendor aw9523_key.c trim
+// table.
+
+partial hidden alphanumeric_keys
+xkb_symbols "modifiers" {
+    include "level3(ralt_switch)"
+};
+
+partial hidden alphanumeric_keys
+xkb_symbols "common_keys" {
+    key <ESC>   { [    Escape,       Escape,       XF86Sleep, XF86PowerDown ] };
+    key <BKSP>  { [ BackSpace,       Delete,       XF86Tools ] };
+    key <TAB>   { [       Tab, ISO_Left_Tab,       Caps_Lock ] };
+    key <UP>    { [        Up,           Up,           Prior,         Prior ] };
+    key <SPCE>  { [     space,        space, XF86AudioRecord,  nobreakspace ] };
+    key <LEFT>  { [      Left,         Left,            Home,          Home ] };
+    key <DOWN>  { [      Down,         Down,            Next,          Next ] };
+    key <RGHT>  { [     Right,        Right,             End,           End ] };
+};
+
+// ---- default = UK ("British version with £") ----
+default partial alphanumeric_keys
+xkb_symbols "basic" {
+    include "gemini(modifiers)"
+    include "gemini(common_keys)"
+
+    name[Group1]="Gemini English (UK)";
+
+    key <AE01>  { [         1,      exclam,          bar,    F1 ] };
+    key <AE02>  { [         2,    quotedbl,   numbersign,    F2 ] };
+    key <AE03>  { [         3,    sterling,    backslash,    F3 ] };
+    key <AE04>  { [         4,      dollar,     EuroSign,    F4 ] };
+    key <AE05>  { [         5,     percent,         less,    F5 ] };
+    key <AE06>  { [         6, asciicircum,      greater,    F6 ] };
+    key <AE07>  { [         7,   ampersand,  bracketleft,    F7 ] };
+    key <AE08>  { [         8,    asterisk, bracketright,    F8 ] };
+    key <AE09>  { [         9,   parenleft,    braceleft,    F9 ] };
+    key <AE10>  { [         0,  parenright,   braceright,   F10 ] };
+
+    key <AD01>  { [         q,          Q, XF86AudioPlay,  Greek_OMEGA ] };
+    key <AD02>  { [         w,          W, XF86AudioPrev,      Lstroke ] };
+    key <AD03>  { [         e,          E, XF86AudioNext,    trademark ] };
+    key <AD04>  { [         r,          R,        Print,   registered ] };
+    key <AD05>  { [         t,          T, XF86AudioMute,          yen ] };
+    key <AD06>  { [         y,          Y,    leftarrow,   rightarrow ] };
+    key <AD07>  { [         u,          U,    downarrow,      uparrow ] };
+    key <AD08>  { [         i,          I,         plus,    plusminus ] };
+    key <AD09>  { [         o,          O,        minus,     Ooblique ] };
+    key <AD10>  { [         p,          P,        equal,        THORN ] };
+
+    key <AC01>  { [         a,          A, XF86TaskPane,              AE ] };
+    key <AC02>  { [         s,          S,       ssharp,         section ] };
+    key <AC03>  { [         d,          D,  XF86TopMenu,             ETH ] };
+    key <AC04>  { [         f,          F,      XF86UWB,     ordfeminine ] };
+    key <AC05>  { [         g,          G,          eng,             ENG ] };
+    key <AC06>  { [         h,          H,     division,  dead_diaeresis ] };
+    key <AC07>  { [         j,          J,   underscore, dead_circumflex ] };
+    key <AC08>  { [         k,          K,           at,          degree ] };
+    key <AC09>  { [         l,          L,    semicolon,      dead_caron ] };
+    key <AC11>  { [apostrophe, asciitilde,        colon,      dead_acute ] };
+
+    key <AB01>  { [         z,          Z,  guillemotleft,  dead_belowdot ] };
+    key <AB02>  { [         x,          X, guillemotright,  dead_abovedot ] };
+    key <AB03>  { [         c,          C, XF86AudioLowerVolume, copyright ] };
+    key <AB04>  { [         v,          V, XF86AudioRaiseVolume, leftsinglequotemark ] };
+    key <AB05>  { [         b,          B, XF86MonBrightnessDown, rightsinglequotemark ] };
+    key <AB06>  { [         n,          N,  XF86MonBrightnessUp,       exclamdown ] };
+    key <AB07>  { [         m,          M,            grave,        dead_grave ] };
+    key <AB08>  { [     comma,      slash, XF86Option,          multiply ] };
+    key <AB09>  { [    period,   question,           U263A,        dead_tilde ] };
+};
+
+// ---- US silkscreen variant ----
+partial alphanumeric_keys
+xkb_symbols "us" {
+    include "gemini(basic)"
+
+    name[Group1]="Gemini English (US)";
+
+    key <AE01>  { [         1,     exclam,   asciitilde,   F1 ] };
+    key <AE02>  { [         2,         at,        grave,   F2 ] };
+    key <AE03>  { [         3, numbersign,     sterling,   F3 ] };
+
+    key <AC08>  { [         k,          K,    semicolon,     degree ] };
+    key <AC09>  { [         l,          L,     quotedbl, dead_caron ] };
+    key <AC11>  { [ backslash,        bar,        colon, dead_acute ] };
+
+    key <AB07>  { [         m,          M,   apostrophe, dead_grave ] };
+};

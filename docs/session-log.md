@@ -5,6 +5,57 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 — DESKTOP KEYBOARD MAPPINGS + SHELL fixed on glass (gen10): symbols/gemini shipped into the closure; gemwl + labwc now compile layout "gemini"; explicit bash login shell + SHELL for the session
+
+Worked `docs/handover-2026-09-08-wifi-keyboard.md` §3 (keyboard xkb
+missing from the closure — the Fn layer / UK layout NEVER worked in
+NixOS) + the user's follow-up ask (default shell = bash, not sh). Both
+fixed, deployed as **gen10** `y7v5z1sgwlq32812fpvspd5vs7338qh7`
+(kernel unchanged `6.6.0 #1-mobile-nixos`, lean self-built) via
+`bin/deploy.sh deploy`; no flash, no TWRP. Glass-visible effects land at
+the next compositor start / terminal open.
+
+- **xkb layout shipped (root cause from the handover, verified on
+glass gen9 first):** gemwl logged `xkbcommon: ERROR: [XKB-338] Couldn't
+find file "symbols/gemini"` every boot and fell back to the default US
+keymap; labwc logged "Found layout English (US)". Consequence on glass:
+Fn (`KEY_RIGHTALT` → `<RALT>`) behaved as Alt (no level3 layer) and
+shift+3 gave `#` not `£`. New in-repo artifacts:
+  - `config/xkb/symbols/gemini` — vendored byte-identical from
+    GeminiPDA `build/rootfs-files/xkb/symbols/gemini` (sha256
+    `f56fbab8…`, 5,937 B; provenance README `config/xkb/README.md`;
+    same re-copy rule as `config/keymaps/`).
+  - `pkgs/gemini-xkb.nix` — packages it as an xkbcommon include dir
+    (`$out/symbols/gemini`); exposed as flake package `gemini-xkb`.
+  - `services/desktop.nix` (gemwl unit) + `services/lxqt.nix`
+    (lxqt-nested unit): `XKB_CONFIG_EXTRA_PATH=${gemini-xkb}`;
+    lxqt-nested additionally `XKB_DEFAULT_LAYOUT=gemini` (labwc 0.8.3
+    builds its keymap from that env — `src/input/keyboard.c`
+    `set_layout`; gemwl hardcodes layout "gemini", gemwl.c:818).
+- **Shell:** `users.defaultUserShell = "${pkgs.bashInteractive}/bin/bash"`
+  in `config/gemini.nix` (root + gemini now point at the store bash in
+  `/etc/passwd`, previously the inherited `/run/current-system/sw/...`
+  default — already bash, now pinned), and the lxqt-nested unit exports
+  `SHELL=` to the same binary so terminal apps (qterminal — a systemd
+  system service has no SHELL env and qterminal falls back to /bin/sh)
+  spawn bash.
+- **Verified on glass (journal + unit env, gen10):** gemwl restarted
+  clean (NRestarts=0) and logs `keyboard keymap: model=pc105
+  layout=gemini variant=(default)` ×2 with NO XKB-338 after the
+  restart; labwc logs "Found layout **Gemini English (UK)**";
+  `systemctl show lxqt-nested -p Environment` carries
+  `XKB_CONFIG_EXTRA_PATH=/nix/store/w802hc2bbx…-gemini-xkb-2026-09-08`,
+  `XKB_DEFAULT_LAYOUT=gemini`, `SHELL=/nix/store/s6hkkyiy…-bash-
+  interactive-5.3p9/bin/bash`; `/etc/passwd` root+gemini = the store
+  bash. **User on-glass typing check still owed:** Fn+K → `@`, Fn+L →
+  `;`, shift+3 → `£`, shift+' → `~`, shift+. → `?` (qterminal), and
+  `echo $0` → bash (was sh before this gen in the desktop terminal).
+- **Still open from the handover (not this session's ask):** wifi §2a
+  (nvram unit malformed — single-line ExecStart) + §2b (`/lib/firmware`
+  symlink) — wifi-internal still fails at boot on gen10; console Fn
+  check on the fbcon VT (console.keyMap gemini-uk.map was already wired
+  in-repo; on-glass typing of the VT layer untested this session).
+
 ## 2026-09-08 (afternoon) — LEAN KERNEL ON GLASS (A/B run done): self-built 6.6.0 boots + desktop verified; boot-log display quirk observed; wifi/keyboard handover written
 
 Executed `docs/handover-2026-09-08-kernel-on-glass.md` — the first boot of the
