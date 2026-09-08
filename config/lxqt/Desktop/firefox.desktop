@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Firefox
+GenericName=Web Browser
+Comment=Browse the World Wide Web
+Icon=firefox
+Exec=/run/current-system/sw/bin/firefox %U
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true

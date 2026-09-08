@@ -65,6 +65,9 @@
 , pkg-config
 , libdrm
 , libglvnd
+, wayland
+, wayland-protocols
+, wayland-scanner
 }:
 
 let
@@ -139,18 +142,38 @@ stdenv.mkDerivation (finalAttrs: {
     # cross derivation is the aarch64 target python.
     (buildPackages.python3.withPackages
       (ps: with ps; [ mako pyyaml packaging ]))
+    # EGL wayland platform codegen (mesa 25 vendors wayland-drm.xml, but
+    # needs wayland.xml + the wayland-scanner binary at build time;
+    # nixpkgs splits the scanner into its own wayland-scanner package).
+    buildPackages.wayland
+    buildPackages.wayland-protocols
+    buildPackages.wayland-scanner
   ];
+
+  # wayland's + the scanner's .pc files live ONLY in their -dev outputs
+  # (wayland-protocols' sits in share/pkgconfig); the pkg-config wrapper
+  # role vars don't reliably surface all of them to mesa 25's build-time
+  # dependency() lookups (meson.build:2054 wayland-scanner, :2061
+  # wayland-protocols). Seed both role vars directly — the plain + _FOR_BUILD
+  # split is what tripped each of the two lookups in turn. [2026-09-08]
+  env = {
+    PKG_CONFIG_PATH =
+      "${wayland.dev}/lib/pkgconfig:${wayland-scanner.dev}/lib/pkgconfig:${wayland-protocols}/share/pkgconfig";
+    PKG_CONFIG_PATH_FOR_BUILD =
+      "${wayland.dev}/lib/pkgconfig:${wayland-scanner.dev}/lib/pkgconfig:${wayland-protocols}/share/pkgconfig";
+  };
 
   buildInputs = [
     libdrm # panfrost (dep_libdrm)
     libglvnd # -Dglvnd=true (dep_glvnd)
+    wayland # libwayland-client (DT_NEEDED of libEGL_mesa with the wayland platform)
   ];
 
   mesonFlags = [
     "--sysconfdir=/etc"
 
     # --- what to build (verified set, see build-mesa.sh) -------------
-    "-Dplatforms=" # no X11/Wayland EGL platforms
+    "-Dplatforms=wayland" # + wayland EGL platform (third-party GL clients: Firefox/Chrome WebGL + the wlegltst smoke client — Debian-parity, 2026-09-04 Firefox-WebGL session; without it the fork EGL cannot serve browser GL). surfaceless stays via -Degl-native-platform below (gemwl/tinytest/wlroots-gles2 path unchanged)
     "-Degl-native-platform=surfaceless"
     "-Dgallium-drivers=panfrost"
     "-Dvulkan-drivers="

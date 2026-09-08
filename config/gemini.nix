@@ -226,9 +226,35 @@ in
   # dispatch to it. hardware.graphics stays off: the stock nixpkgs mesa
   # (26.1.x, all drivers) would be the wrong driver for the Mali-T880
   # and a much larger closure.
+  # ---- Browsers (2026-09-08) -------------------------------------------
+  # Real Google Chrome (nixpkgs google-chrome 152.0.7977.82, native
+  # aarch64 deb — arm64 Linux stable only ships since ~2026-07, and the
+  # repo's nixpkgs pin already carries it with aarch64 support; unfree,
+  # allowed above) + Firefox 155.0.1. Both go through the SAME client GL
+  # path the Debian rootfs verified (Firefox WebGL worked there on the
+  # fork mesa): nixpkgs' firefox wrapper ships libglvnd on LD_LIBRARY_PATH
+  # (withGlvnd defaults true on Linux), so its dlopen of libEGL.so.1
+  # dispatches via the /etc/glvnd/egl_vendor.d/50_mesa.json manifest
+  # below -> mesa-geminipda fork -> panfrost renderD128. Two gaps had to
+  # close first (both 2026-09-08, on-glass failures): (1) the fork was
+  # built with NO wayland EGL platform (-Dplatforms=) so browser GL had
+  # no display path at all — pkgs/mesa-geminipda.nix now builds
+  # surfaceless,wayland; (2) the fork libgbm needs GBM_BACKENDS_PATH to
+  # find dri_gbm.so (browser glxtest GPU probe) — set session-wide in
+  # services/lxqt.nix. Firefox must be DESKTOP-launched (session env).
+  # Session-side bits (session PATH for bare-name launch, NIXOS_OZONE_WL
+  # for chrome's ozone/wayland auto-flags) live in services/lxqt.nix.
   environment.systemPackages = [
     mesaGeminipda
     pkgs.libglvnd
+    # --no-sandbox (2026-09-08): this desktop runs as ROOT (system
+    # service, HOME=/root); chrome's zygote refuses euid 0 without it
+    # ("Running as root without --no-sandbox is not supported", verified
+    # on glass) and neither the userns nor the SUID sandbox can drop
+    # root on a root session. Accepted on this trusted single-user PDA
+    # (same trust model as the rest of the root desktop session).
+    (pkgs.google-chrome.override { commandLineArgs = "--no-sandbox"; })
+    pkgs.firefox
   ];
 
   # ICD manifest discovery: the compiled-in libglvnd scan list is

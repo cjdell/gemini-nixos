@@ -5,7 +5,115 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
-## 2026-09-08 (8th) — BUTTON SLUGGISHNESS FIXED (v2, gens 25–26): instant backlight-first sleep/wake (~1-2 s each way), wifi chip teardown removed from the button path (~29 s stall → iface down + daemon kill), press debounce + queue drain in the sleepd daemon — full cycle re-verified on glass incl. wifi re-association
+## 2026-09-08 (browsers GL fix, gen28 `1nkzm5nih…`) — REAL CHROME/FIREFOX GL PATH: fork mesa gained the wayland EGL platform; Firefox no-WebGL + Chrome-won't-start root-caused and fixed at build level; wlegltst proves ES 3.1 / Mali-T880 / Panfrost through the nested stack
+
+Follow-up to the browsers-install entry below. User glass test:
+"no WebGL in Firefox (not even software); this DID work in Debian.
+Chrome won't even start."
+
+Root causes (each verified on device):
+1. **Fork mesa had NO wayland EGL platform** (`-Dplatforms=` empty,
+surfaceless-only via -Degl-native-platform). Browser GL needs
+EGL_PLATFORM_WAYLAND against the nested compositor — with none,
+Firefox could not create ANY GL context ("not even software": no
+wayland platform AND no swrast/llvmpipe in the fork = nothing to fall
+back to). Debian's fork had the wayland platform (es2gears_wayland +
+hardware WebRender worked there — legacy GeminiPDA session-log
+2026-09-04); the NixOS port had dropped it. `wlegltst.c` (wayland-EGL
+smoke client in pkgs/gemwl/) existed but could never pass.
+2. **GBM_BACKENDS_PATH not exported**: the fork libgbm has NO baked
+backend path (strings-verified) and honors only that env var
+(Debian start-lxqt-nested.sh exported it) — browser glxtest/GPU probe
+needs dri_gbm.so (which the fork DOES ship at lib/gbm).
+3. **Chrome refused to start**: "Running as root without --no-sandbox
+is not supported" (zygote_host_impl_linux.cc:102) — the desktop is a
+root systemd session; userns/SUID sandbox can't drop root. Fixed with
+--no-sandbox in the wrapper (trusted single-user PDA; comment in
+config/gemini.nix).
+
+Changes (all in-tree, this session):
+- pkgs/mesa-geminipda.nix: `-Dplatforms=wayland` (surfaceless
+  preserved via -Degl-native-platform=surfaceless) + wayland build deps.
+  Build-discovery gotcha worth recording: wayland's + wayland-scanner's
+  .pc live ONLY in their -dev outputs and wayland-protocols' in
+  share/pkgconfig, but the nixpkgs pkg-config wrapper role vars don't
+  surface all of them to mesa 25's build-time dependency() lookups
+  (meson.build:2054 wayland-scanner, :2061 wayland-protocols) — seeded
+  env.PKG_CONFIG_PATH + PKG_CONFIG_PATH_FOR_BUILD with the three dirs.
+- services/lxqt.nix: GBM_BACKENDS_PATH=${mesaGeminipda}/lib/gbm in the
+  session env (port of the Debian env var; mesaGeminipda already in
+  scope there).
+- config/gemini.nix: google-chrome overridden with commandLineArgs =
+  "--no-sandbox" (+ rationale comment).
+
+Version lines (rule 0): mesa-geminipda 25.0.7 now
+`mfqyzn3rz6i2w5hliz5w8jr5vylk8h3m` (wayland platform; libEGL_mesa
+DT_NEEDED libwayland-client verified on device); relinked
+wlroots/labwc/gemwl against it; toplevel gen28
+`1nkzm5nih5r39q7wzjf2qv07rbr2r9mi` deployed 2026-09-08 (~78 s
+delta — mesa was pre-built, only the relinked drvs + toplevel
+shipped). gemwl + lxqt-nested active after activate (no mesa-rebuild
+regression). Kernel #329 + boot.img unchanged.
+
+Verification on glass (probe, before user eyes-on): fork's own
+wlegltst against the LIVE session prints: wl_drm present (v2),
+linux_dmabuf present (v4), eglGetPlatformDisplay(wayland): ok,
+EGL 1.5, **GL: OpenGL ES 3.1 Mesa 25.0.7 | Mali-T880 (Panfrost)**, 150+
+swaps — i.e. the full client-GL chain (fork EGL wayland -> nested
+labwc wl_drm/dmabuf -> panfrost) works end to end. Firefox needs
+exactly this chain. Firefox also mapped a window under the new env
+(labwc journal: identifier=firefox).
+
+**USER-VERIFIED ON GLASS 2026-09-08: "it works great"** — Firefox
+(WebGL) and Chrome both running from the LXQt desktop after the gen28
+deploy; entry closed. (Chrome's chrome://gpu mode — ANGLE-on-panfrost
+vs SwiftShader — not reported; launcher tuning can follow if a future
+session wants it.)
+
+
+Asked "can we get real Google Chrome on the device" — research + install
+session. Findings (web-verified 2026-09-08): Google's official Linux arm64
+stable deb exists (dl.google.com …/google-chrome-stable_current_arm64.deb,
+133 MB — download page doesn't link it yet, but the URL + apt repo are
+live; Widevine + Google sync included, per omgubuntu 2026-07). nixpkgs
+removed the old google-chrome path but it lives on at
+`pkgs/by-name/go/google-chrome` with **aarch64-linux in platforms** and the
+arm64 deb hash at the repo's pinned rev `dc5d91f84032` (v152.0.7977.82).
+Firefox 155.0.1 also aarch64-cached at the pin.
+
+GL reasoning (the interesting part): the client GL wiring ALREADY existed
+— config/gemini.nix installs the fork's glvnd ICD manifest at
+/etc/glvnd/egl_vendor.d/50_mesa.json, and nixpkgs' firefox wrapper ships
+libglvnd on LD_LIBRARY_PATH (`withGlvnd` defaults on for Linux), so
+Firefox's dlopen of libEGL.so.1 dispatches to mesa-geminipda → panfrost
+renderD128 — the same chain Debian's Firefox used for WebGL. The repo was
+just missing its first third-party GL client. Chrome's nixpkgs wrapper
+only adds ozone/wayland auto-flags when `NIXOS_OZONE_WL` is set (added to
+the lxqt-nested env); its default ANGLE path will try Vulkan (absent on
+Midgard) then GL/SwiftShader — empirical on glass.
+
+Changes (commit: this session): `config/gemini.nix` systemPackages += [
+`pkgs.google-chrome` `pkgs.firefox` ] (comment carries the rationale);
+`services/lxqt.nix` unit path += both (bare-name launch in the session
+terminal) + `NIXOS_OZONE_WL=1` env; launchers
+`config/lxqt/Desktop/{google-chrome,firefox}.desktop` (seed dir — fresh
+installs get them via sessionConfig; live device copied now).
+
+Version lines (rule 0): google-chrome 152.0.7977.82
+`p20940mi4ir8fk54gi341q72jfajcn2p` (built locally on the Pi — unfree =
+never on cache.nixos.org, but the drv is only unpack+patchelf, minutes),
+firefox 155.0.1 `d2p0bvy7ap8jqbgsr7drxzyjjh9ckai6` (cache-substituted),
+toplevel gen27 `r3hj9x7bcba35qgf8rbhyvw1imd9a7yv`; kernel #329 + boot.img
+unchanged. Deploy via `bin/deploy.sh deploy` under run-job: 157 s total
+(build → nix copy delta → profile switch + activate); post-activation
+gemwl + lxqt-nested active, launcher icons on /root/Desktop.
+
+Next: eyes-on-glass — launch both from the LXQt desktop/menu, read
+`chrome://gpu` (panfrost vs SwiftShader?) and open a WebGL page in Firefox
+(expectation: works, Debian parity). Log the result here with a [verified
+2026-09-08/09] note; if Chrome lands on SwiftShader, try `--use-angle=gl`
+(routes ANGLE through the fork EGL).
+ (v2, gens 25–26): instant backlight-first sleep/wake (~1-2 s each way), wifi chip teardown removed from the button path (~29 s stall → iface down + daemon kill), press debounce + queue drain in the sleepd daemon — full cycle re-verified on glass incl. wifi re-association
 
 User report: the silver button was "very sluggish" — press once =
 nothing, press a few more times = the backlight flickered on/off at

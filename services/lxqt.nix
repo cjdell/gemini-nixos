@@ -163,7 +163,7 @@ in
       # bare name, like Debian's merged /etc/xdg + /usr/bin), labwc,
       # dbus + wlr-randr. nixpkgs appends a default path (coreutils,
       # findutils, gnugrep, gnused, systemd) after this list.
-      path = lxqtApps ++ [ labwc pkgs.dbus pkgs.wlr-randr ];
+      path = lxqtApps ++ [ labwc pkgs.dbus pkgs.wlr-randr pkgs.google-chrome pkgs.firefox ];
 
       serviceConfig = {
         Type = "simple";
@@ -217,6 +217,24 @@ in
           "QT_ACCESSIBILITY=1"
           # AFBC readback workaround (must stay; same as gemwl).
           "PAN_MESA_DEBUG=noafbc"
+          # Browsers (2026-09-08): chrome's nixpkgs wrapper only adds its
+          # ozone/wayland auto-flags (--ozone-platform-hint=auto ...)
+          # when NIXOS_OZONE_WL is set AND WAYLAND_DISPLAY is present at
+          # launch; the lxqt-nested env carries both, so session-launched
+          # `google-chrome` picks Wayland. Firefox needs nothing here
+          # (its wrapper sets MOZ_ENABLE_WAYLAND=1 + libglvnd by default;
+          # the fork EGL ICD is found via /etc/glvnd — config/gemini.nix).
+          "NIXOS_OZONE_WL=1"
+          # Firefox/Chrome GPU identification (glxtest / ANGLE): the fork
+          # libgbm has NO baked backend path (verified via strings) and
+          # honors only GBM_BACKENDS_PATH — without it Firefox's glxtest
+          # can't dlopen dri_gbm.so, the GPU probe fails and the browser
+          # loses its GL path entirely. Port of the Debian session env
+          # (start-lxqt-nested.sh, where this exact var made Firefox's
+          # glxtest find the fork backend; 2026-09-04 session, hardware
+          # WebRender). Point it at THIS fork's lib/gbm (store path — the
+          # same mesa the /etc/glvnd ICD resolves to). [2026-09-08]
+          "GBM_BACKENDS_PATH=${mesaGeminipda}/lib/gbm"
           # Gemini keyboard layout for the labwc keymap: xkbcommon
           # include path for symbols/gemini + the layout name itself.
           # Both are read by xkbcommon when labwc builds its keymap
