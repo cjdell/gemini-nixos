@@ -1,11 +1,20 @@
 # Mobile NixOS for the Planet Computers Gemini PDA (MT6797X).
 #
-# Build (from an x86_64 host, cross-compiling to aarch64):
+# Build NATIVE aarch64 (branch native-aarch64, 2026-09-07): every drv is
+# system = aarch64-linux — built on the aarch64 remote builder
+# (192.168.49.191, /etc/nix/machines ssh://cjdell@…) with cache.nixos.org
+# substitution where the pinned nixpkgs rev is cached. NOTE: this
+# nixpkgs snapshot (26.11pre1031299.0bb7ec54c848) is NOT on hydra's
+# cache (native x86_64 + aarch64 narinfo both 404), so most of the
+# Qt6/LXQt closure compiles on the builder regardless; native hashes
+# differ from the cross-built main branch (no shared store paths). The
+# main branch cross-builds from x86_64 — that stays the device-flash
+# path until this native workflow proves out.
 #
-#   nix build .#packages.x86_64-linux.default  # boot+recovery+system img, flash script
-#   nix build .#packages.x86_64-linux.bootimg  # boot.img only
-#   nix build .#packages.x86_64-linux.rootfs   # rootfs.img only
-#   nix build .#packages.x86_64-linux.initrd   # stage-1 initrd (size measurement, docs R1)
+#   nix build .#packages.aarch64-linux.default  # boot+recovery+system img (native aarch64 drvs)
+#   nix build .#packages.aarch64-linux.bootimg  # boot.img only
+#   nix build .#packages.aarch64-linux.rootfs   # rootfs.img only
+#   nix build .#packages.aarch64-linux.initrd   # stage-1 initrd (size measurement, docs R1)
 #
 # Flashing is manual (no fastboot on this device): dd the images to the
 # `boot` and `linux` partitions via the patched TWRP, or via adb. See
@@ -23,9 +32,10 @@
 
   outputs = { self, ... }:
     let
-      # Cross-build host. The device is aarch64; the supported workflow is
-      # cross-building from x86_64 (docs R7, examples/hello precedent).
-      buildSystem = "x86_64-linux";
+      # Native build target = aarch64 (this branch). drvs are
+      # system=aarch64-linux: nix routes them to the 192.168.49.191
+      # remote builder (machines file) or substitutes from cache.nixos.org.
+      buildSystem = "aarch64-linux";
 
       # Mobile NixOS source tree, pinned to an exact commit (was: the
       # repos/mobile-nixos submodule). Bump the SHA to update.
@@ -45,11 +55,8 @@
         narHash = "sha256-CzwmiKxuh1u+H8hDnrVeUl/fL59PvsgLbr2l0FhqWK0=";
       };
 
-      # Out-of-tree device (path-based, per mobile-nixos
-      # lib/release-tools.nix) plus the system configuration.
-      # `nixpkgs.buildPlatform` is passed explicitly, following the
-      # release.nix pattern, so the cross setup does not depend on flake
-      # purity or the local system.
+      # Out-of-tree device + system configuration. `nixpkgs.buildPlatform`
+      # = aarch64-linux: native eval (build machine == device arch).
       eval = import (mnx + "/lib/eval-with-configuration.nix") {
         system = buildSystem;
         device = ./devices/planet-geminipda;
@@ -112,9 +119,11 @@
         labwc   = labwc;   # 0.8.3 nested compositor (pinned wlroots 0.18.2)
       };
 
-      devShells.${buildSystem}.default =
+      # Host tooling stays x86_64 (this flake is evaluated from an x86_64
+      # host; the native aarch64 builds go to the remote builder).
+      devShells.x86_64-linux.default =
         let
-          pkgs = import (mnx + "/pkgs.nix") { system = buildSystem; };
+          pkgs = import (mnx + "/pkgs.nix") { system = "x86_64-linux"; };
         in
         pkgs.mkShell {
           packages = with pkgs; [
