@@ -1,0 +1,1668 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Device tree for Planet Computers Gemini PDA
+ * SoC: MediaTek MT6797X (Helio X27)
+ *
+ * Status: Phase 3 bring-up — boot critical peripherals only.
+ *   Display, USB-C CC, Wi-Fi deferred.
+ *   Serial console is the primary debug interface.
+ *
+ * Hardware sources:
+ *   Vendor DTS: gemini-kernel/arch/arm64/boot/dts/aeon6797_6m_n.dts
+ *   Mainline SoC DTS: arch/arm64/boot/dts/mediatek/mt6797.dtsi
+ *
+ * NOT YET in mainline mt6797.dtsi (Phase 4+ work):
+ *   - MSDC0/eMMC node (MT6797 MSDC not yet upstreamed)
+ *   - PMIC/pwrap (mt6351 regulator nodes)
+ *   - Display / DRM
+ */
+
+/dts-v1/;
+#include "mt6797.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/power/mt6797-power.h>
+
+/ {
+	model = "Planet Computers Gemini PDA";
+	compatible = "planet,gemini-pda", "mediatek,mt6797";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:921600n8";
+		/*
+		 * Phase 3 depends on early serial output. Bare "earlycon"
+		 * derives the UART base from the stdout-path node (&uart0 reg),
+		 * so no SoC address is hardcoded here. If LK already passes a
+		 * cmdline with earlycon this is harmless. Confirm the 921600
+		 * baud against the vendor LK console config before flashing.
+		 */
+		bootargs = "earlycon console=ttyS0,921600n8";
+	};
+
+	/*
+	 * Memory: 4 GB LPDDR3. The vendor DTB carries a 1 GB placeholder
+	 * (vendor DTB memory@00000000: reg = <0 0x40000000 0 0x40000000>)
+	 * which the preloader/LK fixes up at boot with the real DRAM size.
+	 * LK should fix up this node the same way; the 4 GB value below is
+	 * the fallback if it does not. TODO: verify LK fixup on hardware.
+	 */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 1 0x00000000>;
+	};
+
+	/*
+	 * Firmware carve-outs, from the vendor DTB reserved-memory node
+	 * (docs/vendor-dtb/gemini_kali_boot.dts lines 317-409). Only the
+	 * fixed-address entries are reproduced here; the vendor's dynamic
+	 * size/alignment entries (ccci modem, consys, scp_share, spm) are
+	 * allocation requests serviced by 3.18 vendor drivers this kernel
+	 * does not run, so nothing claims those regions.
+	 *
+	 * Layout context (Android boot header of kali_boot.img): kernel @
+	 * 0x40080000, tags @ 0x44000000, ramdisk @ 0x45000000.
+	 */
+	/*
+	 * Loader-retained framebuffer console device (geminipda-fb). The driver
+	 * reads the LK atag (atag,videolfb in /chosen) for base/size, so no reg
+	 * is needed here. Being a real platform device matters for X.Org: its
+	 * fbdev driver refuses fbs whose /sys/class/graphics/fbN/device/subsystem
+	 * link is missing or PCI (fbdevhw fbdev_open()), and only a parented fb
+	 * gets that link (2026-08-31).
+	 */
+	geminipda-fb {
+		compatible = "planet,geminipda-fb";
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* vendor: mediatek,spm-dummy-1 — first page of DRAM */
+		spm-dummy@40000000 {
+			reg = <0 0x40000000 0 0x1000>;
+			no-map;
+		};
+
+		/*
+		 * LK's runtime framebuffer. The base is chosen by LK at boot
+		 * (atag,videolfb in /chosen) — measured 0x7dfb0000 size
+		 * 0x1f90000 on this unit (TWRP + normal-boot atag, verified
+		 * 2026-08-30/31). LK only shrinks /memory by fb_size from the
+		 * TOP of the last DRAM bank, which does not cover this region.
+		 *
+		 * [corrected 2026-08-31] DO NOT add our own reserved-memory node
+		 * for it — not because no-map at that address hangs per se, but
+		 * because the stock LK ALREADY exports every mblock reservation
+		 * (incl. "mblock-3-framebuffer" no-map at exactly the runtime fb
+		 * base/size) into /reserved-memory of the DTB at boot (verified
+		 * 2026-08-31: running /sys/firmware/fdt has the node; the
+		 * image-embedded DTB does not). The 2026-08-31 early-boot hang
+		 * was a DUPLICATE no-map reservation of the same region (ours +
+		 * LK's) — removing ours fixed it, LK's alone boots fine.
+		 * geminipda-fb ioremaps the atag base directly; the LK-exported
+		 * node protects the region from the page allocator.
+		 */
+
+		/* vendor: ram_console-reserve-memory. Matches known-good
+		 * CONFIG_MTK_RAM_CONSOLE_DRAM_ADDR=0x44400000 (see
+		 * docs/vendor-dtb/kali_known_good_kernel.config). */
+		ramconsole@44400000 {
+			reg = <0 0x44400000 0 0x10000>;
+			no-map;
+		};
+
+		/*
+		 * ramoops in the exact region Android/Kali already uses for
+		 * pstore (vendor: mediatek,pstore @ 0x44410000, len 0xe0000),
+		 * so the dual-boot handoff is safe: the other OS expects this
+		 * region to hold console logs too. Gives a post-mortem when a
+		 * panic kills the UART (STANDARDS.md rule 7).
+		 */
+		ramoops@44410000 {
+			compatible = "ramoops";
+			reg = <0 0x44410000 0 0xe0000>;
+			record-size = <0x8000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x8000>;
+			ftrace-size = <0x8000>;
+		};
+
+		/* vendor: minirdump-reserve-memory */
+		minirdump@444f0000 {
+			reg = <0 0x444f0000 0 0x10000>;
+			no-map;
+		};
+
+		/*
+		 * ARM Trusted Firmware carve-outs. The vendor LK searches the
+		 * DTB by these exact compatible strings before jumping to the
+		 * kernel; if the atf-ramdump node is missing LK prints "Can not
+		 * find atf ram dump!" and panics at mt_boot.c:1226 (confirmed on
+		 * hardware 2026-07-04, logs/2026-07-04-15). The compatible is
+		 * mandatory for the handoff — do NOT drop it. no-map matches the
+		 * vendor DTB.
+		 */
+		atf-reserved-memory@44600000 {
+			compatible = "mediatek,mt6797-atf-reserved-memory";
+			reg = <0 0x44600000 0 0x10000>;
+			no-map;
+		};
+
+		atf-ramdump-memory@44610000 {
+			compatible = "mediatek,mt6797-atf-ramdump-memory";
+			reg = <0 0x44610000 0 0x30000>;
+			no-map;
+		};
+
+		cache-dump-memory@44640000 {
+			compatible = "mediatek,cache-dump-memory";
+			reg = <0 0x44640000 0 0x30000>;
+			no-map;
+		};
+
+		/*
+		 * SCP shared memory. After the atf-ramdump fix LK advanced to
+		 * platform_fdt_scp() and panicked at mt_boot.c:1226 (confirmed on
+		 * hardware 2026-07-04, logs/2026-07-04-17). LK searches the DTB by
+		 * this exact compatible before handoff, so the node is mandatory
+		 * even though no 6.6 driver claims it. Dynamic-allocation form
+		 * copied verbatim from the vendor DTB (scp_share, 16 MiB in the
+		 * 0x40000000-0x90000000 window).
+		 */
+		scp-share {
+			compatible = "mediatek,reserve-memory-scp_share";
+			no-map;
+			size = <0 0x1000000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x50000000>;
+		};
+
+		/* vendor: mediatek,preloader */
+		preloader@44800000 {
+			reg = <0 0x44800000 0 0x100000>;
+			no-map;
+		};
+
+		/* vendor: mediatek,lk */
+		lk@46000000 {
+			reg = <0 0x46000000 0 0x400000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * SCP (System Companion Processor) device node. Mainline mt6797.dtsi
+	 * has no scp node at all, but the vendor LK's platform_fdt_scp() looks
+	 * up this node by compatible "mediatek,scp" and sets its status before
+	 * handoff — on a stock boot the very next line is "status=okay". With
+	 * the node absent LK asserts at mt_boot.c:1226 (confirmed on hardware
+	 * 2026-07-04, logs/2026-07-04-17 and -19: adding the scp_share
+	 * reserved-memory node alone did NOT clear it — LK needs THIS node).
+	 * Values verbatim from the vendor DTB (scp@10020000). Kept "disabled":
+	 * no 6.6 driver drives the SCP; the node exists only for the LK fixup.
+	 */
+	scp@10020000 {
+		compatible = "mediatek,scp";
+		reg = <0 0x10020000 0 0x80000>,
+		      <0 0x100a0000 0 0x1000>,
+		      <0 0x100a4000 0 0x1000>;
+		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH>;
+		status = "disabled";
+	};
+
+	/* Fixed 1.8V rail for I2C pull-ups and digital logic (Phase 3 stub) */
+	vdd_fixed_1v8: regulator-vdd-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* Touch (Novatek NT36772) main rail: MT6351 VLDO28 2.8 V, left on by LK
+	 * (the 1.8 V I/O side reuses vdd_fixed_1v8). Fixed-regulator model like
+	 * vemc — no mainline MT6351 LDO driver yet. */
+	touch_vcc: regulator-touch-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "touch_vcc";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * eMMC core supply: PMIC MT6351 VEMC_3V3 rail, left on by the
+	 * bootloader (LK boots from this eMMC, so the rail is provably up
+	 * when we start). No mainline MT6351 regulator driver yet, so model
+	 * it as fixed always-on. 3.0 V is the MT6351 VEMC default; anything
+	 * in the eMMC OCR window (2.7-3.6 V) satisfies mmc_regulator_get_supply.
+	 * Without a vmmc-supply the host has an empty ocr_avail and every
+	 * card init fails with "no support for card's volts" / -EINVAL
+	 * (logs/2026-07-05-31-msdc0-irq-levellow-boot.log).
+	 */
+	vemc_fixed: regulator-vemc {
+		compatible = "regulator-fixed";
+		regulator-name = "vemc";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Fixed-voltage vproc workaround for Phase 3 bring-up.
+	 * Replace with richtek,rt5735 driver once RT5735 patch is tested.
+	 */
+	vproc_fixed: regulator-vproc-fixed {
+		compatible = "regulator-fixed";
+		regulator-name = "vproc";
+		regulator-min-microvolt = <1000000>;
+		regulator-max-microvolt = <1000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/*
+	 * Gemini PDA physical keyboard matrix.
+	 *
+	 * 8 rows (P0_0..P0_7 of AW9523B) × 7 columns (P1_0..P1_6).
+	 * Keymap derived from vendor: drivers/misc/mediatek/aw9523/aw9523_key.c.
+	 *
+	 * poll-interval: scan-driven, not IRQ-driven — the AW9523B INT line
+	 * (GPIO87/EINT10) is unusable until pinctrl-mt6797 gains EINT
+	 * support (blockers.md B-11). Needs the matrix_keypad polling-mode
+	 * patch (patches/v6.6/input/0001). Drop when B-11 is fixed.
+	 */
+	keyboard {
+		compatible = "gpio-matrix-keypad";
+
+		/* Rows: AW9523B Port 0, GPIO 0..7 */
+		row-gpios = <&aw9523b 0 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 1 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 2 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 3 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 4 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 5 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 6 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 7 GPIO_ACTIVE_LOW>;
+
+		/* Columns: AW9523B Port 1, GPIO 8..14 */
+		col-gpios = <&aw9523b 8  GPIO_ACTIVE_LOW>,
+			    <&aw9523b 9  GPIO_ACTIVE_LOW>,
+			    <&aw9523b 10 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 11 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 12 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 13 GPIO_ACTIVE_LOW>,
+			    <&aw9523b 14 GPIO_ACTIVE_LOW>;
+
+		debounce-delay-ms = <5>;
+		col-scan-delay-us = <2>;
+		poll-interval = <20>;
+
+		/*
+		 * matrix_keypad is a legacy-GPIO driver: it IGNORES the
+		 * GPIO_ACTIVE_LOW flags in row-/col-gpios and only honors
+		 * this property. Without it the scan drives columns HIGH
+		 * and no keypress can ever change a pulled-up row (live
+		 * register proof: logs/2026-07-12-163 session — P1 out
+		 * latch 0xff idle, active col high, rows 0xff).
+		 */
+		gpio-activelow;
+
+		linux,keymap = <
+			/* col 0 (P1_0) */
+			MATRIX_KEY(0, 0, KEY_1)
+			MATRIX_KEY(1, 0, KEY_U)
+			MATRIX_KEY(2, 0, KEY_S)
+			MATRIX_KEY(3, 0, KEY_Z)
+			MATRIX_KEY(4, 0, KEY_COMMA)
+			MATRIX_KEY(5, 0, KEY_APOSTROPHE) /* UK silkscreen: ' ~ ; US silkscreen: \ | (Fn: :) */
+			MATRIX_KEY(6, 0, KEY_8)
+			MATRIX_KEY(7, 0, KEY_J)
+			/* col 1 (P1_1) */
+			MATRIX_KEY(0, 1, KEY_2)
+			MATRIX_KEY(1, 1, KEY_W)
+			MATRIX_KEY(2, 1, KEY_D)
+			MATRIX_KEY(3, 1, KEY_C)
+			MATRIX_KEY(4, 1, KEY_LEFTALT)
+			MATRIX_KEY(5, 1, KEY_LEFT)
+			MATRIX_KEY(6, 1, KEY_9)
+			MATRIX_KEY(7, 1, KEY_K)
+			/* col 2 (P1_2) */
+			MATRIX_KEY(0, 2, KEY_3)
+			MATRIX_KEY(1, 2, KEY_Y)
+			MATRIX_KEY(2, 2, KEY_TAB)
+			MATRIX_KEY(3, 2, KEY_N)
+			MATRIX_KEY(4, 2, KEY_M)
+			MATRIX_KEY(5, 2, KEY_DOWN)
+			MATRIX_KEY(6, 2, KEY_BACKSPACE)
+			MATRIX_KEY(7, 2, KEY_I)
+			/* col 3 (P1_3) */
+			MATRIX_KEY(0, 3, KEY_4)
+			MATRIX_KEY(1, 3, KEY_T)
+			MATRIX_KEY(2, 3, KEY_F)
+			MATRIX_KEY(3, 3, KEY_X)
+			MATRIX_KEY(4, 3, KEY_RIGHTALT) /* Fn: AltGr layer */
+			MATRIX_KEY(5, 3, KEY_RIGHTSHIFT)
+			MATRIX_KEY(6, 3, KEY_P)
+			/* col 4 (P1_4) */
+			MATRIX_KEY(0, 4, KEY_5)
+			MATRIX_KEY(1, 4, KEY_E)
+			MATRIX_KEY(2, 4, KEY_G)
+			MATRIX_KEY(3, 4, KEY_V)
+			MATRIX_KEY(4, 4, KEY_SPACE)
+			MATRIX_KEY(5, 4, KEY_UP)
+			MATRIX_KEY(6, 4, KEY_O)
+			/* col 5 (P1_5) */
+			MATRIX_KEY(0, 5, KEY_6)
+			MATRIX_KEY(1, 5, KEY_Q)
+			MATRIX_KEY(2, 5, KEY_A)
+			MATRIX_KEY(3, 5, KEY_B)
+			MATRIX_KEY(4, 5, KEY_DOT)
+			MATRIX_KEY(5, 5, KEY_RIGHT)
+			MATRIX_KEY(6, 5, KEY_ENTER)
+			/* col 6 (P1_6) */
+			MATRIX_KEY(0, 6, KEY_7)
+			MATRIX_KEY(1, 6, KEY_R)
+			MATRIX_KEY(2, 6, KEY_H)
+			MATRIX_KEY(3, 6, KEY_LEFTSHIFT)
+			MATRIX_KEY(4, 6, KEY_LEFTCTRL)
+			MATRIX_KEY(5, 6, KEY_L)
+			MATRIX_KEY(6, 6, KEY_0)
+		>;
+
+		status = "okay";
+	};
+
+};
+
+/*
+ * CPU clock-frequency — required by the vendor LK DTB fixup, NOT by Linux.
+ *
+ * The Gemini's LK bootloader runs target_fdt_cpus() over the /cpus node
+ * before jumping to the kernel and requires every cpu node to carry a
+ * clock-frequency property. Mainline mt6797.dtsi omits it (Linux derives
+ * clocks from the cpufreq/clk nodes instead). Without these properties LK
+ * spins in that fixup (~54k iterations of "cpu 228 clock-frequency not
+ * found") until its watchdog resets the SoC — it never reaches
+ * "jump to K64", so our kernel never runs. Confirmed on hardware
+ * 2026-07-04 (logs/2026-07-04-13-boot-slot-6.6.log); see boot.md.
+ *
+ * Values are copied per-cluster from the vendor DTB
+ * (docs/vendor-dtb/gemini_kali_boot.dts): A53 little 1.391 GHz, A53 big
+ * 1.95 GHz, A72 2.288 GHz.
+ */
+&cpu0 { clock-frequency = <0x52e8f9c0>; };
+&cpu1 { clock-frequency = <0x52e8f9c0>; };
+&cpu2 { clock-frequency = <0x52e8f9c0>; };
+&cpu3 { clock-frequency = <0x52e8f9c0>; };
+&cpu4 { clock-frequency = <0x743aa380>; };
+&cpu5 { clock-frequency = <0x743aa380>; };
+&cpu6 { clock-frequency = <0x743aa380>; };
+&cpu7 { clock-frequency = <0x743aa380>; };
+&cpu8 { clock-frequency = <0x88601c00>; };
+&cpu9 { clock-frequency = <0x88601c00>; };
+
+/*
+ * UART0 serial console.
+ * Vendor DTS: UART0 RX=GPIO97, TX=GPIO98 (confirmed from aw9523/uart DTS).
+ * The mainline uart0_pins_a uses GPIO234/235 (wrong for Gemini).
+ * We define gemini-specific pinctrl below.
+ */
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_gemini_pins>;
+	status = "okay";
+};
+
+/* --- I2C buses --- */
+
+/*
+ * i2c0: charger TI BQ25896 (0x6b) and the RIGHT-port FUSB301 USB-C CC (0x25).
+ * Charger identity CORRECTED 2026-07-14 (research.md §8): the earlier
+ * RT9466@0x53 identification came from a dead vendor config branch —
+ * nothing responds at 0x53 on any bus; the chip at 0x6b answers with
+ * REG14 = 0x06 (PN=000, rev 2 = BQ25896). Live-verified on hardware.
+ * i2c0 mainline pin: SCL=GPIO37, SDA=GPIO38 (mt6797.dtsi i2c0_pins_a).
+ */
+&i2c0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c0_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * TI BQ25896 charger. Live-verified 2026-07-14 (boot.md "B-19
+	 * Stage C Phase 0"): its OTG boost sources 5.0V onto the LEFT
+	 * USB-C connector (REG0B VBUS_STAT=111, REG11 ADC=5.0V, device
+	 * LEDs lit) once REG03 OTG_CONFIG is set AND GPIO107 (vendor
+	 * GPIO_OTG_DRVVBUS_PIN, hogged high below) is high. The mainline
+	 * bq25890 driver disables the chip's 40s I2C watchdog in hw_init
+	 * (F_WD=0), which Phase 0 showed is required or REG03 resets.
+	 * No IRQ: INT pin is on an MTK EINT (B-11); driver patched
+	 * IRQ-optional (patches/v6.6/power/0001).
+	 *
+	 * Charge parameters: conservative values matching the chip's own
+	 * hardware defaults observed live (VREG 4.208V, boost 4.998V /
+	 * 1.4A = REG0A power-on default 0x73) — today's boots charge on
+	 * these defaults anyway; tuning is Phase 7.
+	 */
+	charger: charger@6b {
+		compatible = "ti,bq25896";
+		reg = <0x6b>;
+		ti,charge-current = <2048000>;
+		ti,battery-regulation-voltage = <4208000>;
+		ti,termination-current = <256000>;
+		ti,precharge-current = <128000>;
+		ti,minimum-sys-voltage = <3500000>;
+		ti,boost-voltage = <4998000>;
+		ti,boost-max-current = <1400000>;
+
+		/*
+		 * OTG boost as a regulator — consumed by &ssusb as
+		 * vbus-supply for left-port host mode (B-19 Stage C).
+		 */
+		otg_vbus: usb-otg-vbus {
+			regulator-name = "usb_otg_vbus";
+		};
+	};
+
+	/*
+	 * FUSB301 USB Type-C CC controller at 0x25 — RIGHT port / HDMI
+	 * mux (vendor harvest 2026-07-14: there are TWO FUSB301 chips;
+	 * the LEFT-port one is on i2c1, see &i2c1). Right port is served
+	 * by the driverless legacy MUSB controller — stays disabled.
+	 */
+	usb_cc_right: typec@25 {
+		compatible = "onsemi,fusb301a";
+		reg = <0x25>;
+		status = "disabled";
+	};
+};
+
+/* i2c1: left-port USB-C CC controller */
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * CORRECTION (2026-07-16, Phase 9 touchscreen Stage A): the
+	 * touchscreen is NOT on this bus. The extracted vendor DTB
+	 * (docs/vendor-dtb/gemini_kali_boot.dts) puts both touch
+	 * controller candidates on i2c@11011000 (vendor id=4, our
+	 * &i2c4): cap_touch@62 (Novatek) and solomon_touch@53. The
+	 * earlier touchscreen@5d node here was an unverified guess and
+	 * has been removed — see &i2c4 below.
+	 */
+
+	/*
+	 * FUSB301 USB Type-C CC controller — LEFT port (the mtu3/ssusb
+	 * port). Found on i2c1 by the 2026-07-14 vendor harvest and
+	 * live-proven end-to-end in B-19 Stage C Phase 0 (boot.md,
+	 * logs/2026-07-14-227..230): with Mode(0x02)=0x01 SOURCE, real
+	 * sink devices assert Status(0x11) ATTACH with correct
+	 * orientation and Type(0x12)=0x10 on both CC flips. The driver
+	 * (patches/v6.6/usb/0001) programs static SOURCE and polls —
+	 * no IRQ available until B-11 (EINT) is fixed.
+	 */
+	usb_cc_left: typec@25 {
+		compatible = "onsemi,fusb301a";
+		reg = <0x25>;
+		status = "okay";
+	};
+
+	/*
+	 * TI TPS65132 LCD bias (±5.4 V AVDD/AVEE for the SSD2092 panel).
+	 * VPOS/VNEG output registers are volatile — LK reprograms them over
+	 * I2C on every boot ("SSD2092-----cmd=0/1--i2c write success" in its
+	 * serial log; 0x0E = 5.4 V), so GPIO-only fixed regulators are NOT
+	 * enough: after an EN power-cycle the chip comes back unprogrammed
+	 * and the panel booster stays off (proven by DCS read-back,
+	 * boot.md capture 250 — backlit-black root cause).  min==max makes
+	 * the regulator core apply the voltage via the driver's I2C write
+	 * when the panel enables the supplies.
+	 * ENP (AVDD): GPIO60, ENN (AVEE): GPIO251, both active-high.
+	 */
+	bias@3e {
+		compatible = "ti,tps65132";
+		reg = <0x3e>;
+
+		lcd_avdd: outp {
+			regulator-name = "lcd_avdd";
+			regulator-min-microvolt = <5500000>;
+			regulator-max-microvolt = <5500000>;
+			enable-gpios = <&pio 60 GPIO_ACTIVE_HIGH>;
+		};
+
+		lcd_avee: outn {
+			regulator-name = "lcd_avee";
+			regulator-min-microvolt = <5500000>;
+			regulator-max-microvolt = <5500000>;
+			enable-gpios = <&pio 251 GPIO_ACTIVE_HIGH>;
+		};
+	};
+};
+
+/*
+ * i2c4: touchscreen bus.
+ *
+ * [corrected 2026-09-04] THIS UNIT (verified live on the running kernel:
+ * i2cdetect + raw i2c-dev protocol probe, docs/session-log.md) carries the
+ * Novatek NT36772 TDDI touch at 0x62 on this bus, NOT the Solomon SSD2092
+ * at 0x53 that bsg100/gemini-linux targeted. The panel is the Novatek
+ * NT36672 FHD variant (hardware.md, verified 2026-08-31) and the SSD2092
+ * 0x53 probe NAKs on this unit - expected. The solomon,ssd2092-touch node
+ * (Stage A of the bsg100 project, wrong for this unit) is removed and the
+ * vendor DTB's cap_touch@62 (Novatek) is enabled instead.
+ *
+ * CTP_RST = GPIO68 (active low; run = high). The NT36772 boot sequence is
+ * I2C-driven (00 69 / 00 a5 / 00 35 @0x62, then the firmware answers at
+ * the logical 0x01 target) - live-validated 2026-09-04 - so no reset pulse
+ * is required at probe; the gpio just stays deasserted (run). CTP_INT =
+ * GPIO85 is an EINT line pinctrl-mt6797 cannot deliver (B-11), so the
+ * novatek-nt36xxx driver polls the event buffer (like the keyboard).
+ *
+ * Touch power: MT6351 VLDO28 (2.8 V) + VIO18 (1.8 V), left on by LK,
+ * modelled as always-on fixed regulators (same pattern as vemc/vdd_1v8).
+ * Mainline i2c4_pins_a: SDA=GPIO238, SCL=GPIO239. Vendor bus config:
+ * 400 kHz, mediatek,use-open-drain.
+ */
+&i2c4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@62 {
+		compatible = "novatek,nt36772-ts";
+		reg = <0x62>;	/* vendor DTB cap_touch@62 */
+		reset-gpios = <&pio 68 GPIO_ACTIVE_LOW>;	/* CTP_RST */
+		vcc-supply = <&touch_vcc>;
+		iovcc-supply = <&vdd_fixed_1v8>;
+		/*
+		 * Sensor is native portrait 1080x2160; the desktop/display runs
+		 * landscape 2160x1080. The vendor driver transforms X'=y,
+		 * Y'=1080-x (swap X/Y then reverse the post-swap Y), which in
+		 * touchscreen_properties terms is inverted-x + swap in sensor
+		 * space (same conclusion as the earlier ssd2092 node). If touch
+		 * lands 180 deg rotated on glass, flip inverted-x to inverted-y.
+		 */
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2160>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
+	};
+};
+
+/*
+ * i2c5: AW9523B GPIO/keyboard expander (0x5b) and NFC (0x28).
+ * i2c5 base: 0x1101c000.  Address 0x5b = 0x58 base | AD0=1,AD1=1.
+ * Confirmed: vendor DTS aeon6797_6m_n.dts &i2c5 block.
+ * Mainline i2c5_pins_a: SDA=GPIO240, SCL=GPIO241.
+ */
+&i2c5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c5_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * AW9523B 16-bit GPIO expander / LED driver.
+	 * Drives the Gemini PDA 8×7 keyboard matrix.
+	 *
+	 * SHDN: GPIO58 — reset, active-low.
+	 * INT:  GPIO87 (EINT10) — interrupt, active-low.
+	 * GPIO 0..7  (Port 0): keyboard row inputs.
+	 * GPIO 8..14 (Port 1): keyboard column outputs.
+	 *
+	 * Chip verified live 2026-07-12 via i2c-dev on the running device
+	 * (Linux bus i2c-3 = i2c5 hardware @0x1101c000): ACKs at 0x5b, ID
+	 * register 0x10 reads 0x23, after driving SHDN (GPIO58) high — LK
+	 * leaves it low, holding the chip in reset, so the driver's
+	 * reset-gpios deassert at probe is mandatory.
+	 *
+	 * No interrupt-parent/interrupts: mainline pinctrl-mt6797 has no
+	 * EINT support (blockers.md B-11), so GPIO87/EINT10 cannot deliver
+	 * and the driver's irqchip half stays unused (client->irq == 0 is
+	 * a supported configuration). Restore
+	 *   interrupt-parent = <&pio>; interrupts = <87 IRQ_TYPE_LEVEL_LOW>;
+	 *   interrupt-controller; #interrupt-cells = <2>;
+	 * when B-11 is fixed.
+	 *
+	 * pinctrl-0 = <&aw9523b_pins> applies the SHDN/GPIO58 output-high
+	 * pinmux and, critically, the GPIO87/INT bias-pull-up (matches the
+	 * vendor DTB's aw9523pin state). B-18 root-cause candidate: this
+	 * property was previously missing, so aw9523b_pins was defined
+	 * but never applied and GPIO87 was left floating right next to
+	 * USB/mtu3 IRQ activity. See blockers.md B-18.
+	 */
+	aw9523b: gpio@5b {
+		compatible = "awinic,aw9523b";
+		reg = <0x5b>;
+		reset-gpios = <&pio 58 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&aw9523b_pins>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		status = "okay";
+	};
+};
+
+/*
+ * i2c6 @0x1100e000: DA9214 dual-buck regulator (legacy DA9213/14/15
+ * protocol). BUCKB = VPROC2 = the Cortex-A72 "big" cluster (cluster2)
+ * rail; registers seen live by the reference project on this family
+ * (da921x-i2c6-a72.md, 2026-08): 0x5E BUCKB_CONT bit0 = BUCKB enable
+ * (off at plain boot, "buck 1 disabled"), 0xD7/0xD9 voltage selectors
+ * (0x46 = 70 -> 1.000 V), primary addr 0x68 (page-2 0x69). BSP receipt:
+ * aeon6797_6m_n.dts + mt6797.dtsi i2c6@1100e000 (mediatek,appm_used,
+ * INFRA_I2C_APPM clock). Kept client-less: A72 bring-up drives it via
+ * i2c-dev (see session-log 2026-09-04 9th/10th; cpu_psci_cpu_boot in
+ * the 3.18 BSP enables BUCKB + clears SPM EXT_BUCK_ISO 0x10006290 +
+ * SRAM-LDO SMC 0xC20003BF before PSCI CPU_ON of cpu8/9).
+ */
+&i2c6 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+/* i2c7: RT5735 VPROC buck regulator */
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins_a>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * RT5735 VPROC regulator at 0x1c.
+	 * Enabled once fan53555 RT5735 patch is tested on hardware.
+	 * Fixed regulator (vproc_fixed) is the Phase 3 substitute.
+	 */
+	vproc: regulator@1c {
+		compatible = "richtek,rt5735";
+		reg = <0x1c>;
+		regulator-name = "vproc";
+		regulator-min-microvolt = <600000>;
+		regulator-max-microvolt = <1393750>;
+		richtek,dvs-up-microvolt-per-usec = <32000>;
+		richtek,dvs-down-microvolt-per-usec = <4000>;
+		status = "disabled";
+	};
+};
+
+/* --- Pinctrl --- */
+
+
+&pio {
+	/*
+	 * UART0 pins for Gemini PDA.
+	 * Vendor DTS: UART0 RX=GPIO97, TX=GPIO98.
+	 * These differ from the mainline uart0_pins_a (GPIO234/235).
+	 */
+	uart0_gemini_pins: uart0-gemini {
+		pins-rx-tx {
+			pinmux = <MT6797_GPIO98__FUNC_UTXD0>,
+				 <MT6797_GPIO97__FUNC_URXD0>;
+		};
+	};
+
+	/*
+	 * GPIO107 = vendor GPIO_OTG_DRVVBUS_PIN (aeon6797_6m_n.dws:1561),
+	 * hardware enable gate for the BQ25896 OTG boost. LK hands over
+	 * with it LOW and the boost then fails SILENTLY (no fault bits) —
+	 * live-proven 2026-07-14 (B-19 Stage C Phase 0, run v5): with the
+	 * OTG register bit already set, VBUS only appeared once devmem
+	 * drove DOUT bit 11 high (0x10005134 = 0x800). Hogged high for the
+	 * fixed-host left port: harmless while the boost register bit is
+	 * off (the pin gates, it doesn't enable), so charging from a Mac
+	 * is unaffected when the port is idle.
+	 */
+	otg_drvvbus_hog: otg-drvvbus-hog {
+		gpio-hog;
+		gpios = <107 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "otg-drvvbus";
+	};
+
+	/*
+	 * AW9523B SHDN and INT pins.
+	 * SHDN: GPIO58 as plain GPIO output (active-low reset).
+	 * INT:  GPIO87 as EINT10 input.
+	 */
+	aw9523b_pins: aw9523b {
+		pins-shdn {
+			pinmux = <MT6797_GPIO58__FUNC_GPIO58>;
+			output-high;
+		};
+		pins-int {
+			pinmux = <MT6797_GPIO87__FUNC_EINT10>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	/*
+	 * Display panel pins.
+	 * Reset:   GPIO180 (active-low).
+	 * ENP:     GPIO60  (AVDD enable, active-high).
+	 * ENN:     GPIO251 (AVEE enable, active-high).
+	 */
+	panel_pins: panel {
+		pins-rst {
+			pinmux = <MT6797_GPIO180__FUNC_GPIO180>;
+			output-low;
+		};
+		pins-enp {
+			pinmux = <MT6797_GPIO60__FUNC_GPIO60>;
+			output-low;
+		};
+	};
+};
+
+/*
+ * Display pipeline — Phase 5 bring-up.
+ *
+ * Panel:  Solomon SSD2092, 1080x2160 FHD, MIPI DSI video mode (sync pulse),
+ *         4 lanes. This is what LK detects at every boot
+ *         ("aeon_ssd2092_fhd_dsi_solomon", ID 0x01572098) — the R63419
+ *         WQHD name in the vendor DTB's videolfb atag is only a build-time
+ *         template default.
+ * Bias:   TPS65132-class charge pump at I2C1 / addr 0x3E — ±5 V AVDD/AVEE.
+ * Reset:  GPIO180 active-low.
+ * ENP/ENN bias enable: GPIO60 / GPIO251 via fixed-regulators above.
+ *
+ * This is the first hardware test
+ * of the whole pipeline -- MMSYS/DDP, MIPITX PHY and panel driver are all
+ * code-complete/compile-clean (2026-06-10) but previously untested on the
+ * device. Enabling the full OVL0->RDMA0->COLOR->CCORR->AAL->GAMMA->OD->
+ * DITHER->DSI0 chain below (2026-07-04) to attempt first light.
+ */
+&mmsys {
+	/* mmsys is a syscon, always active -- no status property; listed
+	 * here only as the anchor comment for the pipeline it clocks. */
+};
+
+/*
+ * SMI larb0/common (Streaming Memory Interface). Every DDP component in
+ * this pipeline reaches memory through larb0 -> smi_common; both were
+ * left status="disabled" in mt6797.dtsi and mainline's mtk-smi.c had no
+ * mt6797 compatible at all, so their clocks (CLK_MM_SMI_LARB0/COMMON,
+ * distinct from scpsys MM domain's own CLK_MM gate) were never enabled by
+ * any driver even though the MM power domain itself powers on cleanly and
+ * every disp_* register write succeeds (see boot.md BUILD #84/85, #88/89
+ * -- scpsys and the DSI probe path are both exonerated). Suspected B-13
+ * root cause: a DDP/DSI access that actually routes through the ungated
+ * SMI path stalls the AXI bus indefinitely. See
+ * patches/v6.6/memory/0001-memory-mtk-smi-add-mt6797-support.patch
+ * (adds mt6797-smi-larb/-common compatibles, modelled on mt6795 --
+ * confirmed via the vendor kernel image: MT6797 is the next-generation
+ * sibling of MT6795/Helio X10 and its vendor smi_common.c uses the same
+ * bus_sel-style larb0-only MM smi topology).
+ */
+&larb0 {
+	status = "okay";
+};
+
+&smi_common {
+	status = "okay";
+};
+
+&disp_ovl0 {
+	status = "okay";
+};
+
+&disp_ovl_2l0 {
+	status = "okay";
+};
+
+&disp_rdma0 {
+	status = "okay";
+};
+
+&disp_color0 {
+	status = "okay";
+};
+
+&disp_ccorr0 {
+	status = "okay";
+};
+
+&disp_aal0 {
+	status = "okay";
+};
+
+&disp_gamma0 {
+	status = "okay";
+};
+
+&disp_od0 {
+	status = "okay";
+};
+
+&disp_dither0 {
+	status = "okay";
+};
+
+&mutex {
+	status = "okay";
+};
+
+&dsi0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * Solomon SSD2092 FHD panel on DSI0 (LK: aeon_ssd2092_fhd_dsi_solomon,
+	 * panel ID 0x01572098 — probed by the stock bootloader at every boot).
+	 */
+	panel@0 {
+		compatible = "solomon,ssd2092";
+		reg = <0>;
+		avdd-supply = <&lcd_avdd>;
+		avee-supply = <&lcd_avee>;
+		reset-gpios = <&pio 180 GPIO_ACTIVE_LOW>;
+		backlight = <&backlight_lcd>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
+	};
+};
+
+/* Wire dsi0_out (defined in dtsi) to panel_in */
+&dsi0_out {
+	remote-endpoint = <&panel_in>;
+};
+
+&mipi_tx0 {
+	status = "okay";
+};
+
+/*
+ * LCD backlight — DISP_PWM0 @ 0x1100f000 driving the LED boost on the
+ * display flex through GPIO178 (func1 = DISP_PWM; the board's DWS pin
+ * table and LK's persisted pinmux both use it, and the vendor DTB's
+ * lcd-backlight led_mode=<5> selects the CUST_BLS_PWM/disp_bls path).
+ * Register layout verified mt8173-compatible against vendor ddp_reg.h
+ * and by live devmem on the running device (boot.md build #151 debug).
+ *
+ * The kernel's late clk_disable_unused sweep was proven (live, build
+ * #151) to gate CLK_INFRA_DISP_PWM + the pwm_sel MUX_GATE and kill the
+ * bootloader's backlight output; this driver holding the clocks while
+ * the backlight is lit is the proper fix.
+ *
+ * "main" must be the PWM counter's tick source (pwm_sel — the driver
+ * derives period/duty from its rate; parent 0 = clk26m, matching the
+ * vendor pwm_config), "mm" the register/bus gate (CLK_INFRA_DISP_PWM).
+ */
+/ {
+	disp_pwm0: pwm@1100f000 {
+		compatible = "mediatek,mt6797-disp-pwm";
+		reg = <0 0x1100f000 0 0x1000>;
+		#pwm-cells = <2>;
+		clocks = <&topckgen CLK_TOP_MUX_PWM>,
+			 <&infrasys CLK_INFRA_DISP_PWM>;
+		clock-names = "main", "mm";
+		pinctrl-names = "default";
+		pinctrl-0 = <&disp_pwm_pins>;
+	};
+
+	backlight_lcd: backlight {
+		compatible = "pwm-backlight";
+		/*
+		 * 39385 ns ≈ 25.4 kHz: the 26 MHz source divided by the
+		 * hardware's 1024-step period register, i.e. the same PWM
+		 * frequency LK/the vendor kernel run this output at
+		 * (clkdiv=0, period=0x3ff).
+		 */
+		pwms = <&disp_pwm0 0 39385>;
+		default-brightness-level = <200>;
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+	};
+};
+
+&pio {
+	disp_pwm_pins: disp-pwm-pins {
+		pins-pwm {
+			pinmux = <MT6797_GPIO178__FUNC_DISP_PWM>;
+		};
+	};
+};
+
+/*
+ * MSDC0 / eMMC — Phase 4 (B-7).
+ *
+ * Mainline mt6797.dtsi has no MSDC node at all (MT6797 MSDC support was
+ * never upstreamed into the SoC dtsi); this is added here, board-local,
+ * rather than waiting on that. Register base, IRQ and clock index are
+ * copied verbatim from the vendor DTB (docs/vendor-dtb/gemini_kali_boot.dts,
+ * msdc0@11230000): reg 0x11230000, interrupts <0 0x4f 0x08> (SPI 79, level
+ * high), clocks <infracfg CLK_INFRA_MSDC0> (index 0x21 in the vendor DTB's
+ * own phandle numbering maps to CLK_INFRA_MSDC0=33 in mainline's
+ * mt6797-clk.h — same clock, mainline's binding just uses named indices).
+ * bus-width and non-removable also copied verbatim (Gemini's eMMC is
+ * soldered-down, 8-bit bus).
+ *
+ * compatible: mainline's drivers/mmc/host/mtk-sd.c has no MT6797 entry —
+ * the vendor kernel's "mediatek,mt6797-mmc" string is unrecognised by the
+ * upstream driver's of_device_id table. We first substituted
+ * "mediatek,mt6795-mmc" (closest SoC lineage) — that prediction failed on
+ * hardware exactly as warned: mt6795_compat's 8-bit divider / pad-tune@0xec
+ * assumptions don't match MT6797's 12-bit divider / PAD_TUNE0@0xf0 (vendor
+ * msdc_reg.h), producing CRC -84 on every command
+ * (logs/2026-07-05-33-msdc0-vmmc-supply-boot.log). Now using
+ * "mediatek,mt2701-mmc", whose compat data matches the vendor register
+ * layout — see the comment at the node's compatible property below.
+ * See blockers.md B-7.
+ *
+ * DEFERRED 2026-07-04, RESUMED 2026-07-05: enabling this node previously
+ * produced a silent post-probe hang -- no further printk, ATF aee_wdt_dump
+ * ~36s later (logs/2026-07-04-29-msdc0-uhs-boot.log,
+ * logs/2026-07-04-31-msdc0-assigned-clocks-boot.log). The "identical PC"
+ * in both ATF dumps turned out to be garbage: symbolicating against the
+ * exact failing Image.gz (kallsyms recovered via vmlinux-to-elf) puts the
+ * dumped PC *past _etext*, in rodata -- the core was too wedged to deliver
+ * a valid context ("Kernel WDT not ready" in the same dump), so the
+ * identical-PC observation ruled nothing out. Two defects found on resume:
+ *   1. "hclk" was wired to CLK_TOP_MUX_MSDC50_0 -- the *source* mux --
+ *      instead of CLK_TOP_MUX_MSDC50_0_HCLK (msdc50_0_hclk_sel), fixed
+ *      below.
+ *   2. mtk-sd.c msdc_set_mclk() polls MSDC_CFG_CKSTB with NO timeout
+ *      (readl_poll_timeout(..., 0, 0)) on the set_ios path that runs
+ *      post-probe from mmc_add_host() -- matching the silent post-probe
+ *      hang exactly. Instrumented via
+ *      patches/v6.6/mmc/0001-mmc-mtk-sd-gemini-debug-instrumentation.patch
+ *      so the next attempt logs each stage and bounds that poll.
+ */
+&pio {
+	/*
+	 * pinmux ONLY -- no bias or input-enable pinconf. Upstream pinctrl-mt6797.c
+	 * implements just mode/dir/di/do field ranges; every pinconf property
+	 * fails ("pin_config_group_set op failed for group 122"), which makes
+	 * the whole state apply revert and leaks a pin claim (the recurring
+	 * "pin GPIO125 already requested by ;" in
+	 * logs/2026-07-05-33-msdc0-vmmc-supply-boot.log). Pad bias is left as
+	 * the bootloader configured it -- known-good, since LK boots from this
+	 * eMMC with these pads.
+	 */
+	msdc0_pins_default: msdc0-default {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO122__FUNC_MSDC0_CMD>,
+				 <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>;
+		};
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+		};
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+		};
+	};
+
+	/*
+	 * mtk-sd.c hard-requires a "state_uhs" pinctrl state to probe at all
+	 * (drivers/mmc/host/mtk-sd.c: pinctrl_lookup_state(..., "state_uhs"),
+	 * goto host_free on failure) even though this is a fixed 8-bit eMMC
+	 * bus with no UHS signalling. The vendor DTB has no equivalent second
+	 * state (single pinctl phandle only) since the vendor's own MSDC
+	 * driver doesn't have this requirement. Reusing the same mux as
+	 * default satisfies the probe; drive-strength tuning for HS200/HS400
+	 * (as done via MTK_DRIVE_* in other mt65xx/mt81xx board DTS uhs
+	 * states) is deferred until basic block I/O is confirmed working.
+	 */
+	msdc0_pins_uhs: msdc0-uhs {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO122__FUNC_MSDC0_CMD>,
+				 <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>;
+		};
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+		};
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+		};
+	};
+};
+
+/ {
+	msdc0: mmc@11230000 {
+		/*
+		 * mt2701, not mt6795: the vendor MT6797 msdc_reg.h
+		 * (gemini-linux-kernel-3.18, drivers/mmc/host/mediatek/mt6797/)
+		 * defines MSDC_PAD_TUNE0 at 0xf0 (nothing at 0xec) and a
+		 * 12-bit MSDC_CFG_CKDIV. mt6795_compat assumes an 8-bit
+		 * divider and pad-tune at 0xec, so it wrote the clock-mode
+		 * bits into the middle of the divider field -- wrong card
+		 * clock, CRC on every command, `mmc0: error -84`
+		 * (logs/2026-07-05-33-msdc0-vmmc-supply-boot.log).
+		 * mt2701_compat matches the vendor layout: clk_div_bits=12,
+		 * pad_tune_reg=PAD_TUNE0, async_fifo, data_tune.
+		 */
+		compatible = "mediatek,mt2701-mmc";
+		reg = <0 0x11230000 0 0x1000>;
+		/*
+		 * Vendor DTB: <0 0x4f 0x08> = SPI 79 level-LOW, inverted to
+		 * level-high by the sysirq intpol controller. With LEVEL_HIGH
+		 * here the polarity is wrong and the line reads permanently
+		 * asserted: a silent IRQ storm with MSDC_INT=0/MSDC_INTEN=0
+		 * (logs/2026-07-05-29, storm-guard register dump).
+		 */
+		interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_LOW>;
+		/*
+		 * source: CLK_INFRA_MSDC0 gate (parent msdc50_0_sel) -- same
+		 * gate-as-source pattern as mt8173's CLK_PERI_MSDC30_0.
+		 * hclk: msdc50_0_hclk_sel, the MSDC register-bus clock mux.
+		 * (Until 2026-07-05 this cell wrongly pointed at
+		 * CLK_TOP_MUX_MSDC50_0, the source mux, leaving the real hclk
+		 * mux untouched.)
+		 */
+		clocks = <&infrasys CLK_INFRA_MSDC0>,
+			 <&topckgen CLK_TOP_MUX_MSDC50_0_HCLK>;
+		clock-names = "source", "hclk";
+		/*
+		 * Without this, CLK_TOP_MUX_MSDC50_0 (a MUX_GATE) may sit
+		 * ungated/unrouted at reset, so msdc_init_hw()'s
+		 * readl_poll_timeout(..., MSDC_CFG_CKSTB, 0, 0) (NO timeout,
+		 * spins forever) never sees the clock-stable bit assert --
+		 * total silent hang, ATF watchdog reset ~36s later, confirmed
+		 * on hardware 2026-07-04 (logs/2026-07-04-29-msdc0-uhs-boot.log).
+		 * Route the mux to msdcpll_d2, mirroring the mt8173 pattern in
+		 * Documentation/devicetree/bindings/mmc/mtk-sd.yaml.
+		 */
+		assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC50_0>;
+		assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_D2>;
+		pinctrl-names = "default", "state_uhs";
+		pinctrl-0 = <&msdc0_pins_default>;
+		pinctrl-1 = <&msdc0_pins_uhs>;
+		bus-width = <8>;
+		max-frequency = <200000000>;
+		cap-mmc-highspeed;
+		/*
+		 * vmmc = eMMC VCC (PMIC VEMC 3.0V), vqmmc = I/O rail (PMIC
+		 * VIO18 1.8V, modelled by the existing fixed 1.8V stub). Both
+		 * rails are already on from the bootloader; these fixed
+		 * regulators exist so the MMC core gets a non-empty ocr_avail.
+		 */
+		vmmc-supply = <&vemc_fixed>;
+		vqmmc-supply = <&vdd_fixed_1v8>;
+		non-removable;
+		status = "okay";
+	};
+};
+
+/*
+ * --- msdc1: microSD card slot (Phase 9, build #270) ---
+ *
+ * Values from the vendor DTB (docs/vendor-dtb/gemini_kali_boot.dts,
+ * msdc1@11240000): reg 0x11240000, interrupts <0 0x50 0x08> (SPI 80,
+ * level-low after the sysirq inversion, same encoding as msdc0's SPI 79),
+ * clock index 0x23 = CLK_INFRA_MSDC1 (35), bus-width 4. The vendor
+ * "clk_src = [02]" selects entry 2 of the msdc30_1 mux parent table,
+ * which in mainline clk-mt6797.c is msdcpll_d2 -- routed explicitly via
+ * assigned-clocks below, mirroring the msdc0 pattern.
+ *
+ * Same mt2701-mmc compatible as msdc0 (12-bit CKDIV / PAD_TUNE0@0xf0
+ * register layout, see the msdc0 comment). hclk: the MSDC30 register bus
+ * runs off the AXI mux (mt8173 msdc1 precedent: CLK_TOP_AXI_SEL), unlike
+ * msdc0's dedicated msdc50_0_hclk mux.
+ *
+ * Card detect: vendor uses cd-gpios GPIO67 plus a custom
+ * "mediatek,mt6797-sdcard-ins" EINT driver with vendor-specific cd_level
+ * polarity. EINT support in pinctrl-mt6797 is still open (B-11) and the
+ * polarity is unverified, so this first build uses broken-cd (MMC core
+ * polling) -- insertion/removal is detected by polling, ~1s latency.
+ *
+ * Power: vendor SD power-on = VMCH 3.0V (card) + VMC 3.0V (I/O)
+ * (vendor msdc_io.c msdc_sd_power) -- real switchable MT6351 LDOs, NOT
+ * fixed stubs: unlike the eMMC rails the bootloader leaves SD power off.
+ * UHS modes deferred (VMC 1.8V switch not modelled); highspeed 50 MHz cap.
+ */
+&pio {
+	/* pinmux only, no pinconf -- see the msdc0 pinctrl comment */
+	msdc1_pins_default: msdc1-default {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+		};
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+		};
+	};
+
+	/* state_uhs required by mtk-sd probe; same mux as default */
+	msdc1_pins_uhs: msdc1-uhs {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+		};
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+		};
+	};
+};
+
+/ {
+	msdc1: mmc@11240000 {
+		compatible = "mediatek,mt2701-mmc";
+		reg = <0 0x11240000 0 0x1000>;
+		interrupts = <GIC_SPI 80 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_MSDC1>,
+			 <&topckgen CLK_TOP_MUX_AXI>;
+		clock-names = "source", "hclk";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC30_1>;
+		assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_D2>;
+		pinctrl-names = "default", "state_uhs";
+		pinctrl-0 = <&msdc1_pins_default>;
+		pinctrl-1 = <&msdc1_pins_uhs>;
+		bus-width = <4>;
+		max-frequency = <50000000>;
+		cap-sd-highspeed;
+		broken-cd;
+		vmmc-supply = <&mt6351_vmch_reg>;
+		vqmmc-supply = <&mt6351_vmc_reg>;
+		status = "disabled";
+	};
+};
+
+/*
+ * SSUSB (MTU3) device controller + T-PHY -- USB gadget ethernet for SSH
+ * over the left USB-C port.
+ *
+ * Hardware values from the vendor DTB (docs/vendor-dtb/gemini_kali_boot.dts,
+ * nodes usb3@11270000 / usb3_sif@11280000 / usb3_sif2@11290000 / usb3_phy),
+ * mapped onto the mainline MT8173 mtu3 layout (same SSUSB/T-PHY generation,
+ * same 0x1129xxxx PHY base): MAC at ssusb_base+0x1000, IPPC at sif+0x700,
+ * T-PHY = sif2. Vendor device-controller interrupt is SPI 127 ("musb-hdrc",
+ * type 8 = level-low -- same convention as the MSDC SPI-79 lesson).
+ * Clocks: infracfg SSUSB_SYS/SSUSB_REF, per the vendor usb3_phy clock list
+ * (CLK_INFRA_SSUSB_* ids 69/75/76). MT6797 scpsys has no USB power domain
+ * (USB sits on the always-on infra fabric), so no power-domains property.
+ *
+ * THIS BUILD: host mode (B-19 Stage C) — dr_mode="otg" with
+ * role-switch-default-mode="host" and an xhci child; see the node comments
+ * below. High-speed only: u3port is left unwired until USB3 is needed --
+ * fewer PHY/clock unknowns for first light. Note the left port is shared
+ * with the UART console mux: host tests occupy the port, so observation is
+ * panel console (console=tty0) + FTDI serial.
+ */
+/ {
+	u3phy: t-phy@11290000 {
+		compatible = "mediatek,generic-tphy-v1";
+		reg = <0 0x11290000 0 0x800>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		status = "okay";
+
+		u2port0: usb-phy@11290800 {
+			reg = <0 0x11290800 0 0x100>;
+			clocks = <&clk26m>;
+			clock-names = "ref";
+			#phy-cells = <1>;
+			/*
+			 * GEMINI B-22 (2026-07-16): LEFT port reverted to its
+			 * native peripheral/charge role now that host duty
+			 * moved to the RIGHT port (usb1/MUSB, dts/0014). The
+			 * B-19 Stage C host-mode forcing on THIS port (host
+			 * PHY force + otg/xhci below) was left enabled after
+			 * B-19 was superseded, which kept the BQ25896 in OTG
+			 * boost/source mode at every boot -- silently blocking
+			 * charging even with a charger plugged in (the "enabling
+			 * OTG boost" bq25890_vbus_enable() call fires from
+			 * mtu3's host-role-switch probe path, not anything
+			 * charge-related). Back to B-20's original
+			 * force-b-session-valid (device role forced in
+			 * software, since this PHY has no hardware VBUS/session
+			 * sensing either way).
+			 */
+			mediatek,force-b-session-valid;
+			status = "okay";
+		};
+	};
+
+	ssusb: usb@11271000 {
+		compatible = "mediatek,mtu3";
+		reg = <0 0x11271000 0 0x3000>,
+		      <0 0x11280700 0 0x0100>;
+		reg-names = "mac", "ippc";
+		interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_LOW>;
+		/*
+		 * mcu_ck = CLK_INFRA_SSUSB_BUS, the SSUSB wrapper's AXI/register
+		 * bus clock (clk-mt6797.c: "infra_ssusb_bus", parent axi_sel).
+		 * Build #40 omitted it and the boot hung silently at t=0.40s,
+		 * right after mtu3's "u2p_dis_msk" print -- the first register
+		 * access into SSUSB space (T-PHY init at 0x11290800) stalled
+		 * the bus, same failure mode as the MSDC CKSTB hang
+		 * (logs/2026-07-05-40-debian13-first-boot.log, tail). LK does
+		 * not enable SSUSB clocks (Android gates USB until a cable
+		 * event), so clk_ignore_unused does not save us here.
+		 * mtu3 enables the clk bulk before ssusb_phy_init(), so this
+		 * also clocks the PHY bank for tphy's register writes.
+		 */
+		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>,
+			 <&infrasys CLK_INFRA_SSUSB_REF>,
+			 <&infrasys CLK_INFRA_SSUSB_BUS>;
+		clock-names = "sys_ck", "ref_ck", "mcu_ck";
+		/*
+		 * infra_ssusb_sys's parent is the ssusb_top_sys_sel mux; route
+		 * it to univpll3_d2 per the vendor usb3_phy clock list
+		 * (ssusb_univpll3_d2_clk) -- same explicit-mux-routing pattern
+		 * as MSDC's assigned-clocks (boot.md 2026-07-04-29 lesson).
+		 */
+		assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
+		phys = <&u2port0 PHY_TYPE_USB2>;
+		/*
+		 * GEMINI B-22 (2026-07-16): back to peripheral-only. The
+		 * B-19 Stage C "otg"+role-switch-default-mode="host"+xhci
+		 * child setup is retired -- host duty for this device now
+		 * belongs to the RIGHT port (usb1/MUSB, dts/0014), which is
+		 * architecturally independent (blockers.md B-22 "why the two
+		 * ports must be treated separately"). Leaving the left port
+		 * forced into its host role kept mtu3's role-switch probe
+		 * auto-enabling the BQ25896 OTG boost regulator on every
+		 * boot, which put the charger IC into source mode and
+		 * silently blocked charging even with a cable plugged in.
+		 */
+		dr_mode = "peripheral";
+		maximum-speed = "high-speed";
+		status = "okay";
+	};
+};
+
+/*
+ * --- PMIC wrapper + MT6351 VCN regulators + CONSYS (Phase 8 WiFi, Stage
+ * W1 spike; research.md "CONSYS Stage W0 harvest") ---
+ *
+ * pwrap: mainline mtk-pmic-wrap fully supports mt6797 + the mt6351 slave.
+ * IRQ SPI 178 level-high from the vendor DTB (pwrap@1000d000,
+ * interrupts = <0 0xb2 0x04>). LK has already initialised the wrapper
+ * (all PMIC access in LK goes through it), so the driver's init path is
+ * a no-op re-check; clocks: "spi" = pmicspi_sel mux, "wrap" = the
+ * infracfg pmic_ap gate (clk-mt6797 GATE_ICG0 1) -- both already in
+ * clk-mt6797.
+ *
+ * MT6351 child: minimal regulator driver (VCN rails only,
+ * drivers/regulator/mt6351-regulator.c). Voltages are the vendor-fixed
+ * nominals (upmu_hw.h defaults; vendor consys sets exactly these).
+ *
+ * consys: spike probe driver (Gate G2a). The CONN scpsys domain
+ * (MT6797_POWER_DOMAIN_CONN, keep-default-off) is powered by the driver
+ * only after VCN18/VCN28 are up, matching the vendor order. The 2 MB
+ * no-map EMI region mirrors the vendor's dynamic consys-reserve-memory
+ * node (2 MB size/alignment); unused until Gate G2b firmware download.
+ */
+/ {
+	reserved-memory {
+		consys_mem: consys-reserve-memory {
+			no-map;
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+	};
+
+	pwrap: pwrap@1000d000 {
+		compatible = "mediatek,mt6797-pwrap";
+		reg = <0 0x1000d000 0 0x1000>;
+		reg-names = "pwrap";
+		interrupts = <GIC_SPI 178 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&topckgen CLK_TOP_MUX_PMICSPI>,
+			 <&infrasys CLK_INFRA_PMIC_AP>;
+		clock-names = "spi", "wrap";
+
+		pmic: mt6351 {
+			compatible = "mediatek,mt6351";
+
+			regulators {
+				mt6351_vcn18_reg: vcn18 {
+					regulator-name = "vcn18";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+				};
+
+				mt6351_vcn28_reg: vcn28 {
+					regulator-name = "vcn28";
+					regulator-min-microvolt = <2800000>;
+					regulator-max-microvolt = <2800000>;
+				};
+
+				mt6351_vcn33_bt_reg: vcn33_bt {
+					regulator-name = "vcn33_bt";
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+				};
+
+				mt6351_vcn33_wifi_reg: vcn33_wifi {
+					regulator-name = "vcn33_wifi";
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+				};
+
+				/*
+				 * SD card rails (msdc1): VMCH powers the
+				 * card, VMC the I/O pads. VOSELs pinned to
+				 * 3.0V by the driver probe (vendor SD
+				 * power-on values, msdc_io.c).
+				 */
+				mt6351_vmch_reg: vmch {
+					regulator-name = "vmch";
+					regulator-min-microvolt = <3000000>;
+					regulator-max-microvolt = <3000000>;
+				};
+
+				mt6351_vmc_reg: vmc {
+					regulator-name = "vmc";
+					regulator-min-microvolt = <3000000>;
+					regulator-max-microvolt = <3000000>;
+				};
+			};
+		};
+
+		/*
+		 * MT6351 audio codec (Phase 9 audio). Mainline
+		 * sound/soc/codecs/mt6351.c takes its regmap from
+		 * dev_get_regmap(parent) — normally an MT6351 MFD, which
+		 * mainline lacks. Placed directly under pwrap instead: the
+		 * pwrap registers a regmap on its own device covering the
+		 * same 16-bit PMIC address space, the exact pattern already
+		 * proven by regulator/0002 (mt6351-regulator.c) on this
+		 * child bus.
+		 */
+		mt6351_codec: mt6351-sound {
+			compatible = "mediatek,mt6351-sound";
+		};
+
+		/*
+		 * MT6351 side keys (drivers/input/keyboard/mt6351-keys.c,
+		 * added 2026-09-06, verified live on hardware): the unit's
+		 * two non-keyboard buttons both arrive at the PMIC — the
+		 * "Esc (On)" key = PWRKEY_DEB (TOPSTATUS 0x220 bit 1) and
+		 * the silver "Voice Assist" side button = HOMEKEY_DEB (bit
+		 * 2). Both are debounced active-low bits; the driver polls
+		 * TOPSTATUS over the pwrap regmap (25 ms) and reports the
+		 * linux,keycodes below. NOTE: holding the Esc/On key ~8-10 s
+		 * is the PMIC-level hardware reset (cannot be prevented in
+		 * software) — the driver reports momentary presses only.
+		 */
+		mt6351_keys: mt6351-keys {
+			compatible = "mediatek,mt6351-keys";
+
+			esc-on {
+				mediatek,keybit = <1>;
+				linux,keycodes = <KEY_ESC>;
+			};
+
+			/* intended future sleep button (KEY_SLEEP is inert
+			 * until suspend exists; logind drop-in ignores it) */
+			silver {
+				mediatek,keybit = <2>;
+				linux,keycodes = <KEY_SLEEP>;
+			};
+		};
+	};
+
+	consys: consys@18070000 {
+		compatible = "mediatek,mt6797-consys";
+		reg = <0 0x18070000 0 0x200>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_CONN>;
+		/* AP<->CONSYS BTIF FIFO clock, for the Stage W2 (Gate
+		 * G2b) WMT handshake; the BTIF block itself
+		 * (0x1100c000) is ioremapped by the spike driver.
+		 * apdma: the APDMA block's clock (infra1_cg bit 18,
+		 * off by default) - Build B's BTIF vFIFO DMA channels
+		 * (0x11000a00/0x11000a80) need it. */
+		clocks = <&infrasys CLK_INFRA_BTIF>, <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "btif", "apdma";
+		vcn18-supply = <&mt6351_vcn18_reg>;
+		vcn28-supply = <&mt6351_vcn28_reg>;
+		/* VCN33 sub-rails: the WMT core's sw_init powers these (the
+		 * PALDO ops) for the post-push RF-calibration exchange - kept
+		 * OFF by the spike at probe (radio idle), toggled on demand. */
+		vcn33-bt-supply = <&mt6351_vcn33_bt_reg>;
+		vcn33-wifi-supply = <&mt6351_vcn33_wifi_reg>;
+		memory-region = <&consys_mem>;
+	};
+
+	/*
+	 * CONSYS Wi-Fi datapath window (B-32, wlan/gen3 AHB HIF). The vendor
+	 * 3.18 node (mt6797.dtsi) spelled the compatible lowercase
+	 * ("mediatek,wifi"); the gen3 ahb HIF matches + looks up IRQ by the
+	 * EXACT string "mediatek,WIFI" (apwifi_of_ids / of_find_compatible_node
+	 * in os/linux/hif/ahb_sdioLike/ahb.c), so keep the capital spelling the
+	 * driver was compiled against. reg is informational - glBusInit()
+	 * ioremaps hardcoded windows (HIF 0x180f0000, CONN MCU 0x18070000,
+	 * DYNAMIC_REMAP 0x180e0000/0x10001340 in hif.h). No power-domain
+	 * here: the WMT core (mtk_wcn.ko) owns CONSYS power via the spike and
+	 * runs FUNC_ON at module load. Loading wlan_gen3 AFTER mtk_wcn makes
+	 * mtk_wcn_wmt_wlan_reg() take the gWifiProbed path and call the probe
+	 * callback directly (wlan0 appears without a second WMT power cycle).
+	 * [added 2026-09-06, B-32]
+	 */
+	wifi: wifi@180f0000 {
+		compatible = "mediatek,WIFI";
+		reg = <0 0x180f0000 0 0x1100>;
+		interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "wifi-dma";
+	};
+};
+
+/*
+ * --- Audio: MT6797 AFE + MT6351 codec (Phase 9) ---
+ *
+ * All three drivers are mainline: sound/soc/mediatek/mt6797/ (AFE PCM +
+ * machine driver) and sound/soc/codecs/mt6351.c (codec node under
+ * &pwrap above).
+ *
+ * afe: reg 0x11220000/0x10000 and IRQ SPI 151 level-low from the vendor
+ * DTB (audio@11220000, interrupts = <0 0x97 0x08>); both match the
+ * mainline binding example (mt6797-afe-pcm.txt). Power domain =
+ * scpsys AUDIO (mtk-scpsys mt6797 data, ctl_offs 0x314). Clock list =
+ * the 7 names mt6797-afe-clk.c requires, plus the binding doc's
+ * mtkaif_26m_clk (CLK_INFRA_AUDIO_26M_PAD_TOP — also in the vendor
+ * node's clock list as aud_infra_26m_pad_top); all IDs exist in
+ * clk-mt6797. Handoff: AFE clocks/domain are runtime-PM managed and
+ * released when idle, so the Android side re-initialises freely.
+ */
+/ {
+	afe: audio-controller@11220000 {
+		compatible = "mediatek,mt6797-audio";
+		reg = <0 0x11220000 0 0x10000>;
+		interrupts = <GIC_SPI 151 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_AUDIO>;
+		clocks = <&infrasys CLK_INFRA_AUDIO>,
+			 <&infrasys CLK_INFRA_AUDIO_26M>,
+			 <&infrasys CLK_INFRA_AUDIO_26M_PAD_TOP>,
+			 <&topckgen CLK_TOP_MUX_AUDIO>,
+			 <&topckgen CLK_TOP_MUX_AUD_INTBUS>,
+			 <&topckgen CLK_TOP_SYSPLL3_D4>,
+			 <&topckgen CLK_TOP_SYSPLL1_D4>,
+			 <&clk26m>;
+		clock-names = "infra_sys_audio_clk",
+			      "infra_sys_audio_26m",
+			      "mtkaif_26m_clk",
+			      "top_mux_audio",
+			      "top_mux_aud_intbus",
+			      "top_sys_pll3_d4",
+			      "top_sys_pll1_d4",
+			      "top_clk26m_clk";
+	};
+
+	sound {
+		compatible = "mediatek,mt6797-mt6351-sound";
+		mediatek,platform = <&afe>;
+		mediatek,audio-codec = <&mt6351_codec>;
+	};
+};
+
+/*
+ * --- Right-hand USB-C port: MUSB host (B-19 right-port workstream) ---
+ *
+ * The right port is driven by a SEPARATE legacy controller, not the
+ * mtu3/xhci stack on the left port: vendor `usb1@11200000`
+ * (`mediatek,mt6797-usb11`, vendor driver misc/mediatek/usb11
+ * "musbfsh" — a host-only MUSB instance). Mainline's mtk-musb glue
+ * (drivers/usb/musb/mediatek.c, MT2701/MT8516) drives the same IP;
+ * only the "mcu"/"univpll" clocks don't exist on MT6797
+ * (patches/v6.6/usb/0002 makes them optional). Vendor DTB: reg
+ * 0x11200000 + PHY SIF 0x11210000, IRQ SPI 73 level-low, clocks
+ * infra_icusb (+ ssusb ref).
+ *
+ * PHY: the usb11 PHY register bank (SIF+0x800) matches the tphy-v1 U2
+ * layout byte-for-byte (vendor musbfsh_mt65xx.c pokes 0x6C bit1 =
+ * RG_IDDIG / 0x6D bit1 = force_iddig = mainline U3P_U2PHYDTM1
+ * BIT(1)/BIT(9)), so it is a second generic-tphy-v1 instance, DTS
+ * only. `mediatek,force-usb-host` (phy/0001) applies unchanged: MUSB
+ * host role wants IDDIG=0 forced just like the vendor driver does.
+ *
+ * VBUS: proven live 2026-07-15 with zero kernel changes (boot.md):
+ * GPIO94 (usb1_drvvbus) + GPIO72 (SW7226 load switch) high = adapter
+ * powers up, fully independent of the BQ25896 boost — so right-port
+ * host coexists with left-port charging (the vendor behaviour).
+ * GPIO70/71 are the OTG/HDMI lane mux (vendor fusb302/usb_typec.c
+ * fusb300_eint_work): USB-OTG position = sw_en(70) HIGH + sw_sel(71)
+ * LOW (70 goes low only for HDMI alt-mode). All four are static
+ * gpio-hogs for bring-up; NOTE this makes the right port host-only —
+ * do not plug a charger into it while these hogs are active.
+ */
+/ {
+	usb1phy: t-phy@11210000 {
+		compatible = "mediatek,generic-tphy-v1";
+		reg = <0 0x11210000 0 0x800>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		status = "okay";
+
+		u2port1: usb-phy@11210800 {
+			reg = <0 0x11210800 0 0x100>;
+			clocks = <&clk26m>;
+			clock-names = "ref";
+			#phy-cells = <1>;
+			mediatek,force-usb-host;
+			status = "okay";
+		};
+	};
+
+	usb1: usb@11200000 {
+		/*
+		 * mt6797-musb (usb/0002) selects the musbfsh hardware config:
+		 * 6 EPs, non-multipoint, EP1-5 512B single-buffered FIFOs
+		 * (vendor musbfsh_config_mt65xx). The generic mtk-musb config
+		 * (8 EP multipoint) enumerates but bulk never flows (TX stuck
+		 * TXPKTRDY csr 2003, ep2 RX three-strikes — B-22).
+		 */
+		compatible = "mediatek,mt6797-musb";
+		reg = <0 0x11200000 0 0x1000>;
+		interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "mc";
+		phys = <&u2port1 PHY_TYPE_USB2>;
+		clocks = <&infrasys CLK_INFRA_ICUSB>;
+		clock-names = "main";
+		dr_mode = "host";
+		/*
+		 * The B-22 full-speed cap (builds #249-#252) predated the real
+		 * root cause: mainline's MT8516-shaped 8-EP config on the
+		 * musbfsh IP. Build #252 showed bulk failing even at full
+		 * speed, falsifying the pad-chain signal-integrity theory;
+		 * the num_eps=6 FIFO fix (usb/0002, build #254) removed the
+		 * actual defect, so high-speed (480 Mbps) is re-enabled.
+		 * If HS regresses, drop back to "full-speed" (known good).
+		 */
+		maximum-speed = "high-speed";
+		status = "okay";
+	};
+
+	/*
+	 * Mali-T880 MP4 (GPU_ID 0x08801008, verified 2026-08-31).
+	 * Power is NOT kernel-managed (yet): the VGPU rail is the Richtek
+	 * RT5735 on i2c7 (the "gpupm" bus, node intentionally disabled)
+	 * and the six MFG MTCMOS domains (MFG_ASYNC 0x334, MFG 0x338,
+	 * MFG_CORE0-3 0x340-0x34c) are brought up by build/gpu-poweron.sh
+	 * after boot, using the vendor clk-mt6797-pg.c sequences. On this
+	 * unit VGPU was found OFF at stock boot (RT5735 EN bits clear), so
+	 * the GPU cannot power on until the script has run — hence NO
+	 * power-domains property here (the kernel doesn't own those
+	 * domains) and panfrost is a module, loaded after power-on.
+	 * The mfg clock (CLK_TOP_MUX_MFG -> mfgpll) is left as LK set it.
+	 */
+	gpu: mali@13040000 {
+		compatible = "arm,mali-t880", "arm,mali-midgard";
+		reg = <0 0x13040000 0 0x4000>;
+		interrupts = <GIC_SPI 264 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 263 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 262 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&topckgen CLK_TOP_MUX_MFG>;
+		clock-names = "clk_mali";
+	};
+};
+
+&pio {
+	usb1_drvvbus_hog: usb1-drvvbus-hog {
+		gpio-hog;
+		gpios = <94 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb1-drvvbus";
+	};
+
+	sw7226_en_hog: sw7226-en-hog {
+		gpio-hog;
+		gpios = <72 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sw7226-en";
+	};
+
+	fusb301a_sw_en_hog: fusb301a-sw-en-hog {
+		gpio-hog;
+		gpios = <70 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "fusb301a-sw-en";
+	};
+
+	fusb301a_sw_sel_hog: fusb301a-sw-sel-hog {
+		gpio-hog;
+		gpios = <71 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "fusb301a-sw-sel";
+	};
+};

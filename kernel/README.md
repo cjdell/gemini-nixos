@@ -1,26 +1,26 @@
-# kernel/ — pinned kernel source snapshot
+# kernel/ — kernel source: published base + tracked delta
 
-The flake builds the kernel from the vendored tarball in this
-directory (see `devices/planet-geminipda/kernel/default.nix`). The
-tarball is gitignored (`*.tar.gz`) because it is 225 MiB.
+The kernel builds from the published upstream **Linux v6.6** base
+(fetch-pinned kernel.org tarball in `devices/planet-geminipda/kernel/
+default.nix`) + the tracked bring-up delta
+(`devices/planet-geminipda/kernel/delta/`). Nothing large is vendored
+here. See `devices/planet-geminipda/kernel/default.nix` and the
+session-log entry 2026-09-08.
 
-To build, the file must be present here:
+- `kernel/base` = a git submodule pointer to upstream torvalds/linux @
+  tag v6.6 (`ffc253263a1375a65fa6c9f62a893e9767fbebfa`) — a read-only
+  pointer for reading the base source locally; fetch on demand:
 
-    geminipda-bringup-733c0c7ea.tar.gz
-    sha256: 92a33d3750a19f4037e00d817bf81c4948c816d47e1ec2fd87dc4704bb52be1a
+      git submodule update --init --depth 1 kernel/base
 
-It is a `git archive` of the pinned commit (clean tree, no `.git`,
-no in-tree build artifacts — the working tree of the bring-up clone
-carries ~4 GB of build outputs and must not be fed to the kernel
-builder directly):
+  The nix build does NOT read the submodule (flake exports only carry
+  tracked files; the base comes from the hash-pinned kernel.org
+  tarball — the same content, verified byte-identical 2026-09-08).
 
-    repo:   GeminiPDA `repos/linux-6.6` (mainline 6.6 + bring-up patches)
-    commit: 733c0c7ea74195bd30734f599f37e69febfd38e0  (`geminipda-bringup`)
+- Refresh the delta after fork commits (legacy
+  `GeminiPDA/repos/linux-6.6`):
 
-Regenerate (needs the bring-up clone locally):
+      bash bin/sync-kernel-delta.sh            # materialize + byte-verify
 
-    bash bin/snapshot-kernel.sh [git-dir] [rev]
-
-If the rev changes, rename the tarball reference in
-`devices/planet-geminipda/kernel/default.nix` and update the sha256
-above.
+- The old 225 MB snapshot tarball + `bin/snapshot-kernel.sh` were
+  retired 2026-09-08 (git history has them).

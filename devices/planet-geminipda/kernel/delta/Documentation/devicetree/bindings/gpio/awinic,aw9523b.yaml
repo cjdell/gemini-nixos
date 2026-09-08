@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/gpio/awinic,aw9523b.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: AWINIC AW9523B 16-bit I2C GPIO expander
+
+maintainers:
+  - Gemini PDA Linux Project
+
+description: |
+  The AW9523B provides two 8-bit GPIO ports (P0 = GPIO 0-7, P1 = GPIO 8-15)
+  with per-pin direction control, interrupt generation, and optional LED mode.
+  On the Gemini PDA it is used as a keyboard matrix controller.
+
+properties:
+  compatible:
+    const: awinic,aw9523b
+
+  reg:
+    maxItems: 1
+
+  gpio-controller: true
+
+  '#gpio-cells':
+    const: 2
+
+  interrupt-controller: true
+
+  '#interrupt-cells':
+    const: 2
+
+  interrupts:
+    maxItems: 1
+    description: IRQ from the AW9523B INT pin (active-low, open-drain)
+
+  reset-gpios:
+    maxItems: 1
+    description: GPIO connected to the AW9523B SHDN (active-low reset) pin
+
+required:
+  - compatible
+  - reg
+  - gpio-controller
+  - '#gpio-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      keyboard_gpio: gpio@58 {
+        compatible = "awinic,aw9523b";
+        reg = <0x58>;
+        gpio-controller;
+        #gpio-cells = <2>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        interrupts = <87 IRQ_TYPE_LEVEL_LOW>;
+        reset-gpios = <&pio 58 GPIO_ACTIVE_LOW>;
+      };
+    };

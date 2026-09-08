@@ -132,15 +132,26 @@ Concretely, for a forked library the recipe is:
 | Published base | canonical `/-/archive/` tarball of `mesa-25.0.7`, sha256 `a0c8a2dbf99bf639bd9d42a0f4a749906b76df8371e11fdbc2858918a3e8cf93` (re-verified byte-stable 2026-09-07) |
 | Nixpkgs that shipped the same base | `nixos-25.05` @ `ac62194c3917d5f474c1a844b6fd6da2db95077d` (`pkgs.mesa` = 25.0.7); `nixos-25.11` = 25.2.6 (same major, delta would need re-checking); system pin (npins unstable) = 26.1.4 (different major) |
 
-## Next libraries (not this session)
+## Kernel — DONE 2026-09-08 (delta TREE instead of patch series)
 
-- **Kernel** (`geminipda-bringup`, 6.6 line + CONSYS Wi-Fi / audio S16 /
-  side-key / sramldo patches): convert from the vendored snapshot
-  (`kernel/geminipda-bringup-733c0c7ea.tar.gz` +
-  `bin/snapshot-kernel.sh`) to nixpkgs' `linux_6_6` base + tracked
-  patch series (the GeminiPDA `repos/linux-6.6` fork + `patches/`
-  `0001-*.patch` series), same-major base. Verify the in-repo kernel
-  pin is re-synced to the #329+ line first (README “Kernel phase”).
-- Other libraries: same two-layer decision tree — source de-vendoring
-  always; expression reuse when the consumed nixpkgs carries the base
-  major.
+Converted from the vendored snapshot to **published base + tracked
+delta**, expressed as plain files rather than patches (repo rule:
+agents edit source, not patch text; the mesa one-commit fork stayed a
+single 272-line patch, the 48-commit bring-up line did not):
+
+- base = published kernel.org **linux-6.6.tar.gz**, fetched by hash
+  (byte-identical to `git archive v6.6` of the bring-up base commit
+  `ffc253263a…` — also pinned as the `kernel/base` submodule pointer);
+- delta = `devices/planet-geminipda/kernel/delta/` (457 added + 55
+  modified files, 0 deleted/renamed — copy-replace is exact and
+  verified: v6.6 + delta == geminipda-bringup @ `188aade69`, the #329
+  tree). `bin/sync-kernel-delta.sh` refreshes it from the fork.
+- config = lean device config (`bin/prune-kernel-config.sh` from
+  `config.full-329`).
+
+The nix-build-only fixes (relative -I anchoring for the O= builder,
+GPIOLIB_IRQCHIP select, CONSYS firmware staging) live in the
+derivation, so the delta stays byte-identical to the fork. Full
+receipt: `docs/session-log.md` 2026-09-08.
+
+## Next libraries (not this session)

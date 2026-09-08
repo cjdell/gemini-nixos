@@ -28,7 +28,7 @@ Read this file first, then `README.md`,
 | M2 | **Disaster-recovery knowledge + image ledger** | ✅ done 2026-09-07 | `docs/disaster-recovery/` (README · inventory · gather · drills) |
 | M3 | stock-dump blobs (partition dumps, firmware zip, boot backups) | 🟡 partial — boot-critical set copied 2026-09-07; full bulk pending (see `docs/disaster-recovery/inventory.md` "pending copy") | `stock-dump/` (gitignored) |
 | M4 | Recovery tooling (patched-mtkclient launcher, USB watcher, devshell pkg) | ✅ done 2026-09-07 | `bin/run-mtk.sh`, `bin/usb-watch.sh`; devshell `mtkclient` |
-| M5 | Kernel + LK source trees (linux-6.6, gemini-lk, mesa fork work) | ⬜ snapshot mechanism exists (`kernel/*.tar.gz` + `bin/snapshot-kernel.sh`); source repos still in GeminiPDA until vendored | `kernel/`, `repos/` |
+| M5 | Kernel + LK source trees (linux-6.6, gemini-lk, mesa fork work) | ✅ kernel done 2026-09-08 (published v6.6 base + tracked delta in `devices/planet-geminipda/kernel/`; source no longer lives in GeminiPDA); gemini-lk + mesa fork still legacy until vendored | `devices/planet-geminipda/kernel/`, `kernel/base` (submodule ptr) |
 | M6 | Device services/rootfs files | ✅ (already ported as derivations/scripts — the port repo's original job) | `services/`, `pkgs/`, `bin/` |
 | M7 | Session history | ⬜ new sessions log HERE only; old history stays in GeminiPDA | `docs/session-log.md` |
 
@@ -53,10 +53,10 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 
 0. **Version & commit hygiene.** Every artifact that goes to the device
    carries an identity, and every session records what it flashed:
-   - the kernel is **borrowed** (#329, `6.6.0-00048-g188aade698dd`,
-     source commit `733c0c7ea74195bd30734f599f37e69febfd38e0`, snapshot
-     `kernel/geminipda-bringup-733c0c7ea.tar.gz`, artifacts vendored in
-     `kernel/borrowed/` — never rebuilt in-tree yet);
+   - the kernel is **built in-repo** (since 2026-09-08: published
+     Linux v6.6 base + tracked delta + lean config — see the session
+     log; the #329 borrow was retired and `kernel/borrowed/` is only
+     an unflashed reference until glass verification);
    - Mesa 25.0.7 fork, wlroots 0.18.2, gemwl: exact pins in
      `flake.nix`/the pkgs derivations.
    Log one version line per flash in `docs/session-log.md` (kernel,
@@ -151,8 +151,9 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | Device services: GPU poweron / A72-up / battery-guard / WDT reboot | `services/gemini-pda.nix`, `services/scripts/` |
 | Audio (PipeWire S16 path), Wi-Fi (CONSYS+USB), desktop (gemwl), **LXQt nested (labwc → lxqt-session)** | `services/audio.nix`, `services/wifi.nix`, `services/desktop.nix`, `services/lxqt.nix` (+ `services/scripts/start-lxqt-nested`, `config/lxqt/`) |
 | Mesa 25.0.7+geminipda fork / wlroots 0.18.2 pin / gemwl pkgs / **labwc 0.8.3 pin** | `pkgs/{mesa-geminipda,wlroots-geminipda,gemwl,labwc-geminipda}.nix` + `patches/` |
-| Borrowed kernel #329 artifacts (vendored, tracked) | `kernel/borrowed/` (payload, DTB, module tree, sramldo-smc.ko, .config) |
-| Kernel source snapshot (gitignored, intent-to-add) | `kernel/geminipda-bringup-733c0c7ea.tar.gz` + `bin/snapshot-kernel.sh` |
+| Borrowed kernel #329 reference (kept until the self-built kernel is glass-verified; NOT wired into any build since 2026-09-08) | `kernel/borrowed/` (payload, DTB, module tree, sramldo-smc.ko, config) + `devices/planet-geminipda/kernel-borrowed.nix` |
+| Kernel source: published v6.6 base (fetch-pinned) + tracked delta + lean config | `devices/planet-geminipda/kernel/` (`default.nix`, `delta/`, `config`, `config.full-329`) + `kernel/base` submodule pointer |
+| Kernel config pruning + delta sync tools | `bin/prune-kernel-config.sh`, `bin/sync-kernel-delta.sh` (replaces the retired `bin/snapshot-kernel.sh`) |
 | boot.img header inspection | `bin/dump-bootimg-header.sh` |
 | **Recovery tooling** — patched-mtkclient launcher (preloader/BROM), USB-state watcher | `bin/run-mtk.sh`, `bin/usb-watch.sh` (+ devshell `mtkclient` = store pkg + DAs) |
 | **g_ether net-up / SSH / WDT-EXRST reboot** (host side) | `bin/net-up.sh`, `bin/device-ssh.sh`, `bin/device-reboot.sh` |
@@ -252,13 +253,15 @@ MANDATORY (kernel driver claims 0x6b).
 - **Nix files:** keep formatted (`nixpkgs-fmt` in the devshell if added);
   comment derivations like the existing ones (they carry the quirks —
   R2/R8/R9-style receipts).
-- **Kernel snapshot hygiene:** never hand-edit the borrowed artifacts or
-  the snapshot tarball; change the source (currently the legacy
-  `GeminiPDA/repos/linux-6.6` until M5 vendors it here), then
-  `bash bin/snapshot-kernel.sh` + rename references. The tarball stays
-  gitignored + intent-to-add (`git add -Nf`) — never `git add .` (it
-  would commit the tarball). `kernel/borrowed/` IS tracked (small,
-  source commit local-only).
+- **Kernel delta hygiene:** the kernel builds from the published v6.6
+  base + `devices/planet-geminipda/kernel/delta/` (source of truth;
+  nix-build-only fixes live in `kernel/default.nix` so the delta stays
+  byte-identical to the fork). Change the fork source (legacy
+  `GeminiPDA/repos/linux-6.6`), then `bash bin/sync-kernel-delta.sh`
+  (materialize + byte-verify base+delta == rev) and update the rev in
+  the derivation header. Do not hand-edit the delta without re-running
+  the sync verify. The old `bin/snapshot-kernel.sh` + 225 MB tarball
+  are retired (git history has them).
 - **Device backups:** `stock-dump/` is gitignored — boot/para backups
   live there (ledger + copy status in
   `docs/disaster-recovery/inventory.md`); nvram (IMEI) is private,
@@ -285,8 +288,8 @@ MANDATORY (kernel driver claims 0x6b).
    flashed/changed, versions, hashes, next action).
 2. Update every doc whose claims the session touched (statuses, dates) —
    including the phase table, README and the DR ledger.
-3. If the session changed the kernel pin or borrowed artifacts, re-run
-   `bin/snapshot-kernel.sh` and update the references.
+3. If the session changed the kernel delta or its fork rev, re-run
+   `bin/sync-kernel-delta.sh` and update the references.
 4. If the session ran a flash/boot cycle, leave the version line +
    outcome in the session log and say whether the glass/TWRP state was
    left safe (prefer para = boot-recovery until images are verified).

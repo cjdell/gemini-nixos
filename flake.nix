@@ -116,6 +116,11 @@
         bootimg = outputs.android.android-bootimg;
         rootfs  = outputs.generatedFilesystems.rootfs;
         initrd  = initrd; # minimal busybox initrd, for size measurement
+        # Self-contained bring-up kernel (Linux v6.6 base + in-repo delta;
+        # source model docs/library-deltas.md). Same derivation the device
+        # module wires into mobile.boot.stage-1.kernel, exposed for
+        # standalone builds/iteration (the toplevel/bootimg consume it).
+        kernel  = eval.pkgs.callPackage ./devices/planet-geminipda/kernel { };
         toplevel = outputs.toplevel;
         mesa    = mesa;   # geminipda panfrost fork (Mali-T880, dma-buf import)
         wlroots = wlroots; # wlroots 0.18.2 pin (gemwl's library; R2)

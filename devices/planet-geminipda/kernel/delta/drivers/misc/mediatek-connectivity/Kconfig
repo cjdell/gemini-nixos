@@ -1,0 +1,23 @@
+# MediaTek MT6797 connectivity (Wi-Fi) driver - Gemini PDA port (B-21)
+#
+# Port of the vendor 3.18 connectivity tree (common_main WMT core +
+# wlan/gen3 802.11 stack) onto mainline 6.6, for the on-die MT6630 Wi-Fi
+# (CONSYS) on the MT6797 SoC. See docs/wifi-consys.md for the bring-up
+# state and plan.
+
+config MTK_WCN
+	tristate "MediaTek MT6797 Wi-Fi (CONSYS MT6630) - Gemini PDA port"
+	depends on OF && HAS_IOMEM
+	help
+	  Host driver for the MediaTek MT6630 Wi-Fi integrated in the
+	  MT6797 SoC (Gemini PDA). Brings up wlan0 over the WMT/BTIF
+	  transport to the CONSYS MCU. Experimental bring-up driver.
+
+config MTK_WCN_GEN3
+	tristate "MediaTek MT6797 Wi-Fi gen3 802.11 stack (wlan_gen3)"
+	depends on MTK_WCN && CFG80211
+	help
+	  Port of the vendor wlan/gen3 802.11 host stack (the 126 K LOC
+	  MAC/MGMT/OS layer) for the on-die MT6630 Wi-Fi. Loaded after
+	  mtk_wcn; wlan0 appears when the WMT core turns the Wi-Fi
+	  function on (wlan_probe callback).

@@ -1,0 +1,552 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Solomon SSD2092 FHD DSI panel driver
+ *
+ * Panel: 5.99" 1080x2160 MIPI DSI video-mode (sync-pulse) panel,
+ * Solomon SSD2092 controller, panel ID 0x01572098.
+ * Used on: Planet Computers Gemini PDA (MT6797X / Helio X27).
+ *
+ * This is the panel actually fitted to the Gemini PDA: the stock LK
+ * bootloader probes it at every boot ("we will use lcm:
+ * aeon_ssd2092_fhd_dsi_solomon", ID read 0x01572098). Earlier project
+ * documentation assumed the R63419 WQHD panel from the vendor DTB's
+ * videolfb template string, but that atag is a build-time default LK
+ * overwrites after probing.
+ *
+ * All hardware values (timings, lane count, init sequence, reset
+ * sequence) come from the vendor 3.18 kernel LCM driver:
+ *   drivers/misc/mediatek/lcm/aeon_ssd2092_fhd_dsi_solomon/
+ *     aeon_ssd2092_fhd_dsi_solomon.c
+ *   (gemini-android-kernel-3.18-android8 tree)
+ * Vendor params: SYNC_PULSE_VDO_MODE, LCM_FOUR_LANE, RGB888,
+ * VSA/VBP/VFP = 1/43/76, HSA/HBP/HFP = 4/20/26, PLL_CLOCK = 502 MHz.
+ *
+ * LCD bias: dual-output +/-5V charge pump (vendor calls it lp3101,
+ * same part family/address as TPS65132), I2C, addr 0x3E. Exposed here
+ * as avdd/avee regulator supplies.
+ */
+
+#include <linux/backlight.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/regulator/consumer.h>
+
+#include <video/mipi_display.h>
+
+#include <drm/drm_crtc.h>
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_panel.h>
+
+struct ssd2092 {
+	struct drm_panel panel;
+	struct mipi_dsi_device *dsi;
+
+	struct regulator *avdd;
+	struct regulator *avee;
+	struct gpio_desc *reset_gpio;
+	struct backlight_device *backlight;
+
+	bool prepared;
+	bool enabled;
+};
+
+static inline struct ssd2092 *panel_to_ssd2092(struct drm_panel *panel)
+{
+	return container_of(panel, struct ssd2092, panel);
+}
+
+/*
+ * Packet-type dispatch matches the vendor DSI layer exactly
+ * (ddp_dsi.c DSI_set_cmdq_V2): commands >= 0xB0 (manufacturer
+ * registers -- all the analog/booster/gamma configuration) are sent
+ * as GENERIC packets (data ID 0x23/0x29); commands < 0xB0 (standard
+ * MIPI DCS) as DCS packets (0x05/0x15/0x39).  Sending the 0xB0+
+ * registers as DCS makes the panel silently ignore them: init
+ * "succeeds", status reads look sane, but the booster never starts
+ * (RDDPM 0x0a reads 0x1c instead of 0x9c) and the glass stays dark --
+ * root-caused 2026-07-11 after every other host-side difference had
+ * been eliminated.
+ */
+#define ssd2092_dcs(dsi, seq...)					\
+({									\
+	static const u8 d[] = { seq };					\
+	ssize_t ret;							\
+	if (d[0] >= 0xb0)						\
+		ret = mipi_dsi_generic_write(dsi, d, ARRAY_SIZE(d));	\
+	else								\
+		ret = mipi_dsi_dcs_write_buffer(dsi, d, ARRAY_SIZE(d));	\
+	if (ret < 0) {							\
+		dev_err(&(dsi)->dev,					\
+			"DSI write (cmd 0x%02x) failed: %zd\n", d[0], ret); \
+		return ret;						\
+	}								\
+})
+
+/*
+ * Vendor init_setting[] table, converted 1:1 (same commands, same
+ * parameters, same delays). Ends with sleep-out (0x11) + 120 ms and
+ * display-on (0x29) + 50 ms, as the vendor lcm_init() does.
+ */
+static int ssd2092_init_sequence(struct ssd2092 *priv)
+{
+	struct mipi_dsi_device *dsi = priv->dsi;
+
+	ssd2092_dcs(dsi, 0x28);
+	ssd2092_dcs(dsi, 0x10);
+	ssd2092_dcs(dsi, 0xb5, 0x00, 0x00);
+	ssd2092_dcs(dsi, 0xb3, 0x03, 0x96);
+	ssd2092_dcs(dsi, 0xb4, 0x21, 0xff);
+	ssd2092_dcs(dsi, 0xe1, 0x00, 0x00);
+	ssd2092_dcs(dsi, 0xe1, 0x03, 0x00, 0x10);
+	ssd2092_dcs(dsi, 0xb0, 0x04, 0x01);
+	ssd2092_dcs(dsi, 0xb0, 0x07, 0x14);
+	ssd2092_dcs(dsi, 0xc6, 0x04, 0x2d);
+	ssd2092_dcs(dsi, 0xb9, 0x0e, 0x44);
+	ssd2092_dcs(dsi, 0xc1, 0x0c, 0x26);
+	ssd2092_dcs(dsi, 0xc1, 0x08, 0x99);
+	ssd2092_dcs(dsi, 0xb9, 0x23, 0x00);
+	ssd2092_dcs(dsi, 0xc2, 0x04, 0x0f);
+	ssd2092_dcs(dsi, 0xb9, 0x11, 0x22);
+	ssd2092_dcs(dsi, 0xb9, 0x12, 0x22);
+	ssd2092_dcs(dsi, 0xb9, 0x13, 0x22);
+	ssd2092_dcs(dsi, 0xb3, 0x19, 0x0b);
+	ssd2092_dcs(dsi, 0xb0, 0x3d, 0xc8);
+	ssd2092_dcs(dsi, 0xb3, 0x0f, 0x20);
+	ssd2092_dcs(dsi, 0x36, 0x02);
+	ssd2092_dcs(dsi, 0xc7, 0x01, 0x09);
+	ssd2092_dcs(dsi, 0xb3, 0x15, 0x80);
+	ssd2092_dcs(dsi, 0xb3, 0x1e, 0x02);
+	ssd2092_dcs(dsi, 0xb3, 0x14, 0xc0);
+	ssd2092_dcs(dsi, 0xb3, 0x16, 0x50);
+	ssd2092_dcs(dsi, 0xb3, 0x1c, 0xe4);
+	ssd2092_dcs(dsi, 0xb3, 0x28, 0x09);
+	ssd2092_dcs(dsi, 0xb3, 0x24, 0x19);
+	ssd2092_dcs(dsi, 0xb0, 0x12, 0x00);
+	ssd2092_dcs(dsi, 0xb0, 0x13, 0x14);
+	ssd2092_dcs(dsi, 0xb0, 0x1a, 0x00);
+	ssd2092_dcs(dsi, 0xb0, 0x1b, 0x14);
+	ssd2092_dcs(dsi, 0xc1, 0x0d, 0x87);
+	ssd2092_dcs(dsi, 0xc1, 0x0e, 0x87);
+	ssd2092_dcs(dsi, 0xc3, 0x00, 0x10, 0x2e, 0x3e, 0x48, 0x5e, 0x6b, 0x7a, 0x83, 0x97, 0xa3, 0xa8, 0xa5, 0xac, 0xad, 0xb5, 0xc1, 0xc4, 0x4e, 0x4f, 0x59, 0x5a);
+	ssd2092_dcs(dsi, 0xc3, 0x15, 0x10, 0x2e, 0x3e, 0x48, 0x5e, 0x6b, 0x7a, 0x83, 0x97, 0xa3, 0xa8, 0xa5, 0xac, 0xad, 0xb5, 0xc1, 0xc4, 0x4e, 0x4f, 0x59, 0x5a);
+	ssd2092_dcs(dsi, 0xbb, 0x01, 0x8a);
+	ssd2092_dcs(dsi, 0xbb, 0x02, 0x23);
+	ssd2092_dcs(dsi, 0xbb, 0x03, 0xbc);
+	ssd2092_dcs(dsi, 0xbb, 0x04, 0xc0);
+	ssd2092_dcs(dsi, 0xbb, 0x05, 0x19);
+	ssd2092_dcs(dsi, 0xbb, 0x06, 0x37);
+	ssd2092_dcs(dsi, 0xbb, 0x07, 0xee);
+	ssd2092_dcs(dsi, 0xbb, 0x08, 0xdd);
+	ssd2092_dcs(dsi, 0xbb, 0x09, 0xcc);
+	ssd2092_dcs(dsi, 0xbb, 0x0a, 0x36);
+	ssd2092_dcs(dsi, 0xbb, 0x0b, 0x70);
+	ssd2092_dcs(dsi, 0xbb, 0x0c, 0x00);
+	ssd2092_dcs(dsi, 0xbb, 0x0d, 0x8a);
+	ssd2092_dcs(dsi, 0xbb, 0x0e, 0x23);
+	ssd2092_dcs(dsi, 0xbb, 0x0f, 0xbc);
+	ssd2092_dcs(dsi, 0xbb, 0x10, 0xc0);
+	ssd2092_dcs(dsi, 0xbb, 0x11, 0x18);
+	ssd2092_dcs(dsi, 0xbb, 0x12, 0xa7);
+	ssd2092_dcs(dsi, 0xbb, 0x13, 0xee);
+	ssd2092_dcs(dsi, 0xbb, 0x14, 0xdd);
+	ssd2092_dcs(dsi, 0xbb, 0x15, 0xcc);
+	ssd2092_dcs(dsi, 0xbb, 0x16, 0x36);
+	ssd2092_dcs(dsi, 0xbb, 0x17, 0x70);
+	ssd2092_dcs(dsi, 0xbb, 0x18, 0x00);
+	ssd2092_dcs(dsi, 0xbb, 0x31, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x00, 0xf0);
+	ssd2092_dcs(dsi, 0xbd, 0x01, 0xf0);
+	ssd2092_dcs(dsi, 0xbd, 0x02, 0xf0);
+	ssd2092_dcs(dsi, 0xbd, 0x03, 0xf0);
+	ssd2092_dcs(dsi, 0xbd, 0x1a, 0x02);
+	ssd2092_dcs(dsi, 0xbd, 0x1b, 0x24);
+	ssd2092_dcs(dsi, 0xbd, 0x1d, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x1e, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x21, 0x00);
+	ssd2092_dcs(dsi, 0xbd, 0x1f, 0x79);
+	ssd2092_dcs(dsi, 0xbd, 0x20, 0x14);
+	ssd2092_dcs(dsi, 0xbd, 0x22, 0x89);
+	ssd2092_dcs(dsi, 0xbd, 0x23, 0x13);
+	ssd2092_dcs(dsi, 0xbd, 0x24, 0x35);
+	ssd2092_dcs(dsi, 0xbd, 0x26, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x27, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x2a, 0x00);
+	ssd2092_dcs(dsi, 0xbd, 0x28, 0x79);
+	ssd2092_dcs(dsi, 0xbd, 0x29, 0x14);
+	ssd2092_dcs(dsi, 0xbd, 0x2b, 0x89);
+	ssd2092_dcs(dsi, 0xbd, 0x2c, 0x33);
+	ssd2092_dcs(dsi, 0xbd, 0x2d, 0x33);
+	ssd2092_dcs(dsi, 0xbd, 0x2e, 0x11);
+	ssd2092_dcs(dsi, 0xbd, 0x2f, 0x11);
+	ssd2092_dcs(dsi, 0xbd, 0x31, 0x22);
+	ssd2092_dcs(dsi, 0xbd, 0x32, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x33, 0x04);
+	ssd2092_dcs(dsi, 0xbd, 0x34, 0x11);
+	ssd2092_dcs(dsi, 0xbd, 0x35, 0x11);
+	ssd2092_dcs(dsi, 0xbd, 0x37, 0x22);
+	ssd2092_dcs(dsi, 0xbd, 0x38, 0x01);
+	ssd2092_dcs(dsi, 0xbd, 0x39, 0x04);
+	ssd2092_dcs(dsi, 0xbd, 0x3a, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x3b, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x3c, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x3d, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x40, 0xaa);
+	ssd2092_dcs(dsi, 0xbd, 0x42, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x43, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x44, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x45, 0x1e);
+	ssd2092_dcs(dsi, 0xbd, 0x48, 0xaa);
+	ssd2092_dcs(dsi, 0xba, 0x02, 0x05);
+	ssd2092_dcs(dsi, 0xba, 0x03, 0x01);
+	ssd2092_dcs(dsi, 0xbc, 0x1e, 0x71);
+	ssd2092_dcs(dsi, 0xbc, 0x24, 0x83);
+	ssd2092_dcs(dsi, 0xb8, 0x03, 0xa9);
+	ssd2092_dcs(dsi, 0xba, 0x15, 0x41);
+	ssd2092_dcs(dsi, 0xbb, 0x19, 0x8a);
+	ssd2092_dcs(dsi, 0xbb, 0x1a, 0x32);
+	ssd2092_dcs(dsi, 0xbb, 0x1b, 0xbc);
+	ssd2092_dcs(dsi, 0xbb, 0x1c, 0xc2);
+	ssd2092_dcs(dsi, 0xbb, 0x1d, 0x39);
+	ssd2092_dcs(dsi, 0xbb, 0x1e, 0x37);
+	ssd2092_dcs(dsi, 0xbb, 0x1f, 0xee);
+	ssd2092_dcs(dsi, 0xbb, 0x20, 0xdd);
+	ssd2092_dcs(dsi, 0xbb, 0x21, 0xcc);
+	ssd2092_dcs(dsi, 0xbb, 0x22, 0x36);
+	ssd2092_dcs(dsi, 0xbb, 0x23, 0x70);
+	ssd2092_dcs(dsi, 0xbb, 0x24, 0x00);
+	ssd2092_dcs(dsi, 0xbb, 0x25, 0x8a);
+	ssd2092_dcs(dsi, 0xbb, 0x26, 0x32);
+	ssd2092_dcs(dsi, 0xbb, 0x27, 0xbc);
+	ssd2092_dcs(dsi, 0xbb, 0x28, 0xc2);
+	ssd2092_dcs(dsi, 0xbb, 0x29, 0x38);
+	ssd2092_dcs(dsi, 0xbb, 0x2a, 0xa7);
+	ssd2092_dcs(dsi, 0xbb, 0x2b, 0xee);
+	ssd2092_dcs(dsi, 0xbb, 0x2c, 0xdd);
+	ssd2092_dcs(dsi, 0xbb, 0x2d, 0xcc);
+	ssd2092_dcs(dsi, 0xbb, 0x2e, 0x36);
+	ssd2092_dcs(dsi, 0xbb, 0x2f, 0x70);
+	ssd2092_dcs(dsi, 0xbb, 0x30, 0x00);
+	ssd2092_dcs(dsi, 0xb8, 0x15, 0xa2);
+	ssd2092_dcs(dsi, 0xb0, 0x39, 0x00);
+	ssd2092_dcs(dsi, 0xc6, 0x00, 0x03, 0x40);
+	ssd2092_dcs(dsi, 0xb3, 0x18, 0x00);
+	ssd2092_dcs(dsi, 0xba, 0x17, 0x28);
+	ssd2092_dcs(dsi, 0xba, 0x23, 0x15);
+	ssd2092_dcs(dsi, 0xb0, 0x06, 0x2c);
+	ssd2092_dcs(dsi, 0xba, 0x17, 0x28);
+	ssd2092_dcs(dsi, 0xba, 0x23, 0x15);
+	ssd2092_dcs(dsi, 0xba, 0x16, 0x00);
+	ssd2092_dcs(dsi, 0xba, 0x28, 0x02, 0x02);
+	ssd2092_dcs(dsi, 0xba, 0x0f, 0x8c);
+	ssd2092_dcs(dsi, 0xba, 0x10, 0x0c);
+	ssd2092_dcs(dsi, 0xba, 0x11, 0x23);
+	ssd2092_dcs(dsi, 0xba, 0x12, 0x9d, 0x9d, 0x9d);
+	ssd2092_dcs(dsi, 0xba, 0x25, 0x22);
+	ssd2092_dcs(dsi, 0xba, 0x0d, 0x40, 0x02);
+	ssd2092_dcs(dsi, 0xba, 0x2f, 0x8c);
+	ssd2092_dcs(dsi, 0xc2, 0x04, 0x00);
+	ssd2092_dcs(dsi, 0xc2, 0x05, 0xc0);
+	ssd2092_dcs(dsi, 0xb9, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
+	ssd2092_dcs(dsi, 0xba, 0x15, 0x33);
+	ssd2092_dcs(dsi, 0xb9, 0x00, 0x5f, 0x5f, 0x61, 0x0a);
+	ssd2092_dcs(dsi, 0xbd, 0x08, 0x07);
+	ssd2092_dcs(dsi, 0xbd, 0x09, 0x07);
+	ssd2092_dcs(dsi, 0xbc, 0x03, 0x00);
+	ssd2092_dcs(dsi, 0xbc, 0x04, 0x00);
+	ssd2092_dcs(dsi, 0xbc, 0x05, 0x00);
+	ssd2092_dcs(dsi, 0xbc, 0x07, 0x10);
+	ssd2092_dcs(dsi, 0xbc, 0x08, 0x10);
+	ssd2092_dcs(dsi, 0xbc, 0x09, 0x10);
+	ssd2092_dcs(dsi, 0xb9, 0x11, 0x00);
+	ssd2092_dcs(dsi, 0xb9, 0x12, 0x00);
+	ssd2092_dcs(dsi, 0xb9, 0x13, 0x00);
+	ssd2092_dcs(dsi, 0xb9, 0x1d, 0x00);
+	ssd2092_dcs(dsi, 0xb9, 0x1e, 0x00);
+	ssd2092_dcs(dsi, 0xb9, 0x1f, 0x00);
+	ssd2092_dcs(dsi, 0xc2, 0x00, 0x07);
+	ssd2092_dcs(dsi, 0xc1, 0x0b, 0x1f);
+	ssd2092_dcs(dsi, 0xb1, 0x05, 0x2f);
+	ssd2092_dcs(dsi, 0x35, 0x00);
+	ssd2092_dcs(dsi, 0xb0, 0x01, 0x08, 0x70);
+	ssd2092_dcs(dsi, 0xb9, 0x25, 0xa0);
+	ssd2092_dcs(dsi, 0xba, 0x2f, 0xcc);
+	ssd2092_dcs(dsi, 0xc1, 0x02, 0xb0);
+	ssd2092_dcs(dsi, 0xb3, 0x1c, 0xc4);
+	ssd2092_dcs(dsi, 0xb3, 0x1d, 0x80);
+	ssd2092_dcs(dsi, 0xbd, 0x11, 0x02, 0x22);
+	ssd2092_dcs(dsi, 0x36, 0x09);
+	ssd2092_dcs(dsi, 0x11, 0x00);
+	msleep(120);
+	ssd2092_dcs(dsi, 0x29, 0x00);
+	msleep(50);
+
+	/*
+	 * GEMINI-WORKAROUND -> now attempted as a real fix (2026-07-10):
+	 * a static image reliably fades to black over a few seconds;
+	 * continuous framebuffer writes keep it lit and even get brighter
+	 * with update rate.  Neither the vendor init table nor ours sends
+	 * any CABC (Content-Adaptive Backlight Control) command — on many
+	 * mobile panels CABC defaults to *enabled* at power-on unless
+	 * explicitly turned off, dimming static/low-motion content to save
+	 * power.  Android's compositor redraws continuously (status bar
+	 * clock, animations) even on a "static" screen, which would mask
+	 * this by keeping CABC's brightness estimate high — explaining why
+	 * stock Android never shows this and our idle mainline console
+	 * does.  Explicitly disable CABC and force max manual brightness
+	 * via the standard MIPI DCS commands (0x51/0x53/0x55), which
+	 * neither vendor driver sends.
+	 */
+	ssd2092_dcs(dsi, 0x51, 0xff);	/* Write Display Brightness: max */
+	ssd2092_dcs(dsi, 0x53, 0x24);	/* Write CTRL Display: BCTRL+BL on, DD off */
+	ssd2092_dcs(dsi, 0x55, 0x00);	/* Write CABC: off */
+
+	return 0;
+}
+
+static int ssd2092_prepare(struct drm_panel *panel)
+{
+	struct ssd2092 *priv = panel_to_ssd2092(panel);
+	int ret;
+
+	if (priv->prepared)
+		return 0;
+
+	/* Vendor lcm_poweron(): reset asserted while bias comes up. */
+	gpiod_set_value_cansleep(priv->reset_gpio, 1);
+
+	ret = regulator_enable(priv->avdd);
+	if (ret < 0) {
+		dev_err(panel->dev, "failed to enable avdd: %d\n", ret);
+		return ret;
+	}
+
+	ret = regulator_enable(priv->avee);
+	if (ret < 0) {
+		dev_err(panel->dev, "failed to enable avee: %d\n", ret);
+		goto disable_avdd;
+	}
+
+	msleep(20);
+
+	/* Vendor reset dance: release 10 ms, assert 10 ms, release 20 ms. */
+	gpiod_set_value_cansleep(priv->reset_gpio, 0);
+	msleep(10);
+	gpiod_set_value_cansleep(priv->reset_gpio, 1);
+	msleep(10);
+	gpiod_set_value_cansleep(priv->reset_gpio, 0);
+	msleep(20);
+
+	ret = ssd2092_init_sequence(priv);
+	if (ret < 0) {
+		dev_err(panel->dev, "init sequence failed: %d\n", ret);
+		goto disable_avee;
+	}
+
+	priv->prepared = true;
+	return 0;
+
+disable_avee:
+	/* Leave reset asserted so a retry starts from a known state. */
+	gpiod_set_value_cansleep(priv->reset_gpio, 1);
+	regulator_disable(priv->avee);
+disable_avdd:
+	regulator_disable(priv->avdd);
+	return ret;
+}
+
+static int ssd2092_enable(struct drm_panel *panel)
+{
+	struct ssd2092 *priv = panel_to_ssd2092(panel);
+
+	if (priv->enabled)
+		return 0;
+
+	/* Sleep-out and display-on are part of the vendor init table. */
+	if (priv->backlight)
+		backlight_enable(priv->backlight);
+
+	priv->enabled = true;
+	return 0;
+}
+
+static int ssd2092_disable(struct drm_panel *panel)
+{
+	struct ssd2092 *priv = panel_to_ssd2092(panel);
+	struct mipi_dsi_device *dsi = priv->dsi;
+
+	if (!priv->enabled)
+		return 0;
+
+	if (priv->backlight)
+		backlight_disable(priv->backlight);
+
+	/* Vendor lcm_suspend_setting: display off, 50 ms, sleep in, 120 ms. */
+	mipi_dsi_dcs_set_display_off(dsi);
+	msleep(50);
+	mipi_dsi_dcs_enter_sleep_mode(dsi);
+	msleep(120);
+
+	priv->enabled = false;
+	return 0;
+}
+
+static int ssd2092_unprepare(struct drm_panel *panel)
+{
+	struct ssd2092 *priv = panel_to_ssd2092(panel);
+
+	if (!priv->prepared)
+		return 0;
+
+	gpiod_set_value_cansleep(priv->reset_gpio, 1);
+	msleep(10);
+
+	regulator_disable(priv->avee);
+	regulator_disable(priv->avdd);
+
+	priv->prepared = false;
+	return 0;
+}
+
+/*
+ * Timing from the vendor KERNEL video-mode LCM driver
+ * (aeon_ssd2092_fhd_dsi_solomon.c: HFP=26 HSA=4 HBP=20, VFP=76 VSA=1
+ * VBP=43, PLL_CLOCK=502 -> 1004 Mbps/lane -> pixclk 1004e6*4/24 =
+ * 167333 kHz, ~65 Hz).  Earlier revisions reverse-engineered timings
+ * from LK's register dump instead (VSA=3 VBP=15 VFP=10, 880 Mbps) --
+ * but LK drives this panel in COMMAND mode for its one-shot splash, so
+ * its video porch registers are leftovers that don't apply; using them
+ * produced folded lines and loss of sync (builds #136/#105-#111,
+ * boot.md).  The vendor kernel values gave the first stable fbcon on
+ * glass (build #138, banner #122, 2026-07-12).
+ */
+static const struct drm_display_mode ssd2092_mode = {
+	.clock		= 167333,
+	.hdisplay	= 1080,
+	.hsync_start	= 1080 + 26,
+	.hsync_end	= 1080 + 26 + 4,
+	.htotal		= 1080 + 26 + 4 + 20,
+	.vdisplay	= 2160,
+	.vsync_start	= 2160 + 76,
+	.vsync_end	= 2160 + 76 + 1,
+	.vtotal		= 2160 + 76 + 1 + 43,
+	.width_mm	= 68,
+	.height_mm	= 136,
+};
+
+static int ssd2092_get_modes(struct drm_panel *panel,
+			     struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	mode = drm_mode_duplicate(connector->dev, &ssd2092_mode);
+	if (!mode)
+		return -ENOMEM;
+
+	drm_mode_set_name(mode);
+	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
+	drm_mode_probed_add(connector, mode);
+
+	connector->display_info.width_mm = ssd2092_mode.width_mm;
+	connector->display_info.height_mm = ssd2092_mode.height_mm;
+
+	return 1;
+}
+
+static const struct drm_panel_funcs ssd2092_panel_funcs = {
+	.prepare	= ssd2092_prepare,
+	.enable		= ssd2092_enable,
+	.disable	= ssd2092_disable,
+	.unprepare	= ssd2092_unprepare,
+	.get_modes	= ssd2092_get_modes,
+};
+
+static int ssd2092_probe(struct mipi_dsi_device *dsi)
+{
+	struct device *dev = &dsi->dev;
+	struct ssd2092 *priv;
+	int ret;
+
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->dsi = dsi;
+	mipi_dsi_set_drvdata(dsi, priv);
+
+	priv->avdd = devm_regulator_get(dev, "avdd");
+	if (IS_ERR(priv->avdd))
+		return dev_err_probe(dev, PTR_ERR(priv->avdd), "avdd regulator\n");
+
+	priv->avee = devm_regulator_get(dev, "avee");
+	if (IS_ERR(priv->avee))
+		return dev_err_probe(dev, PTR_ERR(priv->avee), "avee regulator\n");
+
+	priv->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(priv->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->reset_gpio), "reset gpio\n");
+
+	priv->backlight = devm_of_find_backlight(dev);
+	if (IS_ERR(priv->backlight))
+		return dev_err_probe(dev, PTR_ERR(priv->backlight), "backlight\n");
+
+	drm_panel_init(&priv->panel, dev, &ssd2092_panel_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
+
+	drm_panel_add(&priv->panel);
+
+	dsi->lanes = 4;
+	dsi->format = MIPI_DSI_FMT_RGB888;
+	/*
+	 * LK's working TXRX_CTRL is 0x0001003c: EOT packets enabled (bit 6
+	 * DIS_EOT clear) and HS clock allowed into LP between transmissions
+	 * (bit 16 HSTX_CKLP_EN set).  mtk_dsi's DIS_EOT handling is inverted
+	 * relative to the flag name: it sets DIS_EOT unless the panel asks
+	 * for MIPI_DSI_MODE_NO_EOT_PACKET — so NO_EOT_PACKET here *enables*
+	 * EOT on the wire, and CLOCK_NON_CONTINUOUS sets HSTX_CKLP_EN,
+	 * making the register bit-identical to LK's.
+	 */
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET |
+			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
+
+	ret = mipi_dsi_attach(dsi);
+	if (ret < 0) {
+		dev_err(dev, "failed to attach DSI: %d\n", ret);
+		drm_panel_remove(&priv->panel);
+		return ret;
+	}
+
+	dev_info(dev, "Solomon SSD2092 FHD DSI panel registered\n");
+	return 0;
+}
+
+static void ssd2092_remove(struct mipi_dsi_device *dsi)
+{
+	struct ssd2092 *priv = mipi_dsi_get_drvdata(dsi);
+
+	mipi_dsi_detach(dsi);
+	drm_panel_remove(&priv->panel);
+}
+
+static const struct of_device_id ssd2092_of_match[] = {
+	{ .compatible = "solomon,ssd2092" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ssd2092_of_match);
+
+static struct mipi_dsi_driver ssd2092_driver = {
+	.probe  = ssd2092_probe,
+	.remove = ssd2092_remove,
+	.driver = {
+		.name = "panel-solomon-ssd2092",
+		.of_match_table = ssd2092_of_match,
+	},
+};
+module_mipi_dsi_driver(ssd2092_driver);
+
+MODULE_AUTHOR("Ben Hamilton <ben@wakatipu.co>");
+MODULE_DESCRIPTION("Solomon SSD2092 FHD DSI panel (Gemini PDA)");
+MODULE_LICENSE("GPL");

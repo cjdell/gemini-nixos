@@ -125,17 +125,19 @@ in
   # /run/booted-system/kernel-modules, where modprobe/udev look for
   # /lib/modules/$(uname -r)).
   #
-  # PHASE (rootfs-only port): the kernel is BORROWED from the working
-  # GeminiPDA bring-up (kernel #329, 6.6.0-00048-g188aade698dd) — see
-  # kernel-borrowed.nix for the vendored artifacts (kernel payload, DTB,
-  # module tree, sramldo-smc.ko) and the exact reasons the in-tree
-  # ./kernel build is not used yet (stale pin 733c0c7ea; 225 MB source
-  # rebuild; vermagic mismatch with the borrowed modules). Everything
-  # boot-critical (mmc block, ext4, ...) is =y in the bring-up config;
-  # GPU/display/wifi modules (panfrost, mtk_wcn, wlan_gen3, rtw88_*)
-  # are loaded in stage-2 from the borrowed module tree on the rootfs.
+  # SELF-CONTAINED kernel (2026-09-08 — the borrow is retired): built
+  # from the published Linux v6.6 base + the tracked bring-up delta
+  # (kernel/default.nix; source model per docs/library-deltas.md). The
+  # source content equals the on-glass kernel #329 tree
+  # (geminipda-bringup @ 188aade69), so this is the same kernel the
+  # bring-up validated, rebuilt in-nix; uname -r is the self-consistent
+  # "6.6.0" (no git in the source), and sramldo-smc is built in-tree
+  # with matching vermagic. Everything boot-critical (mmc block, ext4,
+  # ...) is =y in the config; GPU/wifi modules (panfrost, mtk_wcn,
+  # wlan_gen3, rtw88_*) are =m, loaded in stage-2 from this kernel's
+  # module tree.
   mobile.boot.stage-1.kernel = {
-    package = pkgs.callPackage ./kernel-borrowed.nix { };
+    package = pkgs.callPackage ./kernel { };
     modular = false;
   };
 

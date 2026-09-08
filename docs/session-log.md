@@ -5,6 +5,74 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 — Kernel SELF-CONTAINED + LEAN: published-base + delta-tree source model; borrow retired; kernel now builds in-nix (aarch64) in ~6 min
+
+**Goal reached:** the rootfs no longer borrows kernel #329 artifacts from
+GeminiPDA — the kernel builds in-repo from the published Linux **v6.6**
+base + a tracked file-tree delta, and the config is now a pruned
+**device-minimal** config. First lean self-built kernel build:
+
+    linux-6.6.0            /nix/store/cgi059k6lsg14vgd5jl288kjxjp9c5w2-linux-6.6.0
+    Image.gz 8,016,646 B   sha256 ace1a67874347d1257f2d4aa28a2d25378f87a6fb117db5af097f6a30ae0addf
+    DTB (mt6797-gemini-pda.dtb) sha256 462e7140d6f1a819acf9a06543b1758b9269c7d89bc912f6edc29ff65b2b22b1
+                           ^ byte-IDENTICAL to the borrowed #329 DTB (cmp, 2026-09-08)
+    release 6.6.0 (moddir 6.6.0); 388 modules (was 1165); sramldo-smc.ko vermagic 6.6.0
+
+Source model (kernel/default.nix, docs/library-deltas.md):
+- **base** = kernel.org linux-6.6.tar.gz fetched by hash (sha256-PIj/…);
+  byte-identical to `git archive v6.6` of the fork (ffc253263a…). Same
+  commit pinned as a git submodule at `kernel/base` (read-only pointer,
+  `git submodule update --init --depth 1 kernel/base` to fetch).
+- **delta** = `devices/planet-geminipda/kernel/delta/` — the 512 plain
+  files (457 A + 55 M, 0 D/R) the bring-up line changes over v6.6;
+  copy-replace is exact: v6.6+delta == geminipda-bringup@188aade69
+  (the #329 tree) — verified byte-for-byte. NO patch files (repo rule:
+  agents edit source). Regenerate with `bin/sync-kernel-delta.sh`
+  (replaces bin/snapshot-kernel.sh; no more 225 MB tarball).
+- **config** = lean (default): `bin/prune-kernel-config.sh` from
+  `config.full-329` (the exact #329 config, kept for A/B). Prune drops
+  hardware that can never exist: 51 foreign ARCH_* (only ARCH_MEDIATEK),
+  ACPI/EFI/XEN/KVM/PCI/ATA/SATA/NVMe/UFS, media/DVB, BT/NFC/CAN/
+  802.15.4, vendor HID/touch/DRM (panfrost-only chain kept), foreign
+  SoC clk/pinctrl/gpio/mfd/regulator/phy/rtc/leds/nvmem/iio/etc,
+  crypto accelerators, DEBUG_INFO+lockdep. Result: 4,213 → 2,876
+  textual → 1,655 enabled after the builder's olddefconfig cascade
+  (=y 3,083→1,400, =m 1,021→~250). All 79 keep-symbols verified
+  present post-normalization. Rule-5 gate now also asserts the config
+  (eval-time, regex-free line scan — builtins.match on the 288 KB file
+  stack-overflows the evaluator, found 2026-09-08).
+
+Nix-build fixes discovered (all in kernel/default.nix; the delta stays
+byte-identical to the fork):
+- mediatek-connectivity Makefiles emit RELATIVE -I$(src)… — fine for
+  the fork's in-tree builds, broken under the mobile-nixos O= build
+  (wmt_core.c lost osal_typedef.h). postPatch anchors them on
+  $(srctree).
+- CONFIG_EXTRA_FIRMWARE_DIR in both configs pointed at an absolute
+  GeminiPDA host path; now "firmware" (relative → $(srctree)/firmware)
+  with the ROMv3 blobs staged into the tree at src-assembly from
+  pkgs/gemini-firmware/ (tracked in-repo).
+- gpio-aw9523b (keyboard expander) uses gpio_chip.irq, which needs
+  CONFIG_GPIOLIB_IRQCHIP — a promptless select-only bool the #329
+  config got from other (now-pruned) gpio drivers. postPatch adds the
+  select to the fork Kconfig entry.
+- sandbox quirk: `mkdir $out/firmware` AFTER the tar+cp steps got
+  EACCES on the aarch64 builder; creating it FIRST works.
+
+Timing: lean kernel builds in ~6 min total on the 192.168.49.191
+builder (the full-config build had not finished drivers at the ~8.5 min
+mark when it failed). Payload 13.47 → 8.02 MB (Image.gz); boot.img
+headroom ~1.3 MiB → ~6.5 MiB. Module tree 388 .ko (~288 MB unstripped;
+strip/DEBUG_INFO follow-up considered).
+
+NOT flashed. The kernel is unverified on glass (as is any rebuild):
+next step = build boot.img from the flake, boot with para=boot-recovery
+sticky discipline (bin/flash-nixos.sh), A/B vs the current #329 image;
+keep kernel/borrowed + config.full-329 until then (rollback). Also
+still owed: docs sweep (README “Kernel phase”, AGENTS M5/M1 rows,
+library-deltas kernel entry, .gitignore snapshot comments) — partially
+done this session.
+
 ## 2026-09-08 — Handover completed: native-aarch64 MERGED into main (native build model canonical); LXQt desktop first on glass (gen8); two repo bugs fixed on the way
 
 Handover (`docs/handover-2026-09-07-lxqt-native.md`) closed out + the

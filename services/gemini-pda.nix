@@ -17,8 +17,8 @@
 #                        docs/repartition-android-space.md §5)
 #   gemini-wdt-reboot    device-side reboot that self-boots (WDT EXRST)
 #
-# Kernel prerequisites (all in devices/planet-geminipda/kernel/config.aarch64
-# and the DTS): CONFIG_DEVMEM, I2C_CHARDEV + I2C_DESIGNWARE (i2c0 charger,
+# Kernel prerequisites (all in devices/planet-geminipda/kernel/config
+# and the delta DTS): CONFIG_DEVMEM, I2C_CHARDEV + I2C_DESIGNWARE (i2c0 charger,
 # i2c6 DA9214 @0x1100e000, i2c7 RT5735 @0x11010000), CHARGER_BQ25890.
 # sramldo-smc.ko is built by the kernel derivation's postInstall hook and
 # shipped in the module tree (extra/); boot.kernelModules loads it at boot.

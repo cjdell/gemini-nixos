@@ -6,19 +6,13 @@ result*
 logs/
 stock-dump/
 
-# Vendored source tarballs — too large for git; see kernel/README.md
-# (regenerate with bin/snapshot-kernel.sh). The snapshot script registers
-# the file with `git add -Nf` (intent-to-add) so nix 2.34's
-# tracked-files-only source export sees it WITHOUT the content ever being
-# committed.
-#
-# Mesa used to be vendored here too (mesa/mesa-25.0.7.tar.gz +
-# bin/snapshot-mesa.sh); since 2026-09-07 the mesa base is fetched by
-# hash from the published upstream archive instead (docs/library-deltas.md)
-# — only the delta patch is tracked.
-#
-# EXCEPTION: kernel/borrowed/ is tracked (small, ~14 MB: the working
-# bring-up kernel payload + DTB + module tree + sramldo-smc.ko + config
-# of kernel #329 — the rootfs build needs them and the source commit is
-# local-only, not fetchable; see kernel-borrowed.nix).
+# Vendored source tarballs — too large for git; historically the kernel
+# snapshot + mesa archives. BOTH RETIRED 2026-09-08: mesa's base is
+# fetched by hash (pkgs/mesa-geminipda.nix), and the kernel builds from
+# the published v6.6 tarball + the tracked delta tree
+# (devices/planet-geminipda/kernel/delta/) — no in-repo source archives
+# remain. kernel/borrowed/ stays tracked (small, ~14 MB) as the
+# pre-2026-09-08 #329 reference until the self-built kernel is
+# glass-verified; the submodule content at kernel/base is fetched on
+# demand (`git submodule update --init --depth 1 kernel/base`).
 *.tar.gz
