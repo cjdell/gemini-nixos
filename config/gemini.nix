@@ -319,6 +319,7 @@ in
     # (swap for vim/neovim if preferred).
     pkgs.git
     pkgs.micro
+    pkgs.ripgrep  # on-the-go add (gen30 demo, 2026-09-08)
   ];
 
   # ICD manifest discovery: the compiled-in libglvnd scan list is
