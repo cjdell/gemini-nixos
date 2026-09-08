@@ -45,6 +45,7 @@ cargo check && cargo test` (hardware-free unit tests only; keep
 | `power status\|watch\|charge\|dim-to-charge` | `power` | — |
 | `guard run\|status` | `battery-guard.sh` | `gemini-battery-guard` |
 | `a72 up [cpu8\|cpu9\|both]`, `a72 down […], a72 status` | `cl2-up.sh`, `cl2-down.sh` | `gemini-a72-up` |
+| `sleep on\|off\|status\|key` | — (new; the light clamshell sleep — see docs/power-sleep.md) | **`gemini-sleepd`** (2026-09-08) |
 | `gpu poweron\|status` | `gemini-gpu-poweron.sh` | `gemini-gpu-poweron` |
 | `wdt-reboot [SECS]` | `gemini-wdt-reboot` | `gemini-wdt-reboot` |
 | `boot status\|recovery\|debian\|nixos [--no-reboot]` | `gemini-boot-recovery`, `gemini-boot-debian` | those units |
@@ -60,6 +61,27 @@ PipeWire session). They manage daemons and card state rather than
 device registers; the migration doc will treat them separately.
 
 ## Semantics & access model
+
+### `sleep` (added 2026-09-08 (7th), ON GLASS — the silver-button sleep/wake)
+
+`gemcli sleep on|off|status|key` — the reversible LIGHT clamshell sleep
+(no kernel suspend — see docs/power-sleep.md for the full investigation
+and the deep-sleep follow-up). `on`: stop the heavyweight services that
+were running (gemwl/LXQt, pipewire/wireplumber/pipewire-pulse,
+gemini-wifi-internal/auto — internal wifi gets a real CONSYS chip
+power-down via `wifi-internal stop`, since the oneshot units have no
+ExecStop), offline A53 cpus 1..7 (cpu0 stays), backlight off
+(`bl_power=4`; brightness retained), and unbind the clamshell input
+drivers — the gpio-matrix-keypad platform device `keyboard` and the
+novatek-nt36xxx i2c client `4-0062` — so the closed lid's key presses
+produce no input. `mt6351-keys` stays bound: KEY_SLEEP is the wake
+button. State (services stopped / cpus offlined / backlight %) is
+recorded in `/run/gemcli-sleep.state` (tmpfs) and `off` reverses it
+(re-inputs → backlight → cpus → services, services async).
+`key` watches the mt6351-keys evdev node (found by scanning
+/sys/class/input names, not a hardcoded eventN) and toggles on KEY_SLEEP
+press (value==1); it backs `gemini-sleepd.service` (enabled at boot,
+Restart=always). Exit codes 0 ok / 1 failure; idempotent both ways.
 
 Same runtime access as the scripts — no new kernel features:
 - **Registers**: `/dev/mem` mmap (busybox-devmem equivalent; kernel has

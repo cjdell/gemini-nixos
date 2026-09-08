@@ -171,6 +171,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | Stage-2 system config (headless + g_ether SSH, services, mesa fork, systemd-BPF/cudaLLVM overlays) | `config/gemini.nix` |
 | SoC fragment (out-of-tree MT6797) | `modules/hardware-soc-mediatek-mt6797.nix` |
 | Device services: GPU poweron / A72-up / battery-guard / WDT reboot | `services/gemini-pda.nix`, `services/scripts/` |
+| **Silver-button clamshell sleep/wake** — light sleep (backlight/cpus/inputs/services off) + KEY_SLEEP daemon; deep-sleep (s2idle) follow-up | `services/gemini-pda.nix` (`gemini-sleepd`) + `pkgs/gemcli/src/sleep.rs` + **`docs/power-sleep.md`** |
 | Audio (PipeWire S16 path), Wi-Fi (CONSYS+USB), desktop (gemwl), **LXQt nested (labwc → lxqt-session)** | `services/audio.nix`, `services/wifi.nix`, `services/desktop.nix`, `services/lxqt.nix` (+ `services/scripts/start-lxqt-nested`, `config/lxqt/`) |
 | Keyboard layouts — VT console map + desktop xkb: console `console.keyMap` (config/gemini.nix); desktop layout "gemini" packaged as an xkbcommon include dir and wired into the gemwl/lxqt-nested units via `XKB_CONFIG_EXTRA_PATH` (+ `XKB_DEFAULT_LAYOUT=gemini`) | `config/keymaps/gemini-uk.map`, `config/xkb/symbols/gemini`, `pkgs/gemini-xkb.nix` |
 | **Rust device-control CLI** (backlight/battery/guard/a72/wdt/boot/gpu/speaker; script-parity; units NOT flipped until the on-glass `selfcheck` pass) | `pkgs/gemcli.nix` + `pkgs/gemcli/`; migration plan + parity recipe: `docs/gemcli.md` |

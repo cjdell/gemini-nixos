@@ -28,6 +28,7 @@ mod gpu;
 mod guard;
 mod i2c;
 mod power;
+mod sleep;
 mod speaker;
 mod status;
 mod sysfs;
@@ -110,6 +111,14 @@ enum Cmd {
     Speaker {
         #[command(subcommand)]
         cmd: SpkCmd,
+    },
+    /// Clamshell sleep / wake — the silver side-button mechanism
+    /// (backlight off, A53 cpus 1-7 offline, keyboard+touch inputs
+    /// disabled, heavyweight services stopped; fully reversible). No
+    /// kernel suspend is involved — see pkgs/gemcli/src/sleep.rs.
+    Sleep {
+        #[command(subcommand)]
+        cmd: SleepCmd,
     },
     /// One-shot aggregate device status (best-effort)
     Status,
@@ -231,6 +240,19 @@ enum BootCmd {
 }
 
 #[derive(Subcommand)]
+enum SleepCmd {
+    /// Enter the light sleep (idempotent)
+    On,
+    /// Wake from the light sleep (idempotent)
+    Off,
+    /// Current sleep state + what a toggle would touch
+    Status,
+    /// Watch the silver side button (KEY_SLEEP) and toggle sleep — the
+    /// gemini-sleepd daemon entry (foreground, runs until killed)
+    Key,
+}
+
+#[derive(Subcommand)]
 enum SpkCmd {
     /// Enable the built-in speaker amps (pads 243/244 high)
     On,
@@ -241,6 +263,12 @@ enum SpkCmd {
 }
 
 fn main() {
+    // Default Rust ignores SIGPIPE, so a write to a closed pipe (e.g.
+    // `gemcli … | head`) panics with a Broken-pipe backtrace instead of
+    // dying quietly. Reset to the OS default: EPIPE then kills the
+    // process silently (rc 141), which is right for both CLI pipes and
+    // the sleepd daemon's journal stdout.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     let cli = Cli::parse();
     let rc = match cli.cmd {
         Cmd::Backlight { cmd } => backlight_cmd(cmd),
@@ -253,6 +281,12 @@ fn main() {
         Cmd::WdtReboot { secs } => wdt_cmd(secs),
         Cmd::Boot { cmd } => boot_cmd(cmd),
         Cmd::Speaker { cmd } => speaker_cmd(cmd),
+        Cmd::Sleep { cmd } => match cmd {
+            SleepCmd::On => sleep::on(),
+            SleepCmd::Off => sleep::off(),
+            SleepCmd::Status => sleep::status(),
+            SleepCmd::Key => sleep::key(),
+        },
         Cmd::Status => {
             status::status_cmd();
             0

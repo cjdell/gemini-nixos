@@ -197,6 +197,7 @@ rules, the 10 % backlight-default unit, and hand-started
 | `gemini-wifi-internal` | Internal MT6630 CONSYS stack: mtk_wcn + wlan_gen3 (load order matters, B-33) + the WMT pwr-on → wlan0. Runs after `gemini-gpu-poweron` (the CONSYS chip's chrdev, major 226, collides with the GPU's if the wlan modules probe first) |
 | `gemini-wifi-auto` | `wifi auto`: associate with the strongest saved profile (`/etc/wifi/profiles.conf`) + dhcpcd lease; silent no-op without profiles |
 | `wifi` / `wifi-internal` | CLIs: USB RTL8821CU dongle (scan/connect/networks/forget) and the internal CONSYS stack (start/status/stop) |
+| **`gemini-sleepd.service`** | **Silver side-button sleep/wake daemon (2026-09-08, docs/power-sleep.md)**: `gemcli sleep key` owns the button (KEY_SLEEP on mt6351-keys) and toggles the LIGHT sleep — backlight off, A53 cpus 1-7 offline, keyboard-matrix + touch drivers unbound (the closed lid presses the keys), heavyweight services stopped (gemwl/LXQt, pipewire, CONSYS wifi via `wifi-internal stop`). sshd + battery-guard + sleepd stay. No kernel suspend yet (no s2idle wake source — deep sleep = PMIC/kernel follow-up) |
 | **`gemcli`** | **Rust consolidation of the device CLIs (2026-09-08, docs/gemcli.md)**: backlight/battery/charger/power/guard/a72/gpu/wdt-reboot/boot/speaker + `status` + read-only `selfcheck` parity harness. In the closure next to the scripts; units NOT flipped yet |
 
 `sramldo-smc.ko` is loaded at boot via `boot.kernelModules` (the

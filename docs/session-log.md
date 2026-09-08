@@ -5,6 +5,75 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (7th) — POWER-SAVING INVESTIGATION + SILVER-BUTTON SLEEP/WAKE ON GLASS (gens 22–24): `gemcli sleep on|off|status|key` light clamshell sleep (backlight off, A53 cpus 1-7 offline, keyboard+touch unbound, services stopped) + `gemini-sleepd.service` KEY_SLEEP daemon — two full sleep/wake round-trips verified; deep-sleep (s2idle) documented as kernel follow-up
+
+Asked-for: investigate power savings (backlight, cores incl. the A53s,
+anything else) so the device draws as little battery current as
+possible, kill keyboard input while the closed clamshell presses the
+keys, and wire the silver side button (mt6351-keys KEY_SLEEP) as
+sleep/wake. Outcome: an awake LIGHT sleep is implemented, verified on
+glass and now owned by the silver button; TRUE deep sleep needs a
+suspend wake source (PMIC/pwrap INT kernel work — no flash happened,
+no kernel change). Version lines (rule 0): gemcli 0.1.0 (same crate
+version; new subcommands). Gens 22→23→24
+`girqg7wp8` → `ip3432lw` → `zbyzpwc` (current). Kernel unchanged 6.6.0
+lean; boot partition untouched (pure package/system deploys via
+bin/deploy.sh). Device left: AWAKE, gen24, desktop+wifi+audio up,
+backlight 10 %, battery fast-charging ~4.08 V, para clear.
+
+**Investigation receipts (docs/power-sleep.md).** The unit still has NO
+suspend/resume path: `/sys/power/state` = freeze/mem(s2idle) exists and
+CONFIG_SUSPEND=y, but nothing can WAKE s2idle — the side keys are
+PMIC-debounced bits in TOPSTATUS 0x220 POLLED by mt6351-keys over
+pwrap (no IRQ route in mainline; vendor 3.18 wakes via the PMIC INT →
+pwrap EINT status), and the kernel boots clk_ignore_unused /
+pd_ignore_unused / regulator_ignore_unused. Power ladder on glass
+(USB 500 mA input, ICHGR charge-current proxy, 50 mA ADC steps):
+backlight 100 % → off recovers ≥150 mA@5 V (at 100 % the battery
+discharges even at full input — vbat 4084→3984); desktop/gemwl idle,
+pipewire, CONSYS wifi, and A53 cpus 1-7 each measure ≤50 mA (at/below
+ADC resolution). Awake floor with everything off ≈ 400 mA@4 V ≈ 1.6 W
+(LCD TDDI panel logic stays on — fbcon kernel can't blank the panel,
+rule 5; no cpufreq driver for MT6797; no A53-cluster power-down path).
+
+**Implementation (docs/gemcli.md §sleep + pkgs/gemcli/src/sleep.rs).**
+`gemcli sleep on`: stop the heavyweight services that were running
+(gemwl/lxqt-nested, pipewire/wireplumber/pipewire-pulse,
+gemini-wifi-internal/auto), power the CONSYS chip down via
+`wifi-internal stop` (the oneshot units have no ExecStop), offline A53
+cpus 1-7 (cpu0 stays), backlight off (bl_power=4, brightness kept),
+unbind the clamshell input drivers (matrix-keypad platform `keyboard`
++ novatek-nt36xxx i2c `4-0062`) so the closed lid's key presses make
+no input, and record everything in /run/gemcli-sleep.state. `off`
+reverses (rebind → backlight → cores → services async). `key` scans
+/sys/class/input for the mt6351-keys evdev node (not a hardcoded
+eventN), watches for KEY_SLEEP value==1 and toggles — it backs the new
+enabled `gemini-sleepd.service` (Restart=always; sshd + battery-guard +
+sleepd itself are never stopped). SIGPIPE reset to SIG_DFL in main()
+so `gemcli … | head` dies quietly instead of panicking (Broken pipe,
+seen during testing).
+
+**On-glass verification.** Full round-trip ×2 via ssh (no button
+needed): sleep → cpu online=0, bl_power=4, kbd/touch driver dirs
+empty, all 7 units inactive, wlan0 gone (CONSYS powered down), state
+file correct, rc=0. Wake → cpus 0-7, bl_power=0, inputs rebound,
+services active, wlan0 re-associated (auto still activating a few
+seconds), state cleared. **Bug found + fixed during testing:** the
+wifi chip power-down was skipped because `systemctl stop --no-block`
+raced the `is-active` check (wlan0 stayed up through sleep) — capture
+active-ness BEFORE stopping. The "wifi-internal: pwr-off failed
+(modules stay loaded)" verdict during sleep is the known whole-chip-
+reset no-op (legacy receipt); wlan0 disappearing confirms the teardown.
+
+**Not done this session (next steps):** (1) the physical silver-button
+press test is the user's (daemon verified watching event3; toggle logic
+verified via ssh commands — a real press is the last check); (2) deep
+sleep = kernel follow-up: wire the PMIC HOMEKEY/PWRKEY INT → pwrap
+INT_EN → wake-capable IRQ so mt6351-keys can wake s2idle, then probe
+s2idle entry (WDT-escaped) and drop the clk/pd/regulator_ignore_unused
+flags for the suspend path — recipes in docs/power-sleep.md §Deep
+sleep. Host gc-pin: toplevel-20260909-sleepd.
+
 ## 2026-09-08 (6th) — GEMCLI ON GLASS (gens 16–21): deployed via deploy.sh, selfcheck ALL PASS, battery/backlight/charger parity byte-identical, a72 up/down round-trip verified — gpio v1 ioctl bug found (v6.6 renumbering) + host disk-full incident
 
 The (5th) entry's next step: get gemcli onto the device. Version

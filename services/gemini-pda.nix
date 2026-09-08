@@ -270,4 +270,33 @@ in
       pkgs.systemd
     ];
   };
+
+  # Silver side-button SLEEP/WAKE (2026-09-09 — docs/power-sleep.md).
+  # The clamshell has no suspend path yet (no wake source for s2idle —
+  # the PMIC side keys are polled, not IRQ-driven); this daemon owns
+  # the button and toggles the LIGHT sleep: `gemcli sleep on|off`
+  # (pkgs/gemcli/src/sleep.rs) powers down everything controllable
+  # while the kernel stays up — backlight off, A53 cpus 1-7 offline,
+  # keyboard matrix + touch unbound (the closed lid presses the keys —
+  # unbound they generate nothing), heavyweight services stopped
+  # (gemwl/LXQt, pipewire, CONSYS wifi via wifi-internal stop).
+  # mt6351-keys itself stays bound: KEY_SLEEP is the wake button.
+  # sshd + gemini-battery-guard are never stopped.
+  #
+  # The daemon is deliberately NOT in sleep's stop list (it must
+  # survive to hear the wake press). Restart=always: a crashed watcher
+  # should not strand the device asleep. Run the toggle by hand with
+  # `gemcli sleep on|off`; the button press is the intended UI.
+  systemd.services.gemini-sleepd = {
+    description = "Gemini PDA silver-button sleep/wake daemon (gemcli sleep key)";
+    after = [ "multi-user.target" ];
+    wantedBy = [ "multi-user.target" ];
+    path = [ pkgs.systemd ]; # systemctl resolution for sleep.rs orchestration
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${gemcli}/bin/gemcli sleep key";
+      Restart = "always";
+      RestartSec = "3";
+    };
+  };
 }
