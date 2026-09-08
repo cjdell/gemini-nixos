@@ -5,6 +5,65 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (2nd) — INTERNAL WI-FI (MT6630 CONSYS) WORKING ON NIXOS: wlan0 up, "The Lab" connected, internet ~4.5 ms — the wifi half of handover-2026-09-08-wifi-keyboard is DONE (gens 11-14)
+
+Executed `docs/handover-2026-09-08-wifi-keyboard.md` §2 (wifi
+workstream; keyboard §3 was the first session of the day — gen10). All
+three boot units now pass: nvram → internal → auto. Kernel unchanged
+`6.6.0 #1-mobile-nixos`; no flash, four config-only deploys via
+`bin/deploy.sh`: gen11 `ggb0ni0n…`, gen12 `hgakgh7jw…`, gen13
+`2qlbx6cb…`, gen14 `zf71qrycr…` (current).
+
+Root causes fixed (all confirmed on glass):
+- **R15 (wifi.nix nvram unit, handover §2a):** the unit's ExecStart was a
+  multi-line `/bin/sh -c '…'` Nix string — systemd parsed the literal
+  newlines as unit directives → bad-setting on EVERY boot since c6afc5c
+  (verified: journal "Invalid section header '[ -e
+  /etc/wifi/profiles.conf …'"). /data/nvram/APCFG/APRDEB/WIFI and
+  /etc/wifi/profiles.conf were never installed → wlan_gen3 probe died on
+  nvram_read. Fix: `wifiStateInstall` = pkgs.writeShellScript (unit file
+  stays single-line; embeds the firmware + profiles seed store paths).
+- **/lib/firmware (wifi.nix, handover §2b):** wlan_gen3's kalFirmwareOpen
+  walks a HARDCODED path list (/storage/sdcard0, /vendor/firmware,
+  /lib/firmware) — kernel file-open, not request_firmware; none existed
+  on NixOS. Fix: `systemd.tmpfiles.rules = [ "L+ /lib/firmware - - - -
+  /run/current-system/firmware" ]` + wifi-internal
+  `After=systemd-tmpfiles-setup.service`. Verified: dmesg "[wlan]MAC
+  address: 00:09:34:5a:af:c1" (factory NVRAM record), "wlanProbe ok",
+  "FW OWN" — the factory MAC + TX cal load.
+- **NEW NixOS-specific root cause (services/scripts/wifi, gens 12-14):**
+  with the two fixes in, wlan0 came up and ASSOCIATED (iw link: "The
+  Lab", RSSI -42) but `wifi auto`/`wpa_cli` always failed
+  ("Failed to connect to non-global ctrl_ifname … Invalid argument") and
+  the auto-connect never got a lease. The wifi CLI was ported verbatim
+  from Debian (ctrl_interface=/var/run/wpa_supplicant), but this nixpkgs
+  wpa_supplicant is built with the **unprivileged-daemon.patch**, whose
+  wpa_cli HARDCODES ctrl dir `/run/wpa_supplicant/control` and client
+  dir `/run/wpa_supplicant/client` — and refuses to run without the
+  latter (strace: it only `access()`es …/client, never even calls
+  socket()). Debug trail: python dgram probes + a copied aarch64 strace
+  7.2 (Pi → host → device nix copy) → the patched source in the pinned
+  nixpkgs (`pkgs/os-specific/linux/wpa_supplicant/
+  unprivileged-daemon.patch`). Fix: write_wpa_conf emits
+  `ctrl_interface=/run/wpa_supplicant/control`; wpa_ensure mkdirs
+  `…/control` + `…/client`, kills stale daemons via the pid file, drops
+  the ctrl dirs, and verifies wpa_cli connectivity 1 s after start (fail
+  loudly instead of polling empty for 45 s).
+- Verified on glass (gen14, units restarted by the switch in boot
+  order): all three units active/Result=success; `wpa_cli -i wlan0
+  status`: ssid=The Lab, freq 5180 (5 GHz), key_mgmt=WPA2-PSK,
+  **wpa_state=COMPLETED**, ip_address=192.168.49.166, addr
+  00:09:34:5a:af:c1; `ping -I wlan0 1.1.1.1` ~4.5 ms (2/2). One cosmetic
+  journal note: dhcpcd's "Failed to set DNS configuration … resolve1 …
+  unknown unit" (no systemd-resolved; resolv.conf is system-managed —
+  harmless).
+
+Next: cold-boot persistence check owed (the deploy-switch restart
+exercises the same unit chain; a real power cycle confirms tmpfiles
+creates /lib/firmware + unit ordering — do it when the user next
+reboots), then the handover's remaining keyboard on-glass typing check
+(Fn+K @, shift+3 £) + a `wifi auto` connect test at boot.
+
 ## 2026-09-08 — DESKTOP KEYBOARD MAPPINGS + SHELL fixed on glass (gen10): symbols/gemini shipped into the closure; gemwl + labwc now compile layout "gemini"; explicit bash login shell + SHELL for the session
 
 Worked `docs/handover-2026-09-08-wifi-keyboard.md` §3 (keyboard xkb

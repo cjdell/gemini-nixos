@@ -21,9 +21,10 @@ lean 6.6.0 is on glass, desktop verified; see its session-log entry).
 
 ## 1. Current device state (gen9, lean 6.6.0 — this session's baseline)
 
-> **Updated 2026-09-08:** gen10 `y7v5z1sg…` deployed (keyboard xkb +
-> shell fixes below); the baseline facts here (input inventory, kernel
-> pairing, wifi root causes) are unchanged by that deploy.
+> **Updated 2026-09-08 (2nd session):** gen14 `zf71qrycr…` deployed —
+> the wifi workstream (§2a/2b + the NEW §2d userside root cause) and
+> the keyboard xkb + shell fixes are all done and on glass; the input
+> inventory + kernel pairing facts below are unchanged by those deploys.
 
 - p32 `userdata`: NixOS **gen9** `r2mr8hf2l3k7l3029yhb8dgc27i7m84g-…`,
   booted on the self-built kernel **`6.6.0 #1-mobile-nixos`**; para
@@ -71,6 +72,14 @@ shell in a `pkgs.writeShellScript` / the utils package, or use
 `ExecStart = lib.concatStringsSep " " […]`); then `deploy.sh deploy`
 and verify the unit starts + the file lands in `/data/…` on next boot.
 
+**DONE (2026-09-08, gen11 — session log entry):** `wifiStateInstall` =
+`pkgs.writeShellScript` (embeds the firmware + profiles store paths)
+replaces the multi-line ExecStart in `services/wifi.nix` (R15). On
+glass: `systemd-analyze verify` clean, unit active, and
+`/data/nvram/APCFG/APRDEB/WIFI` + `/etc/wifi/profiles.conf` exist on
+every start; the wlan_gen3 probe now reads the factory record (MAC
+00:09:34:5a:af:c1 + TX cal).
+
 ### 2b. wlan_gen3 probe fails on two missing files (dmesg, this boot)
 
 ```
@@ -95,12 +104,13 @@ wlan_gen3's own RAM-code open fails. Legacy Debian satisfied it by
 installing the blobs into `/lib/firmware/`
 (GeminiPDA `build/rootfs-files/wifi-consys/install-wifi-consys.sh`).
 
-Fix direction: make `/lib/firmware` resolve to the firmware dir on
-NixOS — e.g. `systemd.tmpfiles.rules = [ "L+ /lib/firmware - - - - /run/current-system/firmware" ]`
-(or an activation script). The blobs (`WIFI_RAM_CODE_6797`,
-`ROMv3_patch_1_{1,0}_hdr.bin`, `WMT_SOC.cfg`) are already in the
-closure via `hardware.firmware` (`/run/current-system/firmware` shows
-all of them). Then re-test `wifi-internal start`; expect wlan0.
+**DONE (2026-09-08, gen11):** `systemd.tmpfiles.rules = [ "L+ /lib/firmware - - - - /run/current-system/firmware" ]`
+in `services/wifi.nix` + wifi-internal `After=systemd-tmpfiles-setup.service`.
+The blobs (`WIFI_RAM_CODE_6797`, `ROMv3_patch_1_{1,0}_hdr.bin`,
+`WMT_SOC.cfg`) are in the closure via `hardware.firmware`
+(`/run/current-system/firmware` shows all of them). On glass after the
+fix: dmesg "[wlan]MAC address: 00:09:34:5a:af:c1" + "wlanProbe ok" +
+"FW OWN" — wlan0 appears.
 
 ### 2c. After 2a+2b: re-test and re-diagnose the "deep CONSYS" claim
 
@@ -112,6 +122,45 @@ still fails, THEN escalate to the CONSYS deep-dive with this boot's
 dmesg as the new baseline (docs/wifi-consys.md receipts in GeminiPDA
 cover the full vendor init sequence that was made reliable there —
 Build B2/B-33/B-34/B-35 gates G2a-G2c).
+
+**RESOLVED (2026-09-08, gens 11-14):** the "deep CONSYS" claim is dead.
+After 2a+2b the kernel stack comes up clean (wlan0, factory MAC, "FW
+OWN") and the remaining failures were all USERSIDE in the wifi CLI —
+see the NEW root cause 2d below. wlan0 connected to "The Lab" (5 GHz,
+WPA2) with a DHCP lease + internet on gen14.
+
+### 2d. NEW (2026-09-08): the nixpkgs wpa_supplicant re-layout breaks the Debian-port wifi CLI
+
+With 2a+2b fixed, wlan0 appeared and ASSOCIATED (iw link: "The Lab",
+RSSI -42) but `wifi auto` never connected: wpa_cli failed with
+"Failed to connect to non-global ctrl_ifname … Invalid argument" on
+every poll, and the CLI's 45 s wait loop timed out while the radio WAS
+associated. Debug trail (full session-log receipts): python dgram
+probes, a copied aarch64 strace 7.2, and reading the pinned nixpkgs
+source showed the cause is NOT the device or the vendor driver:
+
+- this nixpkgs wpa_supplicant 2.11 is built with
+  `pkgs/os-specific/linux/wpa_supplicant/unprivileged-daemon.patch`,
+  which hardcodes in wpa_cli: ctrl dir `/run/wpa_supplicant/control`
+  and client dir `/run/wpa_supplicant/client` (defaults changed from
+  Debian's `/var/run/wpa_supplicant`);
+- the patched wpa_cli `access()`es `/run/wpa_supplicant/client` FIRST
+  and refuses to proceed when it is missing — it never even calls
+  socket() (strace-verified), so the Debian-style invocation
+  (`ctrl_interface=/var/run/wpa_supplicant`, no client dir) could never
+  work regardless of daemon health;
+- the daemon's own socket was always fine (a correctly bound ctrl
+  socket / replied to a python replication of the 2.11
+  bind-client-socket-then-connect flow). Earlier "stale socket / inode
+  mismatch" theories were red herrings (stat inodes on tmpfs differ
+  from /proc/net/unix sockfs inode numbers for the SAME socket).
+
+Fix (services/scripts/wifi, gens 12-14): write_wpa_conf now emits
+`ctrl_interface=/run/wpa_supplicant/control`; wpa_ensure creates
+`…/control` + `…/client`, kills a stale daemon via its pid file and
+drops the ctrl dirs before every start (tmpfs + pkill/restart cycles
+leave stale sockets otherwise), and verifies `wpa_cli status` 1 s after
+start (fail loudly instead of a silent 45 s timeout).
 
 ## 3. Keyboard mappings — root cause (xkb layout missing from closure)
 
@@ -191,15 +240,13 @@ start — no kernel change):
 
 ## 5. Run plan (next session)
 
-1. ~~Fix the nvram unit (§2a)~~ ⬜ still open (not touched this session) — single-line ExecStart (script in the
-   utils package or writeShellScript). `deploy.sh deploy`; on the
-   device: `systemd-analyze verify` clean, unit active, and
-   `ls /data/nvram/APCFG/APRDEB/WIFI /etc/wifi/profiles.conf` exist.
-2. ~~Fix `/lib/firmware` (§2b)~~ ⬜ still open (not touched this session) — tmpfiles symlink to the firmware dir.
-   `deploy.sh deploy`; then `bash bin/device-ssh.sh
-   'wifi-internal start'` — expect wlan0 (30 s wait). If it appears:
-   `wifi auto` against a saved profile or wpa_supplicant manual
-   connect; log the result (see §2c if it does not).
+1. ~~Fix the nvram unit (§2a)~~ ✅ **DONE 2026-09-08 (gen11)** —
+   writeShellScript ExecStart (R15); unit clean + files present on
+   glass.
+2. ~~Fix `/lib/firmware` (§2b)~~ ✅ **DONE 2026-09-08 (gen11)** —
+   tmpfiles symlink + ordering; wlan0 up with the factory MAC on glass.
+   Also fixed the NEW §2d userside root cause (gens 12-14) → wifi auto
+   connects: "The Lab" WPA2, DHCP 192.168.49.166, internet ~4.5 ms.
 3. ~~Ship the xkb layout (§3)~~ ✅ **DONE 2026-09-08 (gen10)** — see
    §3 DONE note; remaining = user on-glass typing check.
 4. ~~Default shell bash~~ ✅ **DONE 2026-09-08 (gen10)** —
@@ -207,7 +254,13 @@ start — no kernel change):
    (`config/gemini.nix`) + `SHELL=` on the lxqt-nested unit
    (`services/lxqt.nix`); `/etc/passwd` + unit env verified on glass.
 5. Record version lines + outcomes in `docs/session-log.md`
-   (per rule 0) and update this doc's state. → done (entry 2026-09-08).
+   (per rule 0) and update this doc's state. → done (entries
+   2026-09-08 + 2026-09-08 2nd).
+
+Remaining (not session-blocking): cold-boot wifi persistence check
+(unit chain + tmpfiles /lib/firmware at a real power cycle), the user's
+on-glass typing check (Fn+K `@`, shift+3 `£`), and a dongle/USB-wifi
+re-check (rtw88 path untouched by these fixes).
 
 ## 6. References
 

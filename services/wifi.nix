@@ -54,6 +54,25 @@ let
     pkgs.procps # pkill
     utils
   ];
+
+  # Wi-Fi state-install script run by gemini-wifi-nvram below. R15
+  # [2026-09-08]: the ExecStart MUST be this single script — the first
+  # port wrote the whole `/bin/sh -c '…'` body as a multi-line Nix
+  # string, and systemd parsed each physical line as a new unit
+  # directive ("Invalid section header '[ -e /etc/wifi/profiles.conf ]
+  # …'"), so the unit came up bad-setting on EVERY boot since c6afc5c:
+  # the factory NVRAM (MAC + TX cal) and /etc/wifi/profiles.conf were
+  # never installed, and wlan_gen3's probe then died on the missing
+  # /data/nvram/APCFG/APRDEB/WIFI (dmesg "[wlan]nvram_read: failed to
+  # open!!"). writeShellScript keeps the unit file single-line; the
+  # script embeds the firmware store path + the repo's profiles seed.
+  wifiStateInstall = pkgs.writeShellScript "gemini-wifi-state-install" ''
+    set -e
+    mkdir -p /data/nvram/APCFG/APRDEB
+    cp -f ${firmware}/nvram/WIFI /data/nvram/APCFG/APRDEB/WIFI
+    mkdir -p /etc/wifi
+    [ -e /etc/wifi/profiles.conf ] || cp ${../etc/wifi/profiles.conf} /etc/wifi/profiles.conf
+  '';
 in
 {
   # The kernel firmware_class path is pointed at this by nixpkgs
@@ -87,6 +106,21 @@ in
     utils # wifi, wifi-internal CLIs
   ];
 
+  # wlan_gen3's kalFirmwareOpen does NOT use request_firmware — the
+  # driver walks a HARDCODED path list (/storage/sdcard0,
+  # /vendor/firmware, /lib/firmware) with kernel file-open, and none of
+  # the three exist on NixOS. The blobs are already in the closure via
+  # hardware.firmware (exposed at /run/current-system/firmware — the
+  # WMT/ROMv3 request_firmware leg loads fine from there), so point
+  # /lib/firmware at that tree (L+ recreates the symlink even if a
+  # previous generation left something in the way). The live switch
+  # needs `systemctl restart systemd-tmpfiles-setup` (or reboot) for the
+  # symlink to appear. [2026-09-08, handover-2026-09-08-wifi-keyboard
+  # §2b]
+  systemd.tmpfiles.rules = [
+    "L+ /lib/firmware - - - - /run/current-system/firmware"
+  ];
+
   systemd.services.gemini-wifi-nvram = {
     description = "Wi-Fi state install (factory NVRAM + profile seed)";
     # /data is a tmpfs, so the factory NVRAM record (MAC + TX cal) is
@@ -100,14 +134,7 @@ in
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = "yes";
-      ExecStart =
-        ''/bin/sh -c '
-          set -e
-          mkdir -p /data/nvram/APCFG/APRDEB
-          cp -f ${firmware}/nvram/WIFI /data/nvram/APCFG/APRDEB/WIFI
-          mkdir -p /etc/wifi
-          [ -e /etc/wifi/profiles.conf ] || cp ${../etc/wifi/profiles.conf} /etc/wifi/profiles.conf
-        ' '';
+      ExecStart = "${wifiStateInstall}";
     };
     path = [ pkgs.coreutils pkgs.bash ];
   };
@@ -115,8 +142,11 @@ in
   systemd.services.gemini-wifi-internal = {
     description = "Internal Wi-Fi (MT6630 CONSYS) stack bring-up";
     # mtk_wcn + wlan_gen3 + WMT pwr-on -> wlan0. GPU power-on first (the
-    # major-226 chrdev collision, see header).
-    after = [ "systemd-modules-load.service" "gemini-gpu-poweron.service" ];
+    # major-226 chrdev collision, see header). After tmpfiles too: the
+    # /lib/firmware symlink (wlan_gen3's hardcoded firmware path, see
+    # the tmpfiles rule above) must exist before the probe reads the RAM
+    # code.
+    after = [ "systemd-modules-load.service" "systemd-tmpfiles-setup.service" "gemini-gpu-poweron.service" ];
     before = [ "gemini-wifi-auto.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {

@@ -43,7 +43,14 @@ check_if() {
 write_wpa_conf() {
     mkdir -p "$RUN"
     {
-        echo "ctrl_interface=/var/run/wpa_supplicant"
+        # NixOS port delta [2026-09-08]: this nixpkgs wpa_supplicant is
+        # built with the unprivileged-daemon patch, whose wpa_cli
+        # hardcodes ctrl dir /run/wpa_supplicant/control + client dir
+        # /run/wpa_supplicant/client (it refuses to run without the
+        # latter — "…/client: No such file or directory"). Debian's
+        # /var/run/wpa_supplicant layout never works here, so bind the
+        # per-iface ctrl socket where the patched wpa_cli looks.
+        echo "ctrl_interface=/run/wpa_supplicant/control"
         echo "update_config=1"
         # no crda/regdb on this rootfs -> let the kernel default to the
         # "world" regulatory domain
@@ -67,9 +74,30 @@ wpa_ensure() {
     ip link set "$IF" up 2>/dev/null
     if ! wpa_cli -i "$IF" status >/dev/null 2>&1; then
         write_wpa_conf
+        # NixOS port delta [2026-09-08]: /var/run is tmpfs on NixOS and
+        # wpa_supplicant does NOT create its ctrl_interface dir; worse,
+        # the ctrl socket + pid file go STALE across our pkill/restart
+        # cycles (a daemon killed via pkill or a pid-lock collision
+        # leaves its socket file; the next instance then fails to bind
+        # or orphans its own socket and every wpa_cli poll times out
+        # while the radio IS associated). Also, the nixpkgs wpa_cli
+        # needs the patched layout (see write_wpa_conf): the per-iface
+        # ctrl dir AND the client-socket dir must exist before the
+        # daemon starts. Start from a clean slate every time: kill any
+        # stale daemon via its pid file, drop pid file + ctrl dirs,
+        # recreate them.
+        [ -f "$WPA_PID" ] && kill "$(cat "$WPA_PID" 2>/dev/null)" 2>/dev/null || :
+        sleep 0.5
+        rm -f "$WPA_PID"
+        rm -rf "$RUN/wpa_supplicant"
+        mkdir -p "$RUN/wpa_supplicant/control" "$RUN/wpa_supplicant/client"
         wpa_supplicant -B -i "$IF" -c "$WPA_CONF" -P "$WPA_PID" \
             || die "wpa_supplicant failed to start (dmesg?)"
         sleep 1
+        # The daemon must expose its ctrl socket for the status polls
+        # below; fail loudly instead of silently timing out 45 s later.
+        wpa_cli -i "$IF" status >/dev/null 2>&1 \
+            || die "wpa_supplicant running but ctrl iface unreachable"
     fi
 }
 
