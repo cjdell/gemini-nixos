@@ -66,22 +66,30 @@ device registers; the migration doc will treat them separately.
 
 `gemcli sleep on|off|status|key` — the reversible LIGHT clamshell sleep
 (no kernel suspend — see docs/power-sleep.md for the full investigation
-and the deep-sleep follow-up). `on`: stop the heavyweight services that
-were running (gemwl/LXQt, pipewire/wireplumber/pipewire-pulse,
-gemini-wifi-internal/auto — internal wifi gets a real CONSYS chip
-power-down via `wifi-internal stop`, since the oneshot units have no
-ExecStop), offline A53 cpus 1..7 (cpu0 stays), backlight off
-(`bl_power=4`; brightness retained), and unbind the clamshell input
-drivers — the gpio-matrix-keypad platform device `keyboard` and the
-novatek-nt36xxx i2c client `4-0062` — so the closed lid's key presses
-produce no input. `mt6351-keys` stays bound: KEY_SLEEP is the wake
-button. State (services stopped / cpus offlined / backlight %) is
-recorded in `/run/gemcli-sleep.state` (tmpfs) and `off` reverses it
-(re-inputs → backlight → cpus → services, services async).
-`key` watches the mt6351-keys evdev node (found by scanning
-/sys/class/input names, not a hardcoded eventN) and toggles on KEY_SLEEP
-press (value==1); it backs `gemini-sleepd.service` (enabled at boot,
-Restart=always). Exit codes 0 ok / 1 failure; idempotent both ways.
+and the deep-sleep follow-up). Responsiveness contract (v2,
+2026-09-08): the backlight goes off FIRST (instant press feedback) and
+the whole transition is ~1-2 s — nothing blocks on the CONSYS chip
+teardown. `on`: backlight off (`bl_power=4`; brightness retained),
+unbind the clamshell input drivers — the gpio-matrix-keypad platform
+device `keyboard` and the novatek-nt36xxx i2c client `4-0062` — so the
+closed lid's key presses produce no input, offline A53 cpus 1..7
+(cpu0 stays), stop the heavyweight services that were running
+(gemwl/LXQt, pipewire/wireplumber/pipewire-pulse), and take wifi down
+fast (`ip link set <iface> down` + kill wpa_supplicant/dhcpcd — the
+CONSYS chip STAYS powered; the WMT `echo off` teardown stalls ~29 s
+and the RemainAfterExit wifi units have no ExecStop, so stopping them
+never stopped wifi anyway). `mt6351-keys` stays bound: KEY_SLEEP is
+the wake button. State (services stopped / cpus offlined / backlight %
+/ wifi was on) is recorded in `/run/gemcli-sleep.state` (tmpfs) and
+`off` reverses it visible-first (backlight on → rebind inputs → cpus
+→ services async + `wifi auto` via a unit RESTART — plain start is a
+no-op on the still-active oneshot). `key` watches the mt6351-keys
+evdev node (found by scanning /sys/class/input names, not a hardcoded
+eventN), toggles on KEY_SLEEP press (value==1), debounces presses
+(1 s — one physical press = one toggle) and drains events queued
+while a toggle ran (no mash cascade); it backs
+`gemini-sleepd.service` (enabled at boot, Restart=always). Exit codes
+0 ok / 1 failure; idempotent both ways.
 
 Same runtime access as the scripts — no new kernel features:
 - **Registers**: `/dev/mem` mmap (busybox-devmem equivalent; kernel has

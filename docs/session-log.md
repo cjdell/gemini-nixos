@@ -5,6 +5,61 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-08 (8th) — BUTTON SLUGGISHNESS FIXED (v2, gens 25–26): instant backlight-first sleep/wake (~1-2 s each way), wifi chip teardown removed from the button path (~29 s stall → iface down + daemon kill), press debounce + queue drain in the sleepd daemon — full cycle re-verified on glass incl. wifi re-association
+
+User report: the silver button was "very sluggish" — press once =
+nothing, press a few more times = the backlight flickered on/off at
+~1 s intervals. Root causes found in the sleepd journal (two bugs):
+
+1. **~29 s stall in the sleep path when wifi was up**: the sleepd
+   journal showed `stopping … gemini-wifi-auto` at :44 then ASLEEP
+   only at :13 — the gap is `wifi-internal stop` = `echo off >
+   /sys/kernel/debug/wcn/pwr` blocking ~29 s in the kernel when the
+   chip is fully associated (the WMT whole-chip teardown). The
+   backlight (the only visible effect) came LAST in the v1 sequence,
+   so the press appeared dead for ~30 s → the user pressed again…
+2. **Queued presses cascaded**: each press toggled only after the
+   previous ~1-30 s toggle finished, so a flurry of presses produced
+   rapid sleep/wake/sleep at ~1 s cadence (the flicker) — and the
+   rapid stop/start cycling tripped gemwl's start rate limit
+   (`start-limit-hit` → failed, needed reset-failed).
+
+Also learned: the gemini-wifi-* units are RemainAfterExit oneshots
+with no ExecStop — `systemctl stop` on them does NOT kill the
+wpa_supplicant they spawned (wifi survives a unit stop; only the
+`echo off` chip teardown actually stopped it, which is why wlan0
+disappeared in the v1 tests).
+
+**v2 fix (pkgs/gemcli/src/sleep.rs, gens 25-26):**
+
+- `sleep on` reordered: backlight off FIRST (instant visible
+  acknowledgement), then inputs unbind, cpus 1-7 offline, services
+  stop, wifi fast-down (`ip link set wlan0 down` + pkill wpa_supplicant
+  + the iface's dhcpcd — the CONSYS chip STAYS powered; the ~29 s
+  `echo off` teardown is gone from the button path). Total ~1-2 s
+  worst case, backlight in the first ~50 ms.
+- `sleep off` reordered the same way (backlight on first); wake
+  re-associates by RESTARTING gemini-wifi-auto.service (a plain
+  `start` was a no-op — the RemainAfterExit unit stayed "active"
+  through sleep). `systemctl start` in the wake path now reset-failed
+  first (gemwl start-limit recovery).
+- `sleep key` (the daemon): 1 s press debounce (one physical press =
+  one toggle even if the polled driver double-reports) + drain of any
+  events queued while a toggle ran — mashing can no longer cascade.
+
+On-glass re-verification (gen26): `time gemcli sleep on` = 2.1 s
+(backlight off in the first ms; wifi down, wpa dead while asleep),
+`time gemcli sleep off` = 1.1 s; wifi re-associated + DHCP
+(192.168.49.166) after wake; desktop/audio services all back; asleep
+soak ichgr 150 mA (best yet — v1's wifi unit-stop left the radio
+alive). Version lines: gemcli 0.1.0; toplevel
+`m96fkx88…-nixos-system-gemini` (gc-pinned toplevel-20260909-sleepd).
+Kernel untouched. Device left: AWAKE, gen26, desktop + wifi up,
+backlight 10 %.
+
+Next: user physical press test on the new daemon (the fix is verified
+via ssh toggles; the debounce/drain live path needs a real finger).
+
 ## 2026-09-08 (7th) — POWER-SAVING INVESTIGATION + SILVER-BUTTON SLEEP/WAKE ON GLASS (gens 22–24): `gemcli sleep on|off|status|key` light clamshell sleep (backlight off, A53 cpus 1-7 offline, keyboard+touch unbound, services stopped) + `gemini-sleepd.service` KEY_SLEEP daemon — two full sleep/wake round-trips verified; deep-sleep (s2idle) documented as kernel follow-up
 
 Asked-for: investigate power savings (backlight, cores incl. the A53s,

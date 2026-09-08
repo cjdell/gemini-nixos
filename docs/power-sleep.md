@@ -22,6 +22,21 @@ the desktop.
   (services/gemini-pda.nix) that owns the button. It powers down every
   controllable load while the kernel stays up; the same button wakes it.
   No kernel change, no flash — a normal package/system deploy.
+- **Responsiveness (v2, same day — the button must feel instant):**
+  `sleep on` turns the backlight off FIRST (the visible acknowledgement
+  that the press registered) and the whole transition is ~1-2 s.
+  Nothing blocks on the CONSYS chip teardown: the WMT `echo off` stalls
+  ~29 s with the chip associated (observed on glass), so sleep takes
+  the wifi interface down + kills wpa_supplicant/dhcpcd instead (chip
+  powered but idle) and wake re-associates via `wifi auto`. The
+  `sleep key` daemon debounces presses (1 s — one physical press = one
+  toggle even if the polled driver double-reports) and drains events
+  queued while a toggle ran, so mashing the button can no longer
+  cascade into rapid sleep/wake/sleep backlight flicker (the v1 bug:
+  a ~30 s sleep stall made the user press repeatedly; each queued
+  press toggled after the stall at ~1 s cadence, and the rapid
+  stop/start cycling tripped gemwl's start rate limit — wake now
+  `reset-failed`s units before starting them).
 - Measured effect (USB 500 mA input, ICHGR charge-current proxy —
   50 mA ADC steps): backlight is the dominant controllable load (100 %
   → off ≈ ≥150 mA@5 V, and at 100 % the battery discharges even at the
@@ -32,37 +47,43 @@ the desktop.
 
 ## What the light sleep does (`gemcli sleep on`)
 
-Order matters (heavy userspace first, so the core offlining and input
-unbinds land on a settled system):
+Order matters — the VISIBLE step first, everything else fast (~1-2 s
+worst case total, nothing blocks on the wifi chip):
 
-1. **Heavyweight services stopped** (only those actually running, the
-   list is recorded): `gemwl.service` + `lxqt-nested.service` (the GPU
-   desktop), `pipewire/wireplumber/pipewire-pulse` (audio),
-   `gemini-wifi-internal/auto`. Internal wifi additionally gets a real
-   chip power-down: `wifi-internal stop` (the oneshot units have no
-   ExecStop; `systemctl stop` alone leaves the CONSYS CONN domain
-   powered — wifi.nix header B-33). `sshd` + `gemini-battery-guard` +
-   `gemini-sleepd` STAY (control link, the safety daemon, the wake
-   button).
-2. **A53 cpus 1..7 offlined** (cpu0 must run the kernel). The A72
+1. **Backlight off** (`bl_power=4`/PWM EN=0). FIRST — this is the
+   instant acknowledgement that the press registered. The brightness
+   value is retained, so wake restores exactly.
+2. **Clamshell input drivers unbound** — the closed-lid fix: the
+   gpio-matrix-keypad platform device (`keyboard`) and the
+   novatek-nt36xxx touch i2c client (`4-0062`) are unbound, so the keys
+   the lid presses generate no events and no wakeups. `mt6351-keys`
+   (silver) is deliberately NOT unbound — it is the wake button.
+3. **A53 cpus 1..7 offlined** (cpu0 must run the kernel). The A72
    cluster (cpu8/9) is already off in the default cold-boot state — the
    sleep never touches it. Per-core offline is the safe PSCI path (the
    cl2-down receipts); the A53 *cluster* power-down (below) is not
    wired.
-3. **Backlight off** (`bl_power=4`/PWM EN=0). The brightness value is
-   retained, so wake restores exactly.
-4. **Clamshell input drivers unbound** — this is the closed-lid fix:
-   the gpio-matrix-keypad platform device (`keyboard`) and the
-   novatek-nt36xxx touch i2c client (`4-0062`) are unbound, so the keys
-   the lid presses generate no events and no wakeups. `mt6351-keys`
-   (silver) is deliberately NOT unbound — it is the wake button.
-5. **State recorded** in `/run/gemcli-sleep.state` (tmpfs — a reboot
+4. **Heavyweight services stopped** (only those actually running, the
+   list is recorded): `gemwl.service` + `lxqt-nested.service` (the GPU
+   desktop), `pipewire/wireplumber/pipewire-pulse` (audio). `sshd` +
+   `gemini-battery-guard` + `gemini-sleepd` STAY (control link, the
+   safety daemon, the wake button).
+5. **Wifi down — fast**: `ip link set <iface> down` + kill
+   wpa_supplicant + the iface's dhcpcd. The CONSYS chip itself stays
+   powered (radio firmware idles): the WMT `echo off` teardown stalls
+   ~29 s with the chip associated (observed 2026-09-08), far too slow
+   for a button — and stopping the RemainAfterExit wifi units alone
+   does NOT stop wifi (no ExecStop; wpa_supplicant survives). Wake
+   re-associates by RESTARTING gemini-wifi-auto (`wifi auto` — its
+   clean-slate wpa_ensure restarts the daemon from scratch).
+6. **State recorded** in `/run/gemcli-sleep.state` (tmpfs — a reboot
    clears it and boots awake): services stopped, cpus offlined,
-   backlight %.
+   backlight %, wifi was on.
 
-`gemcli sleep off` reverses: rebind inputs → backlight on → online the
-recorded cpus → start the recorded services (async — the visible wake is
-backlight + cores; the desktop comes back in the background).
+`gemcli sleep off` reverses, again visible first: backlight on →
+rebind inputs → online the recorded cpus → start the recorded services
++ `wifi auto` (async — the visible wake is backlight + cores; the
+desktop comes back in the background).
 
 `gemcli sleep key` is the daemon entry (`gemini-sleepd.service`, enabled
 at boot, Restart=always): it reads `/dev/input/eventN` for mt6351-keys
