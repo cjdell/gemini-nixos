@@ -32,6 +32,11 @@ in
     # pwr-on) + USB RTL8821CU dongle auto-connect + factory NVRAM
     # (ported from the verified GeminiPDA bring-up).
     ../services/wifi.nix
+    # Bluetooth: MT6630 CONSYS hci_stp stack as a persistent service —
+    # bluetoothd on the system bus (hardware.bluetooth at this pin),
+    # hci0 module bring-up, bluez CLIs + blueman GUI (bring-up story:
+    # docs/bluetooth-bringup.md).
+    ../services/bluetooth.nix
     # Phase 4 (preview): gemwl — the wlroots-0.18 compositor that owns
     # the LK framebuffer (/dev/gemfb, GPU-direct), with tinytest smoke
     # clients + the pinned wlroots 0.18.2 (pkgs/gemwl.nix,

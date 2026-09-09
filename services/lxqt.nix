@@ -89,7 +89,13 @@ let
     lxqt.pavucontrol-qt # audio volume GUI (PipeWire/Pulse)
     lxqt.lxqt-qtplugin # the LXQt Qt platform theme (QT_QPA_PLATFORMTHEME)
     lxqt.lxqt-themes # the Clearlooks look (lxqt.conf theme=)
-  ];
+  ]
+  # blueman (GTK BT manager + applet) rides the session when the BT
+  # stack is on: its etc/xdg/autostart/blueman.desktop is scanned by
+  # lxqt-session via XDG_CONFIG_DIRS below (the applet needs the SNI
+  # tray — config/lxqt/panel.conf adds the statusnotifier plugin), and
+  # its binaries land on the session PATH for the autostart Exec=.
+  ++ lib.optional config.hardware.bluetooth.enable pkgs.blueman;
 
   qtMods = [ qt.qtbase qt.qtwayland qt.qtsvg ];
 
@@ -106,6 +112,7 @@ let
     mkdir -p $out/lxqt $out/labwc $out/Desktop
     cp ${../config/lxqt/lxqt.conf} $out/lxqt/lxqt.conf
     cp ${../config/lxqt/session.conf} $out/lxqt/session.conf
+    cp ${../config/lxqt/panel.conf} $out/lxqt/panel.conf
     cp ${../config/lxqt/labwc-rc.xml} $out/labwc/rc.xml
     cp ${../config/lxqt/labwc-autostart} $out/labwc/autostart
     cp ${../config/lxqt/themerc} $out/themerc

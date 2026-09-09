@@ -5,6 +5,74 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09m — BLUETOOTH GUI + CLI TOOLS: persistent bluetoothd on the system bus, bluetoothctl + blueman-manager/applet on glass (gens 52-53; config-only, no kernel/boot.img change)
+
+Task: "continue the bluetooth effort; we need gui and cli tools working".
+Closed bring-up follow-up #1 (persistent bluetoothd/dbus wiring) and
+put a real GUI + CLI stack on glass:
+
+**Config (all in services/bluetooth.nix, imported from config/gemini.nix):**
+- `hardware.bluetooth.enable` — the nixpkgs option at this pin. The
+  bring-up doc's claim that `services.bluetooth` "does not exist in this
+  MNX eval" was HALF-RIGHT: the option was RENAMED to hardware.bluetooth
+  before this rev (the services.* alias is gone); the MNX eval DOES
+  import the full nixpkgs module list (mobile-nixos lib/release-tools.nix
+  evalWith: ../modules/module-list.nix ++ nixos/modules/module-list.nix).
+  Enabling it wires bluetoothd (dbus-org.bluez.service alias) + bluez in
+  systemPackages (bluetoothctl/btmgmt/hciconfig/hcitool on PATH) + dbus
+  policy (bluez joins services.dbus.packages) + /etc/bluetooth/main.conf.
+- `gemini-bt-hci.service` — modprobe hci_stp at boot (After=
+  gemini-wifi-internal; the module tree ships it in current-system:
+  drivers/misc/mediatek-connectivity/drv_bt/hci_stp.ko).
+- `systemd.targets.bluetooth.wantedBy = [multi-user.target]` — bluetoothd
+  starts at boot.
+- **Privacy = off** (main.conf) — WITHOUT it the daemon's AutoEnable
+  power-on fails at boot: bluez 5.87 runs mgmt set-privacy during the
+  auto-power path and the MT6630 rejects it ("Failed to set privacy:
+  Rejected (0x0b)") -> Powered: no after every reboot (interactive
+  `bluetoothctl power on` always worked). Verified with a manual
+  `bluetoothd -f` test conf first, then baked in. gen53.
+
+**On glass (gen52 vgqzphxbk1qlg5lgfjdsx3pc67wls4r1, gen53
+lryfqqadq05zzvmva8bwzb3svqmda53y — config-only deploys via deploy.sh, no
+kernel/boot.img change):**
+- bluetooth.service ACTIVE, owns org.bluez on the SYSTEM bus (dbus-
+  broker). Legacy bring-up test daemons (gemini-bt-bus/gemini-btd
+  systemd-run transients on the permissive private bus) STOPPED.
+- **Boot path: Powered: yes with NO manual step** (AutoEnable after the
+  Privacy=off fix). Alias "gemini". hci0 UP RUNNING, br/edr + le.
+- **CLI**: `bluetoothctl show` / `power on` / `scan on` -> Discovery
+  started / Discovering: yes, 0 STP timeouts; btmgmt/hciconfig/hcitool
+  all on PATH.
+- **GUI**: blueman 2.4.6 (cache-healthy at the pin — 254-path closure
+  on cache.nixos.org, rule 9). `blueman.desktop` autostart picked up by
+  lxqt-session via /run/current-system/sw/etc/xdg/autostart; applet + a
+  NEW separate blueman-tray process run in the session. The panel had NO
+  tray plugin -> added [statusnotifier] to panel.conf (live + seeded in
+  config/lxqt/panel.conf via start-lxqt-nested). Verified objectively:
+  StatusNotifierWatcher RegisteredStatusNotifierItems =
+  [":1.x/org/blueman/sni"] + IsStatusNotifierHostRegistered=true.
+  blueman-manager opens a window on the nested labwc (screenshots at
+  /tmp/bt-mgr-final.png + /tmp/bt-glass-labwc.png, pulled to the host;
+  the model can't view them but grim file sizes + the dbus SNI registry
+  prove render + registration). Left OPEN on glass for the user's first
+  look.
+- lxqt.nix: blueman joins the session lxqtApps list when
+  config.hardware.bluetooth.enable (PATH for the autostart Exec= + XDG
+  dirs). dconf warnings in the manager log are cosmetic (no dconf
+  daemon in the session).
+
+**Still open (renumbered follow-ups in docs/bluetooth-bringup.md):**
+LE event-mask 0x2001 low-bit quirk; RF/pairing test with a real device;
+hci_stp lsmod-vanish cosmetic quirk; PAN tethering (kernel lacks
+CONFIG_BT_BNEP — bluetoothd logs "kernel lacks bnep-protocol support");
+cosmetic bluetoothd-start mgmt failures (clear/add UUID 0x03) on this
+controller.
+
+Version lines: gen52 = services/bluetooth.nix first cut (bluez + dbus
+wiring + hci loader + blueman), gen53 = + Privacy=off (auto-power boot
+fix). Device current gen 53, para untouched (NixOS default), desktop up.
+
 ## 2026-09-09l — BLUETOOTH BRING-UP part 2: CONSYS rx-stall ROOT CAUSE + fix, hci0 init to the BR/EDR wall (gens 46-48; module-only, no boot.img reflash)
 
 Task: continue the 2026-09-09k BT work — "fix the CONSYS rx stall, then

@@ -19,6 +19,10 @@
 # dir ($out/{lxqt/, labwc/, themerc, Desktop/}) — seeded to /root once
 # (idempotent; never overwrites user changes):
 #   $…/lxqt/lxqt.conf            -> /root/.config/lxqt/lxqt.conf
+#   $…/lxqt/panel.conf           -> /root/.config/lxqt/panel.conf (only
+#                                  when absent — a live panel.conf is a
+#                                  user file; add the [statusnotifier]
+#                                  tray manually on existing installs)
 #   $…/lxqt/session.conf         -> /root/.config/lxqt/session.conf
 #   $…/labwc/rc.xml              -> /root/.config/labwc/rc.xml
 #   $…/labwc/autostart           -> /root/.config/labwc/autostart
@@ -34,6 +38,7 @@ seed_if_absent() { # src target
     [ -f "$2" ] || { mkdir -p "$(dirname "$2")" && cp "$1" "$2"; }
 }
 seed_if_absent "$SRC/lxqt/lxqt.conf"   /root/.config/lxqt/lxqt.conf
+seed_if_absent "$SRC/lxqt/panel.conf"  /root/.config/lxqt/panel.conf
 seed_if_absent "$SRC/lxqt/session.conf" /root/.config/lxqt/session.conf
 seed_if_absent "$SRC/labwc/rc.xml"     /root/.config/labwc/rc.xml
 seed_if_absent "$SRC/labwc/autostart"  /root/.config/labwc/autostart

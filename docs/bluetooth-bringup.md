@@ -2,11 +2,13 @@
 
 > Status: ✅ **hci0 inits clean on glass; BR/EDR + LE both enabled;
 > discovery finds real devices over the air** (2026-09-09l). Transport
-> rx-stall root-caused and fixed (MCU autonomous sleep). Remaining
-> follow-ups: persistent bluetoothd/dbus wiring in `config/gemini.nix`
-> (MNX option — `services.bluetooth` does NOT exist in this eval, see
-> below), the LE event-mask acceptance-range quirk, and an RF test
-> with a device close by (only very weak -96 dBm beacons in range).
+> rx-stall root-caused and fixed (MCU autonomous sleep).
+> **GUI + CLI tools WORKING** (2026-09-09m): persistent bluetoothd on
+> the system bus (gens 52-53, `services/bluetooth.nix`), auto-powered at
+> boot (Privacy=off receipt below), bluetoothctl/btmgmt/hcitool CLIs on
+> PATH, blueman-manager window + SNI tray applet in the LXQt session.
+> Remaining: the LE event-mask acceptance-range quirk, an RF/pairing
+> test with a device close by, PAN tethering (no CONFIG_BT_BNEP).
 
 ## TL;DR
 
@@ -105,26 +107,25 @@ consys_wmtrxd = the builtin spike RX kthread (pid 89 typically).
 
 ## Remaining follow-ups (ordered)
 
-1. **bluetoothd/dbus persistence** — wire BlueZ into the NixOS
-   config. NOTE: `services.bluetooth` does NOT exist in this Mobile
-   NixOS eval (the MNX module set is `lib/configuration.nix` imports
-   of `modules/module-list.nix` + the device def — nixpkgs'
-   services/hardware/bluetooth.nix is not in scope the way openssh
-   is, or the option is shadowed). Check how openssh gets in scope
-   (nixpkgs module list inclusion) and import
-   `services/hardware/bluetooth.nix` (or enable bluetoothd by a
-   hand-rolled systemd unit + dbus policy drop-in) the MNX way.
-2. **LE event-mask quirk** (0x2001 low-bit acceptance) so the kernel
+1. **LE event-mask quirk** (0x2001 low-bit acceptance) so the kernel
    receives LE events with its standard flow; today the mgmt path
    still delivers DeviceFound (verified) but the mapping is worth
    doing for bluez.
-3. **RF test with a device in the room** (the beacons are at -96 dBm
+2. **RF/pairing test with a real device** (the beacons were at -96 dBm
    through walls). Keyboard/mouse or phone visible at <5 m confirms
-   BR/EDR inquiry + connection next.
+   BR/EDR inquiry + pairing/connection next (nothing has been PAIRED
+   yet — only scanned).
+3. **PAN tethering**: kernel lacks CONFIG_BT_BNEP (bluetoothd:
+   "kernel lacks bnep-protocol support") — module-only kernel config
+   change if wanted.
 4. `hci_stp` module-vanish quirk (failed opens can drop bluetooth +
-   hci_stp from lsmod; re-modprobe recreates hci0) — cleanup TODO in
-   the failed-open path (deep-idle stub WARNs, mtk_wcn_stub_alps.c).
-5. When a new boot.img is flashed anyway, the spike's
+   hci_stp from lsmod while the controller keeps working; re-modprobe
+   recreates hci0) — cleanup TODO in the failed-open path (deep-idle
+   stub WARNs, mtk_wcn_stub_alps.c).
+5. Cosmetic: bluetoothd-start mgmt failures on this controller
+   ("Failed to clear/add UUID" 0x03, adv-monitor reset) — SDP/UUID
+   records via mgmt; watch whether pairing is affected.
+6. When a new boot.img is flashed anyway, the spike's
    `consys_wmt_ops.wake` op exists as the "proper" wake path
    (module-side pulse remains the portable one).
 
@@ -143,6 +144,43 @@ tracks the fork HEAD each sync.
 | `7af6ee9c` | **local LMP_HOST_LE + HCI_LE_ENABLED record** when 0x200d is refused (LE mgmt unlock) |
 | (earlier) | BTIF WAK wake fix, CONSYS PSM never armed, hci_stp driver port + polish (see git log / session log 2026-09-09k) |
 
+## Persistent service + GUI/CLI tools (2026-09-09m)
+
+Follow-up #1 closed: `config/gemini.nix` now imports `services/
+bluetooth.nix` (gen52 first cut, gen53 + Privacy=off):
+
+- **Option name correction**: the MNX eval DOES import the full nixpkgs
+  module list (mobile-nixos `lib/release-tools.nix` evalWith:
+  `../modules/module-list.nix ++ nixos/modules/module-list.nix`), so
+  the nixpkgs bluetooth module is in scope — under its CURRENT name
+  `hardware.bluetooth` (`services.bluetooth` was renamed away before
+  this nixpkgs rev; the earlier "option does not exist" was the rename,
+  not the module list). Enabling it gives: bluetoothd
+  (dbus-org.bluez.service alias) wanted at boot via
+  `systemd.targets.bluetooth`, bluez in systemPackages (CLIs), the
+  org.bluez dbus policy (bluez in `services.dbus.packages` — the
+  bring-up's missing-policy problem is gone), udev rules and
+  `/etc/bluetooth/main.conf`.
+- `gemini-bt-hci.service`: `modprobe hci_stp` after the internal-wifi
+  CONSYS bring-up (module tree ships it in current-system).
+- **Privacy = off is REQUIRED for the boot path**: bluez 5.87 runs mgmt
+  set-privacy during AutoEnable at daemon start and the MT6630 rejects
+  it ("Failed to set privacy: Rejected (0x0b)") -> controller stays
+  Powered: no after every reboot (interactive `power on` always
+  worked). Verified with a throwaway `bluetoothd -f` conf first.
+- **GUI**: blueman 2.4.6 — `blueman.desktop` autostart via the merged
+  profile etc/xdg/autostart; applet + blueman-tray run in the session.
+  The LXQt panel had NO tray -> added the `[statusnotifier]` plugin
+  group to `config/lxqt/panel.conf` (seeded) + the live file. Proof:
+  StatusNotifierWatcher `RegisteredStatusNotifierItems =
+  [":1.x/org/blueman/sni"]`. `blueman-manager` opens a window on the
+  nested labwc (grim captures at /tmp/bt-mgr-final.png + a pre-gen53
+  /tmp/bt-glass-labwc.png on the host). lxqt.nix adds blueman to the
+  session lxqtApps when `config.hardware.bluetooth.enable`.
+- Cosmetic: bluetoothd logs mgmt "clear/add UUID" 0x03 + adv-monitor
+  failures on this controller at start; kernel lacks CONFIG_BT_BNEP
+  (PAN tethering follow-up).
+
 ## On-glass test rig
 
 `bin/bt-glass-test.sh` — up / up-wak / regs / wak / init1 verbs
@@ -152,11 +190,15 @@ under `libexec`/`bin` of the bluez store path (not on the nix-shell
 PATH) — call it by store path. Discovery/daemon runs longer than one
 ssh session go under `bin/run-job.sh`.
 
-## Files touched 2026-09-09l
+## Files touched 2026-09-09l / 2026-09-09m
 
 - Kernel fork + repo delta (`mtk_btif` wake+heartbeat in
   `wcn_hw_glue.c`, `hci_sync.c`/`hci.h` best-effort init + LE record,
   `hci_stp.c` quirk wiring); `kernel/default.nix` rev header.
-- `bin/bt-glass-test.sh` (new); this doc; session log 2026-09-09l.
-- `pkgs`-side / `config/gemini.nix`: none yet (bluetoothd wiring is
-  follow-up #1 above).
+- `bin/bt-glass-test.sh` (new); this doc; session logs 2026-09-09k/l.
+- 2026-09-09m (config-only, gens 52-53): `services/bluetooth.nix`
+  (new), `config/gemini.nix` (import), `services/lxqt.nix` (blueman in
+  the session when bluetooth enabled), `config/lxqt/panel.conf` (new,
+  SNI tray) + `services/scripts/start-lxqt-nested` (seed it). The
+  earlier "bluetoothd wiring is follow-up #1" note is obsolete — it is
+  DONE (see the section above).
