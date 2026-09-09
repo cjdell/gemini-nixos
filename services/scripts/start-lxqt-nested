@@ -84,20 +84,27 @@ done
 # 3b. libwayland resolves a BARE WAYLAND_DISPLAY name against
 #    XDG_RUNTIME_DIR — but gemwl's socket lives in gemwl's own runtime
 #    dir (/run/gemwl), and this session's XDG_RUNTIME_DIR is its own
-#    cjdell-owned dir. Symlink wayland-0 in so `WAYLAND_DISPLAY=
-#    wayland-0` (below) reaches gemwl. (Before 2026-09-09 the root
-#    session shared gemwl's dir and the bare name just worked — this is
-#    the cost of running the session as cjdell.) The symlink dies with
-#    the RuntimeDirectory on restart and is recreated here.
+#    cjdell-owned dir. Symlink wayland-0 in so labwc's parent connect
+#    (`WAYLAND_DISPLAY=wayland-0` below) reaches gemwl. (Before
+#    2026-09-09 the root session shared gemwl's dir and the bare name
+#    just worked — this is the cost of running the session as cjdell.)
+#    NOTE: wlroots' auto-socket may then REUSE the wayland-0 name for
+#    labwc's OWN listening socket (it unlinks + binds; the parent
+#    connection is already established by then — observed gen56,
+#    NRestarts=0). The symlink dies with the RuntimeDirectory on
+#    restart and is recreated here.
 [ -e "$RUNTIME/wayland-0" ] || ln -s /run/gemwl/wayland-0 "$RUNTIME/wayland-0"
 
 # 4. (best-effort) scale the nested output 1.5x once labwc is up —
 #    0.8.3 has no config-file scale; wlr-randr (wlr-output-management)
-#    is the way. labwc picks the next free socket in XDG_RUNTIME_DIR
-#    (wayland-1 here, gemwl holds wayland-0) — probe a few.
+#    is the way. labwc's OWN listening socket is wayland-0 in
+#    XDG_RUNTIME_DIR (see step 3b — it reused the name once the parent
+#    link was consumed); probe wayland-0 first, then the next free
+#    names. Probing gemwl itself is a safe no-op (gemwl implements no
+#    wlr-output-management — wlr-randr errors out, grep fails).
 ( i=0
   while [ $i -lt 60 ]; do
-      for s in wayland-1 wayland-2 wayland-3; do
+      for s in wayland-0 wayland-1 wayland-2 wayland-3; do
           if [ -S "$RUNTIME/$s" ] && WAYLAND_DISPLAY="$s" wlr-randr 2>/dev/null | grep -q 'WL-1'; then
               WAYLAND_DISPLAY="$s" wlr-randr --output WL-1 --scale 1.5 2>/dev/null || true
               break 2
