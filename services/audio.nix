@@ -3,13 +3,21 @@
 # Ports the verified audio stack from the GeminiPDA project
 # (build/rootfs-files/pipewire/) into the NixOS system:
 #
-#   PipeWire 1.6.x + WirePlumber + pipewire-pulse run as ONE root system
-#   session (headless device: no per-user logind sessions) on
-#   XDG_RUNTIME_DIR=/run/gemwl-audio — the same layout as the proven
-#   Debian units. /run/gemwl (the future gemwl compositor's runtime dir)
-#   is deliberately NOT used: systemd removes it when the compositor
-#   restarts, which once vanished the audio sockets mid-session
-#   (observed 2026-09-07).
+#   PipeWire 1.6.x + WirePlumber + pipewire-pulse run as ONE system
+#   session on XDG_RUNTIME_DIR=/run/gemwl-audio — the same layout as the
+#   proven Debian units. [changed 2026-09-09] The session user is
+#   cjdell (the device's default desktop user, config/gemini.nix
+#   users.users.cjdell), NOT root: the desktop sessions (lxqt.nix /
+#   phosh.nix) run as cjdell and must reach the sound server's sockets
+#   (/run/gemwl-audio, owned by cjdell via systemd RuntimeDirectory +
+#   User= chown). /dev/snd* access comes from cjdell's `audio` group.
+#   The only loss vs root: no realtime scheduling (no rtkit here —
+#   PipeWire logs the RT refusal and runs SCHED_OTHER, as on any
+#   rtkit-less desktop). gemini-audio-defaults (amixer + the speaker-
+#   amp gpio pads, devmem) stays a ROOT service. /run/gemwl (the gemwl
+#   compositor's runtime dir) is deliberately NOT used: systemd removes
+#   it when the compositor restarts, which once vanished the audio
+#   sockets mid-session (observed 2026-09-07).
 #
 #   The MT6351 analog path is S16-only in practice (the mt6797
 #   AFE/ADDA driver never programs a data-width register — S32 plays as
@@ -33,10 +41,13 @@
 let
   utils = pkgs.callPackage ./gemini-utils.nix { };
 
-  # Shared unit env: one root session, its own runtime dir.
+  # Shared unit env: one session, its own runtime dir, the desktop
+  # user's home (User=cjdell below — systemd also sets HOME from the
+  # account; keep it explicit so wireplumber's state lands under
+  # /home/cjdell, never /root).
   sessionEnv = [
     "XDG_RUNTIME_DIR=/run/gemwl-audio"
-    "HOME=/root"
+    "HOME=/home/cjdell"
   ];
 in
 {
@@ -69,6 +80,11 @@ in
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";
+      # The desktop session user (config/gemini.nix users.users.cjdell):
+      # systemd chowns RuntimeDirectory /run/gemwl-audio to the unit's
+      # User=, so the sockets land cjdell-owned and the cjdell desktop
+      # connects without privilege. [2026-09-09]
+      User = "cjdell";
       RuntimeDirectory = "gemwl-audio";
       Environment = sessionEnv;
       ExecStart = "${pkgs.pipewire}/bin/pipewire";
@@ -88,6 +104,7 @@ in
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";
+      User = "cjdell"; # desktop session user (see pipewire.service)
       RuntimeDirectory = "gemwl-audio";
       Environment = sessionEnv;
       ExecStart = "${pkgs.wireplumber}/bin/wireplumber";
@@ -103,6 +120,7 @@ in
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";
+      User = "cjdell"; # desktop session user (see pipewire.service)
       RuntimeDirectory = "gemwl-audio";
       Environment = sessionEnv;
       ExecStart = "${pkgs.pipewire}/bin/pipewire-pulse";

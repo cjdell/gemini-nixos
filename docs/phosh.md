@@ -86,13 +86,16 @@ fork's libgbm in place of nixpkgs' mesa-libgbm. Receipts:
   (default 1.5 — the verified LXQt readability on this panel; phoc
   parses scale with `strtof`, src/settings.c, fractional fine). Enabling
   is assert-guarded to require `services.lxqtNested.enable = false`
-  (two nested desktops would stack fullscreen on gemwl and fight over
-  the /run/gemwl session bus). Unit `phosh-nested.service`
+  (two nested desktops would stack fullscreen on gemwl — each session
+  now owns its own runtime dir/bus, /run/lxqt-session vs
+  /run/phosh-session, so they no longer fight over a shared bus, but
+  both fullscreen on gemwl is never what you want). Unit `phosh-nested.service`
   (After=gemwl.service, wantedBy multi-user.target):
   - ExecStartPre `prepare-phosh-session`: session bus at
-    /run/gemwl/bus (idempotent — lxqt's bus model) + wait for gemwl's
-    wayland-0 (cold-boot ordering; gemwl may still be in
-    panfrost-load.sh when this unit starts).
+    $XDG_RUNTIME_DIR/bus = /run/phosh-session/bus (idempotent — the
+    unit's cjdell-owned RuntimeDirectory; see lxqt's bus model,
+    2026-09-09) + wait for gemwl's wayland-0 (cold-boot ordering;
+    gemwl may still be in panfrost-load.sh when this unit starts).
   - ExecStart `phoc -v -S -C <generated phoc.ini> --socket phosh -E
     start-phosh-shell` with `WLR_BACKENDS=wayland WLR_RENDERER=gles2`
     (nested backend — never the drm backend, there is no DRM here; and
@@ -110,9 +113,11 @@ fork's libgbm in place of nixpkgs' mesa-libgbm. Receipts:
     the nested dev flow). No mode: gemwl sizes phoc's toplevel to the
     full gemfb (gemwl.c `gemwl_toplevel_size_to_output` — the same
     sizing labwc adopts), so only the UI scale is set here.
-  - Env = the root-system-service session env lxqt.nix documents
-    (HOME=/root + XDG_*, /run/gemwl runtime dir, PipeWire/audio
-    sockets from audio.nix), `XDG_CURRENT_DESKTOP=Phosh:GNOME`,
+  - Env = the cjdell desktop-session env lxqt.nix documents (the
+    session runs as cjdell — config/gemini.nix users.users.cjdell,
+    2026-09-09; HOME=/home/cjdell + XDG_*, the unit's cjdell-owned
+    /run/phosh-session runtime dir, PipeWire/audio sockets from
+    audio.nix), `XDG_CURRENT_DESKTOP=Phosh:GNOME`,
     `PAN_MESA_DEBUG=noafbc`, `GBM_BACKENDS_PATH` (fork lib/gbm — the
     fork libgbm has no baked path), `NIXOS_OZONE_WL`, SHELL, and
     `PHOSH_SHELL_BIN` (unit env, not hardcoded in the script).

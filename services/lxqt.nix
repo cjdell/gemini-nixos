@@ -29,13 +29,23 @@
 # Session env notes (receipts from the Debian units + 2026-09-04
 # session-config bug): this is a SYSTEM service — no HOME/XDG_* exist by
 # default, and Qt's QSettings would fall back to /etc/xdg (the panel then
-# logs "Icon Theme not set" and renders blank). The full user-ish env is
-# set here (HOME=/root + XDG_CONFIG/CACHE/DATA_HOME), like the Debian
-# start script. Qt plugin discovery: every Qt binary is wrapped by
-# nixpkgs with --prefix QT_PLUGIN_PATH (its closure's plugin dirs), and
-# Qt6 plugins live under $out/lib/qt-6/plugins (qtbase-setup-hook
-# qtPluginPrefix). The unit's QT_PLUGIN_PATH adds the shared plugin dirs
-# (qtbase, qtwayland — the wayland platform plugin qterminal/pcmanfm-qt/
+# logs "Icon Theme not set" and renders blank). [changed 2026-09-09] The
+# session runs as cjdell — the device's DEFAULT user (config/gemini.nix
+# users.users.cjdell), which replaces the "system service = root,
+# HOME=/root" model the desktop booted with since 2026-09-07: the LXQt
+# session (configs, browser profiles, downloaded files) is now owned by
+# /home/cjdell, like a real desktop user. The full user-ish env is set
+# here (HOME=/home/cjdell + XDG_CONFIG/CACHE/DATA_HOME + the user's own
+# runtime dir /run/lxqt-session — a RuntimeDirectory systemd chowns to
+# User=cjdell, where the session bus + labwc's wayland-1 socket live).
+# The compositor (gemwl.service) stays ROOT (fbcon unbind + /dev/gemfb
+# 0600 are root-only); its runtime dir is 0755 + its socket 0666 so the
+# cjdell session can connect (services/desktop.nix). Qt plugin
+# discovery: every Qt binary is wrapped by nixpkgs with --prefix
+# QT_PLUGIN_PATH (its closure's plugin dirs), and Qt6 plugins live under
+# $out/lib/qt-6/plugins (qtbase-setup-hook qtPluginPrefix). The unit's
+# QT_PLUGIN_PATH adds the shared plugin dirs (qtbase, qtwayland — the
+# wayland platform plugin qterminal/pcmanfm-qt/
 # pavucontrol-qt need — qtsvg, lxqt-qtplugin's platform theme) for apps
 # whose own closure does not carry them.
 #
@@ -174,39 +184,53 @@ in
 
       serviceConfig = {
         Type = "simple";
+        # The session's user (config/gemini.nix users.users.cjdell — the
+        # device's default desktop user since 2026-09-09). systemd sets
+        # HOME/etc. from the account and chowns RuntimeDirectory below
+        # to it. ExecStartPre/start-lxqt-nested run as cjdell too.
+        User = "cjdell";
+        # The session's own runtime dir (created + chowned to cjdell by
+        # systemd): session bus socket, labwc's wayland-1, dconf — NOT
+        # /run/gemwl (gemwl's dir, deleted on compositor restart).
+        RuntimeDirectory = "lxqt-session";
+        RuntimeDirectoryMode = "0700";
         ExecStart = "${utils}/bin/start-lxqt-nested";
         # The whole stack is inside this unit; a labwc/lxqt-session
         # failure brings it down -> restart (mirrors the Debian unit).
         Restart = "on-failure";
         RestartSec = "5";
         # The session env (see the header comment — systemd system
-        # services get no HOME/XDG_*/DBUS by default).
+        # services get no HOME/XDG_*/DBUS by default; User=cjdell sets
+        # HOME, the rest is explicit).
         Environment = [
-          # Runtime dirs + sockets (gemwl.service's RuntimeDirectory
-          # hosts the wayland + dbus sockets; audio.nix owns
-          # /run/gemwl-audio — never put the sound server under /run/
-          # gemwl: it is DELETED when gemwl restarts [2026-09-07
-          # receipt]).
-          "XDG_RUNTIME_DIR=/run/gemwl"
-          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/gemwl/bus"
+          # Runtime dirs + sockets. /run/lxqt-session is THIS unit's
+          # RuntimeDirectory (cjdell-owned): the session bus and labwc's
+          # nested wayland socket live there. gemwl's socket stays at
+          # /run/gemwl/wayland-0 (gemwl is root; its dir is 0755 + the
+          # socket 0666 so cjdell connects — services/desktop.nix).
+          # audio.nix owns /run/gemwl-audio — never put the sound server
+          # under /run/gemwl or /run/lxqt-session: they are DELETED when
+          # their unit restarts [2026-09-07 receipt].
+          "XDG_RUNTIME_DIR=/run/lxqt-session"
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/lxqt-session/bus"
           "PULSE_SERVER=unix:/run/gemwl-audio/pulse/native"
           "PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio"
-          # User-ish env so Qt config/icon/cache resolution works
-          # (HOME=/root + XDG_*; see the header).
-          "HOME=/root"
-          "XDG_CONFIG_HOME=/root/.config"
-          "XDG_CACHE_HOME=/root/.cache"
-          "XDG_DATA_HOME=/root/.local/share"
+          # User env (HOME=/home/cjdell + XDG_*; see the header).
+          "HOME=/home/cjdell"
+          "XDG_CONFIG_HOME=/home/cjdell/.config"
+          "XDG_CACHE_HOME=/home/cjdell/.cache"
+          "XDG_DATA_HOME=/home/cjdell/.local/share"
           # XDG data dirs: icon theme (Papirus), LXQt themes (Clearlooks
           # look), every LXQt package's share (menus/desktop files) and
           # the system profile (systemPackages). The vendored labwc
-          # theme is seeded to /root/.local/share/themes (XDG_DATA_HOME
-          # above), which labwc scans first.
+          # theme is seeded to /home/cjdell/.local/share/themes
+          # (XDG_DATA_HOME above), which labwc scans first.
           "XDG_DATA_DIRS=${lib.makeSearchPath "share" (lxqtApps ++ [ pkgs.papirus-icon-theme ])}:/run/current-system/sw/share"
           # XDG config dirs: the LXQt packages' autostart .desktop files
           # ($out/etc/xdg/autostart — the panel/desktop/polkit/
           # notificationd autostart lxqt-session scans) + the system
-          # profile. (User configs live in XDG_CONFIG_HOME=/root/.config.)
+          # profile. (User configs live in XDG_CONFIG_HOME=
+          # /home/cjdell/.config.)
           "XDG_CONFIG_DIRS=${lib.makeSearchPath "etc/xdg" lxqtApps}:/run/current-system/sw/etc/xdg"
           # Qt plugin discovery: qtbase + the wayland platform plugin
           # (qtwayland), qtsvg (svg icons), the LXQt platform theme

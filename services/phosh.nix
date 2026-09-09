@@ -39,6 +39,12 @@
 #   - phosh 0.54.0 + squeekboard 1.43.1 come from nixpkgs as-is (pure
 #     Wayland/GTK clients; no wlroots dependency).
 #
+# [2026-09-09] The session runs as cjdell (the device's default desktop
+# user, config/gemini.nix users.users.cjdell) like the LXQt session —
+# HOME=/home/cjdell, its own cjdell-owned runtime dir /run/phosh-session
+# (bus + phoc's "phosh" socket); gemwl stays root (services/desktop.nix
+# explains the 0755 dir + 0666 socket that lets cjdell connect).
+#
 # HOW the session assembles (receipts from the phosh 0.54 sources,
 # 2026-09-09): upstream phosh-session runs
 #   phoc -v -S -C phoc.ini -E "gnome-session --session=phosh"
@@ -58,7 +64,9 @@
 #   services.lxqtNested.enable = false;
 #   services.phoshDesktop.enable = true;
 # (the assert below enforces it — two nested desktops would stack on
-# gemwl and share the /run/gemwl session bus). `systemctl disable
+# gemwl; each session owns its own runtime dir/bus now — /run/lxqt-
+# session vs /run/phosh-session, 2026-09-09 — so the shared-bus
+# argument is gone, fullscreen stacking is not). `systemctl disable
 # gemwl phosh-nested` returns to a console-only boot.
 { config, lib, pkgs, ... }:
 
@@ -120,17 +128,18 @@ in
 
   config = lib.mkIf cfg.enable {
     # Two nested desktops on one gemwl is never what you want: they
-    # stack fullscreen on each other and would share the /run/gemwl
-    # session bus. LXQt is the default desktop; switching to phosh is a
-    # deliberate one-line flip.
+    # stack fullscreen on each other (each session now owns its own
+    # runtime dir/bus — /run/lxqt-session vs /run/phosh-session — so
+    # the old shared-bus argument is gone, 2026-09-09). LXQt is the
+    # default desktop; switching to phosh is a deliberate one-line
+    # flip.
     assertions = [
       {
         assertion = !config.services.lxqtNested.enable;
         message = ''
           services.phoshDesktop.enable requires the LXQt desktop off:
           set services.lxqtNested.enable = false (phosh + lxqt-nested
-          would both nest fullscreen on gemwl and share the /run/gemwl
-          session bus).
+          would both nest fullscreen on gemwl).
         '';
       }
     ];
@@ -167,6 +176,15 @@ in
 
       serviceConfig = {
         Type = "simple";
+        # The session's user (config/gemini.nix users.users.cjdell — the
+        # device's default desktop user since 2026-09-09; see the header
+        # comment). systemd chowns RuntimeDirectory below to cjdell.
+        User = "cjdell";
+        # The session's own runtime dir (cjdell-owned): the session bus
+        # and phoc's "phosh" socket live here — NOT /run/gemwl (gemwl's
+        # dir, deleted on compositor restart).
+        RuntimeDirectory = "phosh-session";
+        RuntimeDirectoryMode = "0700";
         ExecStartPre = "${utils}/bin/prepare-phosh-session";
         ExecStart = "${phoc}/bin/phoc -v -S -C ${phocIni} --socket phosh -E ${utils}/bin/start-phosh-shell";
         # phoc exits when its -E session (the phosh shell) exits; a
@@ -175,23 +193,26 @@ in
         Restart = "on-failure";
         RestartSec = "5";
         # The session env (see the header — systemd system services get
-        # no HOME/XDG_*/DBUS by default; same set services/lxqt.nix
-        # documents for the LXQt session).
+        # no HOME/XDG_*/DBUS by default; User=cjdell sets HOME, the rest
+        # is explicit; same set services/lxqt.nix documents for the LXQt
+        # session).
         Environment = [
-          # Runtime dirs + sockets (gemwl.service's RuntimeDirectory
-          # hosts the wayland + dbus sockets — do NOT move the sound
-          # server here, audio.nix owns /run/gemwl-audio: /run/gemwl is
-          # DELETED when gemwl restarts [2026-09-07 receipt]).
-          "XDG_RUNTIME_DIR=/run/gemwl"
-          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/gemwl/bus"
+          # Runtime dirs + sockets (see lxqt.nix: /run/phosh-session is
+          # THIS unit's cjdell-owned RuntimeDirectory; gemwl's socket is
+          # at /run/gemwl/wayland-0; audio.nix owns /run/gemwl-audio —
+          # never put the sound server under a compositor/session
+          # runtime dir: it is DELETED when that unit restarts
+          # [2026-09-07 receipt]).
+          "XDG_RUNTIME_DIR=/run/phosh-session"
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/phosh-session/bus"
           "PULSE_SERVER=unix:/run/gemwl-audio/pulse/native"
           "PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio"
-          # User-ish env (HOME=/root + XDG_* — this is a root system
-          # service desktop, the lxqt model).
-          "HOME=/root"
-          "XDG_CONFIG_HOME=/root/.config"
-          "XDG_CACHE_HOME=/root/.cache"
-          "XDG_DATA_HOME=/root/.local/share"
+          # User env (HOME=/home/cjdell + XDG_* — the cjdell desktop
+          # session, not root).
+          "HOME=/home/cjdell"
+          "XDG_CONFIG_HOME=/home/cjdell/.config"
+          "XDG_CACHE_HOME=/home/cjdell/.cache"
+          "XDG_DATA_HOME=/home/cjdell/.local/share"
           # XDG data dirs: phosh (schemas + app entries), gnome-shell
           # (its GSettings schemas — nixpkgs' phosh wrapper would add
           # getSchemaDataDirPath gnome-shell, but libexec/phosh is NOT

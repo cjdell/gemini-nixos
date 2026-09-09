@@ -114,13 +114,13 @@ in
   ];
 
   # ---- Users / access ---------------------------------------------------
-  # The bring-up interface is ssh over g_ether as root@10.15.19.82, keyed
-  # by ~/.ssh/id_ed25519_gemini (bin/device-ssh.sh). NixOS's default sshd
-  # (PermitRootLogin prohibit-password) allows root pubkey login, but root
-  # must actually carry the key: without it there is NO ssh path into the
-  # system (root is locked, the only non-root user has no keys; serial is
-  # the only login). pubkey == the host's id_ed25519_gemini.pub, the same
-  # key the GeminiPDA Debian rootfs has in /root/.ssh/authorized_keys.
+  # The bring-up/admin interface is ssh over g_ether as root@10.15.19.82,
+  # keyed by ~/.ssh/id_ed25519_gemini (bin/device-ssh.sh). NixOS's
+  # default sshd (PermitRootLogin prohibit-password) allows root pubkey
+  # login, but root must actually carry the key: without it there is NO
+  # ssh path into the system (root is locked; serial is the only login).
+  # pubkey == the host's id_ed25519_gemini.pub, the same key the
+  # GeminiPDA Debian rootfs has in /root/.ssh/authorized_keys.
   users.users.root.openssh.authorizedKeys.keys = [
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1AU4h4b3z6GFRHVRgXCJ5UMfJU5F8B7A38u7migkuh gemini-pda-root (device-ssh.sh)"
   ];
@@ -129,13 +129,37 @@ in
   # uses `gemini`).
   networking.hostName = "gemini";
 
-  users.users.gemini = {
+  # cjdell = the DEFAULT user of the device (2026-09-09; replaces the
+  # original placeholder `gemini` account): the console getty autologins
+  # as cjdell, and the DESKTOP sessions (LXQt services/lxqt.nix, Phosh
+  # services/phosh.nix) run as cjdell — HOME=/home/cjdell, session
+  # configs seeded there by services/scripts/start-lxqt-nested, the
+  # audio session (services/audio.nix) under the same user so the
+  # desktop can reach its sockets. Passwordless sudo comes from the
+  # wheel NOPASSWD rule below — that is what makes "desktop user but
+  # full admin" work: the compositor (gemwl) + device services stay
+  # root, cjdell's apps sudo for the root-only CLIs (backlight,
+  # battery, gemcli, ...).
+  users.users.cjdell = {
     isNormalUser = true;
-    extraGroups = [ "wheel" "video" "networkmanager" ];
+    uid = 1000; # gemini's old uid (the account replaces it; home is new)
+    description = "Default Gemini PDA user (desktop + console)";
+    extraGroups = [
+      "wheel" # passwordless sudo (security.sudo.wheelNeedsPassword = false)
+      "video" # /dev/dri/card0 (uaccess does not cover the systemd-
+      # service desktop — there is no logind session to tag)
+      "audio" # /dev/snd* — the PipeWire session runs as cjdell too
+      "networkmanager"
+    ];
+    # Same operator key as root: `ssh cjdell@10.15.19.82` debugs the
+    # desktop session as the session user (root stays the admin path).
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1AU4h4b3z6GFRHVRgXCJ5UMfJU5F8B7A38u7migkuh gemini-pda-root (device-ssh.sh)"
+    ];
   };
   security.sudo.enable = true;
-  security.sudo.wheelNeedsPassword = false;
-  services.getty.autologinUser = "gemini";
+  security.sudo.wheelNeedsPassword = false; # cjdell (wheel) = passwordless sudo
+  services.getty.autologinUser = "cjdell";
 
   # ---- Shells ----------------------------------------------------------
   # Explicit bash (bashInteractive) as every account's login shell (ssh
@@ -330,12 +354,14 @@ in
   environment.systemPackages = [
     mesaGeminipda
     pkgs.libglvnd
-    # --no-sandbox (2026-09-08): this desktop runs as ROOT (system
-    # service, HOME=/root); chrome's zygote refuses euid 0 without it
-    # ("Running as root without --no-sandbox is not supported", verified
-    # on glass) and neither the userns nor the SUID sandbox can drop
-    # root on a root session. Accepted on this trusted single-user PDA
-    # (same trust model as the rest of the root desktop session).
+    # --no-sandbox (2026-09-08, comment updated 2026-09-09): chrome was
+    # first needed when the desktop ran as ROOT (system service,
+    # HOME=/root) — the zygote refuses euid 0 without it. The desktop
+    # now runs as the cjdell user, but the sandbox still needs a userns
+    # or SUID helper this lean kernel/stack does not provide, so the
+    # flag stays until a sandboxed run is verified on glass. Accepted
+    # on this trusted single-user PDA (same trust model as the rest of
+    # the cjdell desktop session).
     (pkgs.google-chrome.override { commandLineArgs = "--no-sandbox"; })
     pkgs.firefox
   ] ++ [

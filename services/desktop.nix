@@ -98,12 +98,25 @@ in
     ];
     serviceConfig = {
       Type = "simple";
-      # Private runtime dir holding the wayland socket (clients connect
-      # through XDG_RUNTIME_DIR/wayland-N). Same layout as the verified
-      # Debian unit; do NOT share the audio session's dir (audio.nix
-      # documents why /run/gemwl-audio exists separately).
+      # gemwl stays ROOT (2026-09-09): it opens /dev/gemfb (0600 root,
+      # no udev rule) and unbinds fbcon by writing
+      # /sys/class/vtconsole/vtcon*/bind — both root-only. The DESKTOP
+      # SESSIONS (lxqt-nested/phosh-nested) run as the cjdell user
+      # instead (config/gemini.nix users.users.cjdell), so this runtime
+      # dir must let them in:
+      #   - RuntimeDirectoryMode 0755 (was 0700): cjdell can traverse
+      #     /run/gemwl to reach the wayland socket;
+      #   - UMask=0111: wl_display_add_socket_auto creates wayland-0
+      #     with 0777 & ~umask — 0111 leaves 0666, so the cjdell
+      #     session can connect (default umask 022 gave 0755 =
+      #     owner-write-only). Single-user trusted PDA; cjdell has
+      #     passwordless sudo anyway, so no boundary is loosened.
+      # Do NOT share the audio session's dir (audio.nix documents why
+      # /run/gemwl-audio exists separately). Same layout as the
+      # verified Debian unit otherwise.
       RuntimeDirectory = "gemwl";
-      RuntimeDirectoryMode = "0700";
+      RuntimeDirectoryMode = "0755";
+      UMask = "0111";
       # panfrost is blacklisted at boot (services/gemini-pda.nix) because
       # an early probe times out on the un-powered mali; load it here,
       # after gemini-gpu-poweron (see the After= above) with rmmod+retry:

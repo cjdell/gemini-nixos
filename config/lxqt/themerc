@@ -5,8 +5,9 @@
 # labwc 0.8.3 parses (src/theme.c — window.active/inactive.title.bg,
 # .label.text.color, .button.*.image.color, .border.color, titlebar
 # padding + button sizes). Anything omitted falls back to labwc's
-# builtin theme. Seeded to /root/.local/share/themes/Gemini by
-# services/scripts/start-lxqt-nested (XDG_DATA_HOME in the unit env).
+# builtin theme. Seeded to $HOME/.local/share/themes/Gemini by
+# services/scripts/start-lxqt-nested (XDG_DATA_HOME=/home/cjdell/.local/
+# share in the unit env — the cjdell desktop session, 2026-09-09).
 
 # --- window title bars --------------------------------------------------
 window.active.title.bg.color: #5f8dd3

@@ -19,9 +19,11 @@
 #      decides: clean exit = session over; crash = restart loop like
 #      lxqt-nested.
 #
-# Env comes from the unit: XDG_RUNTIME_DIR=/run/gemwl,
-# DBUS_SESSION_BUS_ADDRESS=/run/gemwl/bus, PHOSH_SHELL_BIN=<store
-# path>/libexec/phosh, PATH carries squeekboard + dbus tools.
+# Env comes from the unit: XDG_RUNTIME_DIR=/run/phosh-session (the
+# unit's cjdell-owned RuntimeDirectory — where phoc's "phosh" socket
+# lives), DBUS_SESSION_BUS_ADDRESS=unix:path=/run/phosh-session/bus,
+# PHOSH_SHELL_BIN=<store path>/libexec/phosh, PATH carries squeekboard
+# + dbus tools. [2026-09-09: session user is cjdell, not root.]
 set -e
 
 [ -n "${WAYLAND_DISPLAY:-}" ] || { echo "!! no WAYLAND_DISPLAY (phoc -E did not set it)" >&2; exit 1; }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# labwc autostart — seeded to /root/.config/labwc/autostart by
+# labwc autostart — seeded to $HOME/.config/labwc/autostart by
 # services/scripts/start-lxqt-nested (only if absent); runs when labwc
 # starts.
 #

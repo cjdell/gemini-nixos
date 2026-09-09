@@ -3,29 +3,34 @@
 # (services/phosh.nix): make sure the pieces phoc+phosh connect through
 # exist before phoc starts.
 #
-#   1. session bus at /run/gemwl/bus (same layout + rationale as
-#      services/scripts/start-lxqt-nested: gemwl.service's
-#      RuntimeDirectory=/run/gemwl hosts the wayland + dbus sockets;
-#      the bus is shared by phoc's session — phosh, squeekboard and any
-#      app they spawn register on it. Idempotent: start only if absent.
-#   2. gemwl's socket wayland-0 (phoc nests on it). gemwl.service being
-#      "up" (Type=simple) does not mean its socket exists yet — a cold
-#      boot can still be in panfrost-load.sh's rmmod+reprobe when this
-#      unit starts; poll like start-lxqt-nested does.
+#   1. session bus at $XDG_RUNTIME_DIR/bus (the phosh-nested unit's own
+#      RuntimeDirectory — /run/phosh-session, owned by the cjdell
+#      session user; see start-lxqt-nested for the same layout. The bus
+#      is shared by phoc's session — phosh, squeekboard and any app
+#      they spawn register on it. Idempotent: start only if absent.)
+#   2. gemwl's socket wayland-0 (phoc nests on it) — gemwl is a ROOT
+#      service, its socket stays at /run/gemwl/wayland-0 (dir 0755,
+#      socket 0666 — services/desktop.nix). gemwl.service being "up"
+#      (Type=simple) does not mean its socket exists yet — a cold boot
+#      can still be in panfrost-load.sh's rmmod+reprobe when this unit
+#      starts; poll like start-lxqt-nested does.
 #
-# Env (HOME/XDG_*/dbus addresses, PAN_MESA_DEBUG, GBM_BACKENDS_PATH,
-# ...) is set by the UNIT (services/phosh.nix), not here. dbus-daemon
-# comes from the unit's path=.
+# Env (HOME=/home/cjdell + XDG_*, dbus addresses, PAN_MESA_DEBUG,
+# GBM_BACKENDS_PATH, ...) is set by the UNIT (services/phosh.nix), not
+# here. dbus-daemon comes from the unit's path=.
 set -e
+
+[ -n "${XDG_RUNTIME_DIR:-}" ] || { echo "!! XDG_RUNTIME_DIR not set (unit env)" >&2; exit 1; }
+RUNTIME=$XDG_RUNTIME_DIR
 
 # 1. session bus (a second dbus-daemon on the same address would fail;
 #    the -S check makes this safe to re-run after a unit restart)
-mkdir -p /run/gemwl
-if [ ! -S /run/gemwl/bus ]; then
-    dbus-daemon --session --address=unix:path=/run/gemwl/bus --fork --print-address >/dev/null
+mkdir -p "$RUNTIME"
+if [ ! -S "$RUNTIME/bus" ]; then
+    dbus-daemon --session --address="unix:path=$RUNTIME/bus" --fork --print-address >/dev/null
     sleep 1
 fi
-[ -S /run/gemwl/bus ] || { echo "!! session bus did not come up" >&2; exit 1; }
+[ -S "$RUNTIME/bus" ] || { echo "!! session bus did not come up" >&2; exit 1; }
 
 # 2. gemwl's socket (phoc's WLR_BACKENDS=wayland parent)
 i=0
