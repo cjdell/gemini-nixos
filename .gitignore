@@ -17,5 +17,6 @@ stock-dump/
 # demand (`git submodule update --init --depth 1 kernel/base`).
 *.tar.gz
 
-# Rust build artifacts (pkgs/gemcli/)
+# Rust build artifacts (pkgs/gemcli/, pkgs/gemdemo/)
 pkgs/gemcli/target/
+pkgs/gemdemo/target/

@@ -146,6 +146,7 @@
       # GPU/speaker; script-parity ports, see docs/gemcli.md). In the rootfs
       # closure via services/gemini-pda.nix; standalone for builds/checks.
       gemcli = eval.pkgs.callPackage ./pkgs/gemcli.nix { };
+      gemdemo = eval.pkgs.callPackage ./pkgs/gemdemo.nix { };
     in
     {
       packages.${buildSystem} = {
@@ -170,6 +171,9 @@
         # Rust device-control CLI (script-parity ports; in the rootfs via
         # services/gemini-pda.nix — standalone build/iteration target).
         gemcli = gemcli;
+        # Demoscene + T880 GPU stress test (docs/gemdemo.md; in the rootfs
+        # via services/gemini-pda.nix — standalone build/iteration target).
+        gemdemo = gemdemo;
       };
 
       # Host tooling stays x86_64 (this flake is evaluated from an x86_64

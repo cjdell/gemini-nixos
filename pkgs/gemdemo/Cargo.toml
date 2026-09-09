@@ -1,0 +1,36 @@
+# gemdemo (AETHER) — demoscene + GPU stress test for the Gemini PDA.
+#
+# A self-contained demoscene: everything (geometry, textures, the 5x7 font,
+# the whole soundtrack) is synthesized at runtime in Rust. Rendering =
+# OpenGL ES 3.1 via EGL on the geminipda Mesa fork (panfrost, Mali-T880
+# MP4) as a Wayland client inside the nested LXQt/labwc session. Audio =
+# a real-time synth engine (drums/bass/arp/pad/lead + delay/reverb) out
+# through ALSA: the S16-pinning `gemini16` plug (services/audio.nix),
+# the same AFE path the WirePlumber sink uses.
+#
+# Dependency policy (lockfile-pinned, all small pure-Rust crates):
+#   winit 0.29  wayland windowing/input (client of gemwl/labwc)
+#   egl 0.2     EGL loader (dlopens libEGL.so.1 — glvnd client lib)
+#   gl 0.14     GLES bindings (gles3 list; the context is 3.1)
+#   cpal 0.15   audio output — ALSA backend (always on for Linux in 0.15;
+#               the old pulse backend was removed upstream)
+# No other runtime deps. See docs/gemdemo.md for the design.
+[package]
+name = "gemdemo"
+version = "0.1.0"
+edition = "2021"
+description = "AETHER — demoscene + GPU stress for the Gemini PDA (Mali-T880 panfrost, GLES 3.1, real-time synth)"
+license = "MIT"
+
+[dependencies]
+winit = "0.29"
+egl = "0.2.7"
+gl = "0.14"
+cpal = "0.15"
+
+# The GPU does the heavy lifting; keep the CPU build lean + fast for the
+# on-device aarch64 build (device-rebuild.sh). No LTO (slow on the PDA).
+[profile.release]
+opt-level = "s"
+strip = true
+panic = "abort"

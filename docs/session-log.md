@@ -5,6 +5,138 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 (gemdemo audio FIXED-ENOUGH, MUSIC ON GLASS — "awful mix" = the follow-up) — S32 noise trap + engine DC bugs, all committed
+
+Audible music now plays on the device (S16 @ 44.1 k via gemini16). Three
+separate root causes were stacked; the last two made the music NOTHING
+(audibly) and were found with a host-side render harness
+(`/tmp/harness`: `rustc -O harness.rs` beside synth.rs — synth.rs is
+pure math, no device needed):
+
+1. **S32-on-wire noise trap** (fix: `hint { show on }` on gemini16 in
+   services/pipewire/asound.conf; live via /root/.asoundrc stopgap — /etc
+   is read-only): cpal 0.15 enumerates ALSA devices by name hints, so the
+   custom plug was invisible and the app fell back to `default`, whose
+   F32-in → S32-on-wire plays as noise on the 16-bit-only MT6351.
+   (aplay -v A/B: FLOAT→S32 = noise, S16 = clean.)
+2. **cpal stream → S16** (audio.rs): after 1, also force an I16 @ 44.1 k
+   config when offered (was defaulting to F32; the I16 branch had bugs —
+   mono-collapse, wrong frame math — now fixed interleaved-stereo).
+3. **saw generator DC bug** (synth.rs, THE silence): `2.0*(p-p.fract())-1.0`
+   with p∈[0,1) is ALWAYS -1 (p.fract()==p) — every saw voice (pad, arp/
+   pluck, bass osc) output constant -1 DC → tanh/limiter → flat +0.9 DC
+   (inaudible). Saw = `2.0*p-1.0` in all three sites.
+4. **step decode bug** (synth.rs): `s = bar % STEPS_PER_BAR` froze each
+   bar to its first step's arrangement (pad re-triggered every bar, arp
+   patterns scrambled). Now `s = step % STEPS_PER_BAR`; `next_step` init
+   0 so step 0 plays at t=0.
+
+Harness evidence (8 s RMS/zc per 0.5 s): before fixes — rms 0.27 → 0.90
+flat, zc→0 (DC clamp) by t=1 s. After — rms 0.27→0.88 climbing as the
+arrangement builds, zc 1.4 k→24 k Hz (real drums/hats/noise). Startup
+chime (0.6 s, 880→660→440 Hz) added as an audibility aid — still in
+(remove when polishing).
+
+USER-HEARD: 3-note chime then... silence (pre-fix). After the fixes:
+"I hear sound, but it's awful" — the mix is over-limited (master rms
+~0.88 sustained; master_gain/limiter tuning + the chime removal are the
+"fix later"). NOT yet deployed to the running system (device gen31 still
+ships the silent build; deploy gen32 when the mix is fixed).
+
+Device state: /root/.asoundrc stopgap present (re-add after root home
+wipes); no stray gemdemo processes.
+
+## 2026-09-09 (gemdemo audio: "no music, buzz at open + snap at close" ROOT-CAUSED + FIXED) — S32-on-wire noise trap; gemini16 now discoverable
+
+User report (running gemdemo in the desktop session): no music — only a
+brief buzz at start and a snap at exit. Root cause found + fixed at the
+alsaLib config level, NOT in the synth (the engine render math is
+sound; the stream ran the whole time with no errors):
+
+- **Diagnosis**: `audio.rs` opens `gemini16` (the S16_LE-pinning plug,
+  services/pipewire/asound.conf) in front of the 16-bit-only MT6351
+  AFE — but cpal 0.15 enumerates ALSA devices via name HINTS, and a
+  custom plug is invisible unless it carries `hint { show on }`. Every
+  run printed device 'default' → fromenv → sysdefault → hw:0.
+- **Live-verified with aplay -v** (2026-09-09): S16_LE in via `default`
+  → S16 on the wire (clean). **FLOAT_LE in (the demo's F32 stream) →
+  alsa's plug converts to S32_LE on the wire** — and the driver never
+  programs the data-width register (mt6797-dai-adda.c), so S32 plays
+  as square-wave/white noise (the pre-existing S16/S24/S32 receipt in
+  asound.conf's header). The "buzz" was the S32 noise; the "snap" the
+  stream open/close against a wrong-width codec state.
+- **Fix** (repo, in `services/pipewire/asound.conf`): add `hint { show
+  on; description "Gemini PDA MT6351 S16 output" }` to `pcm.gemini16`
+  so alsa-lib advertises it; `aplay -L` now lists gemini16 and the demo
+  opens device 'gemini16' — F32-in is converted to S16 by the plug's
+  pinned slave (the same conversion pipewire's WirePlumber path does),
+  clean by construction.
+- **Live on the device now**: /etc is NixOS read-only, so the fix was
+  applied via `/root/.asoundrc` (root-run sessions read it) — the demo
+  prints `audio device 'gemini16' — 44100 Hz, 2 ch, F32`. The next
+  system switch carries it in /etc/asound.conf (config change staged in
+  services/pipewire/asound.conf). NOTE: `/root/.asoundrc` is a stopgap;
+  re-add it if a rebuild wipes root's home.
+- audio.rs header + gemdemo.md updated with the receipt. Also confirms
+  the demo's audio path = F32 engine → alsa plug → S16 codec is the
+  DESIGNED one (pipewire does the same); no engine change needed.
+
+Next: user ears-check (desktop terminal: `gemdemo --windowed --ssaa 1`),
+ then switch the system to carry the asound.conf hint in /etc.
+
+## 2026-09-08 (gemdemo on glass — gen31 `cb3b5iv1q6pq8g` builds, NOT deployed) — "AETHER" demoscene/GPU stress test BUILT + RUNNING on the device; every blocker between "green build" and "on glass" closed
+
+`gemdemo` (docs/gemdemo.md) now runs on the live LXQt/labwc session and
+directly on the gemwl compositor. Verified via the new `--dump` stage
+readback: real scene content through the whole chain (scene FBO → bloom/
+feedback post → window), zero panfrost kernel faults, no crash over
+60 s+, audio up (pulse/PipeWire, "44100 Hz 2ch F32"). A full receipt +
+the complete bug list is in docs/gemdemo.md; highlights:
+
+- Derivation `pkgs/gemdemo.nix` now pins wayland + libxkbcommon on the
+  RUNPATH (winit 0.29 dlopens them — the generic rpath fixup only pulled
+  the -dev outputs → `NoWaylandLib`).
+- glctx: wrap the wl_surface in `wl_egl_window_create` (EGL needs the
+  size; bare surface → EGL_BAD_NATIVE_WINDOW); dropped the bogus
+  EGL_RENDER_BUFFER/EGL_RGB_BUFFER config key/value pair (BAD_ATTRIBUTE).
+- glutil: ALL object creation switched from the 4.5-core DSA `glCreate*`
+  to `glGen*` — the DSA entry points are silent "unsupported function"
+  stubs on the GLES 3.1 context (ghost objects; mesa: `glBufferData(no
+  buffer bound)`).
+- Scenes: NO instancing and NO multi-buffer VAOs — the fork's panfrost
+  u_vbuf segfaults on instancing and multi-buffer VAOs storm the GPU
+  (`panfrost: js fault JOB_BUS_FAULT` + sched timeouts). All draws are
+  single interleaved buffers (wlroots-proven pattern). NO DrawElements
+  (index-minmax scan crashes). Tunnel verts expanded.
+- font.rs: atlas 16×4 → 16×6 (table outgrew it — OOB bake panic) and
+  the Writer no longer stores a `*const Font` into a SceneSet that gets
+  MOVED (dangling pointer SIGSEGV).
+- Shader fixes: `vec5` → pos+uv split, `pal()` duplicated into the
+  vortex VS, composite `u_bloom` sampler/float redeclaration renamed
+  `u_bloomamt`, dead `u_res` dropped (link-time optimized out →
+  uniform() panic).
+- Post FBO 1×1 bug: `Post::new()` allocates 1×1 and the init
+  `state.resize()` no-ops when sizes already match — fullscreen windows
+  that never send a Resized event left the whole post chain at 1×1
+  (resolve magnified one texel → flat colour). Force `post.resize`
+  after init.
+- parse_args rewrite (had never run with flags): flag-only args spun at
+  100% CPU, value flags were left at the value position → both fixed.
+- Dump tooling: `--dump <frame#> <path>` stage PPMs + `--solid R,G,B`
+  target self-test. Readback had to be GL_RGBA (GLES3 rejects
+  GL_RGB/UNSIGNED_BYTE for RGBA8 fbos — silent error, zero-filled
+  buffers, phantom "everything black"; scene was fine all along).
+- Perf truth: fullscreen ssaa2 (4320×2160 scene) ~1–2 fps on the T880;
+  ssaa1 ~4 fps; windowed ssaa1 ~15 fps. Stress protocol follows.
+
+To run on the device now (store path in the log tail below):
+`XDG_RUNTIME_DIR=/run/gemwl WAYLAND_DISPLAY=wayland-1 gemdemo
+--windowed --ssaa 1 --silent` from the LXQt session (add `--section N`
+0..6 to jump in). `services/gemini-pda.nix` systemPackages now carries
+`gemdemo` — gen31 `cb3b5iv1q6pq8g` (toplevel) built 2026-09-08 but NOT
+switched (session was read-only on the live system); deploy when wanted
+(`bash bin/deploy.sh build && bash bin/deploy.sh deploy`).
+
 ## 2026-09-08 (browsers GL fix, gen28 `1nkzm5nih…`) — REAL CHROME/FIREFOX GL PATH: fork mesa gained the wayland EGL platform; Firefox no-WebGL + Chrome-won't-start root-caused and fixed at build level; wlegltst proves ES 3.1 / Mali-T880 / Panfrost through the nested stack
 
 Follow-up to the browsers-install entry below. User glass test:
