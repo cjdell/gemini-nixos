@@ -405,15 +405,39 @@ int mtk_wcn_btif_close(unsigned long u_id)
 	return 0;
 }
 
+/* Defined below (the ioremap'd BTIF WAK pulse); called from the write
+ * path so a prototype lives here. */
+int mtk_wcn_btif_wakeup_consys(unsigned long u_id);
+
 int mtk_wcn_btif_write(unsigned long u_id, const unsigned char *p_buf,
 		      unsigned int len)
 {
 	const struct consys_wmt_ops *ops = consys_wmt_transport;
+	int ret;
 
 	if (!ops || !ops->ready())
 		return -ENETDOWN;
 	if (len == 0)
 		return 0;
+
+	/* Wake-before-send (BT rx-stall fix, 2026-09-11): the CONSYS MCU
+	 * autonomously sleeps even on the DMA transport once host TX
+	 * activity pauses (observed within ~ms of the last exchange), and
+	 * a sleeping MCU swallows the reply to the frame just sent: the
+	 * cmd-complete sits INSIDE the chip until the next WAK pulse
+	 * (glass: a reset's reply surfaced 17 s late at the next open;
+	 * with per-write WAK the whole hciconfig init answered in ~ms).
+	 * The vendor wakes the chip via the negotiated WMT sleep path,
+	 * which this port disables (the spike never arms CONSYS PSM), so
+	 * the only wake left is the BTIF WAK line - pulse it before every
+	 * write (one pulse keeps the MCU awake for the whole exchange;
+	 * ~100 us of usleep per frame is noise). Waking an awake MCU is
+	 * harmless. */
+	ret = mtk_wcn_btif_wakeup_consys(u_id);
+	if (ret)
+		pr_debug("wcn-glue: btif_write: WAK pulse failed (%d) - continuing\n",
+			 ret);
+
 	if (ops->tx(p_buf, (int)len))
 		return -EIO;
 	return (int)len;
