@@ -216,19 +216,20 @@ impl GlCtx {
 
 /// Compile + link a program, panicking with the driver log on failure.
 unsafe fn build_program(name: &str, vs: &str, fs: &str) -> u32 {
-    let compile = |src: &str, stage: u32| -> u32 {
+    let compile = |src: &str, kind: u32| -> u32 {
         let csrc = std::ffi::CString::new(src).expect("shader has no NUL");
-        gl::ShaderSource(stage, 1, &csrc.as_ptr(), std::ptr::null());
-        gl::CompileShader(stage);
+        let sh = gl::CreateShader(kind);
+        gl::ShaderSource(sh, 1, &csrc.as_ptr(), std::ptr::null());
+        gl::CompileShader(sh);
         let mut ok = 0;
-        gl::GetShaderiv(stage, gl::COMPILE_STATUS, &mut ok);
+        gl::GetShaderiv(sh, gl::COMPILE_STATUS, &mut ok);
         if ok == 1 {
-            return stage;
+            return sh;
         }
         let mut len = 0;
-        gl::GetShaderiv(stage, gl::INFO_LOG_LENGTH, &mut len);
+        gl::GetShaderiv(sh, gl::INFO_LOG_LENGTH, &mut len);
         let mut buf = vec![0u8; len.max(1) as usize];
-        gl::GetShaderInfoLog(stage, len, &mut len, buf.as_mut_ptr() as *mut _);
+        gl::GetShaderInfoLog(sh, len, &mut len, buf.as_mut_ptr() as *mut _);
         panic!("shader {name} failed: {}", String::from_utf8_lossy(&buf).trim());
     };
     let vs_id = compile(vs, gl::VERTEX_SHADER);
