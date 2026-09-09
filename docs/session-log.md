@@ -5,6 +5,56 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10 — BLUETOOTH BRING-UP (MT6630 CONSYS): hci_stp driver ported (3.18 vendor → 6.6), BT radio powers on and answers HCI — blocked on a CONSYS rx-delivery stall (BT-channel frames arrive ~17 s late) so hci0 init can't complete yet (gens 37-42; NO boot.img reflash — module-only changes)
+
+Task: "get bluetooth working". The Gemini's BT = the BT half of the
+on-die MT6630 CONSYS combo (same chip Wi-Fi uses; no separate FW/HCI
+bus): BT HCI rides the WMT/STP fabric as the BT channel of mtk_wcn.
+Ported the vendor 3.18 in-kernel BlueZ driver for this exact device
+(drv_bt/, CONFIG_MTK_COMBO_BT_HCI = the halium-defconfig path) to 6.6
+as CONFIG_MTK_WCN_BT_HCI=m hci_stp (H4 HCI over STP BT_TASK_INDX).
+Full story: docs/bluetooth-bringup.md.
+
+FINDINGS / FIXES (each commit on the fork geminipda-bringup, synced to
+the repo delta byte-identical; fork HEAD after session b0c0254e5 + the
+resilient-init commits):
+1. BT func-on CRASHED the combo chip (PSM wait-timeout assert, whole
+   chip reset, wifi died) whenever BT turned on after ~70 s idle: the
+   MCU autonomously sleeps even on the DMA transport and the delta's
+   BTIF wake was a NO-OP. Fix: pulse the BTIF WAK line
+   (ap_wakeup_consys @ 0x1100c064, vendor hal_btif_send_wakeup_signal)
+   from mtk_wcn via a self-contained ioremap — deliberately NOT via
+   the builtin spike's ops (spike = kernel Image; module-vs-Image ABI
+   drift oopsed once: new mtk_wcn + old boot.img's spike -> pc-garbage
+   oops at mtk_wcn_btif_wakeup_consys+0x28; lesson: builtin spike
+   changes need a boot.img reflash, module changes don't). Also never
+   arm CONSYS PSM in the SOC spike sw_init (wmt_ic_soc.c).
+2. With the WAK fix: OPID(3) type(0) ok in ~0.12 s — BT func-on
+   WORKS, hci0 opens fast, func-off ok, no crashes.
+3. Chip answers HCI with CORRECT cmd-completes (saw 04 0e 04 01 03 0c
+   00 = reset complete) but BT-channel RX delivery stalls: a reset
+   sent at T got its reply delivered T+17 s (during the next open),
+   and every kernel HCI request (2 s HCI_CMD_TIMEOUT) dies first:
+   "hci0: Opcode 0xc03 failed: -110" / hciconfig "Connection timed
+   out". The stall lives in the SHARED CONSYS rx path
+   (mtk-consys-spike.c consys_wmtrxd/btif_rx_drain — poll ~50 ms +
+   2-5 ms usleep can't stall 17 s alone; suspect wmt_mtx stall or
+   vFIFO-full after the earlier assert-reset cycles). UNSOLVED.
+4. eFUSE BD read (vendor 01 09 10 00) returns nothing on this unit —
+   driver autogens a locally-administered address (or bd_addr param).
+
+Also learned/recorded: the bare devmem 0x10007004=0x48 WDT write does
+NOT reboot the unit anymore (cl2-up leaves WDT mode=0); full sequence
+does: 0x10007000=0x22000015 + 0x10007004=0x48 + 0x10007008=0x1971
+(LK RESTART_KEY 0x1971 — mtk_wdt.c) — used ~8x this session.
+
+Generations: 37 (modules first land) … 42 (last: tracing build). All
+module-only; boot.img untouched; device left HEALTHY on wifi ("The
+Lab"), ssh over g_ether. Kernel commits: devices/
+planet-geminipda/kernel/{config,config.full-329,default.nix} (BT=m
++ MTK_WCN_BT_HCI=m + rev headers); new docs/bluetooth-bringup.md.
+Next: fix the CONSYS rx stall, then hciconfig/bluetoothctl on glass.
+
 ## 2026-09-09 — 32-BIT WINDOWS ON THE PDA VIA WINE-WOW64: dsd_lm.exe (Doomsday "Lego Mania", Assembly 2003) RUNS — music plays, 32-bit GL stack proven on glass with the glprobe32 probe — but its scene presents BLACK; root-caused to the demo's fixed-function/display-list GL vs the guest GL being panfrost-T880 (env-llvmpipe does NOT stick); wine/wine64 CLIs added (gen36)
 
 Task: "get /root/Downloads/dsd_lm.exe running" (Doomsday's Lego-Mania
