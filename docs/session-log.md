@@ -5,6 +5,27 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09q — DEPLOY ROUND-TRIP: gen58 on the device (content-identical to gen57 — no config change since)
+
+Request: "deploy the current gen to the device and switch." Ran
+`bash bin/deploy.sh deploy` under run-job (job rc 0, 2026-09-09
+23:30Z). HEAD since the gen57 deploy (22:50) was only the docs commit
+15edf0b, but the flake source-tree hash changed → new toplevel, so the
+deploy was a real build+ship+switch round trip rather than a no-op:
+
+- built toplevel 152x4bzsqj1xbp6ksckqb432220c3zl7 (native aarch64,
+  remote builder; small delta over gen57's 4.43 GB closure — the
+expected docs-commit behavior: same content, new path), gc-pin added.
+- `nix copy` → device store; profile → `system-58-link`;
+  switch-to-configuration clean (polkit restart, /etc setup; no
+  config/units actually changed vs gen57).
+- Verified: gen58 (current) = 152x4bz…, activation log clean.
+- No flash, no para/boot touch; gen57 remains the rollback target
+  (`bash bin/deploy.sh rollback`).
+
+Next: nothing pending — the round trip confirmed the deploy loop is
+still green after the cjdell desktop rework.
+
 ## 2026-09-09p — CJDELL IS THE DEFAULT DESKTOP USER: LXQt + Phosh + audio sessions run as cjdell (not root), passwordless sudo — gens 55-57, deployed + cold-boot verified over ssh
 
 Task: "create a user cjdell that is the default user for desktop
