@@ -1353,13 +1353,22 @@ static INT32 mtk_wcn_soc_sw_init(P_WMT_HIF_CONF pWmtHifConf)
 #endif
 
 #if CFG_WMT_PS_SUPPORT
+	/* [bring-up 2026-09-10, BT] NEVER arm the CONSYS power-save on the
+	 * SOC/BTIF-DMA spike: waking a sleeping chip is a no-op here
+	 * (wcn_hw_glue.c mtk_wcn_btif_wakeup_consys returns 0 without a
+	 * WAK pulse - vendor DMA mode never pulses), so the WMT core's
+	 * WAKEUP handshake (WMT_WAKEUP_EVT wait in opfunc_pwr_sv, reason
+	 * 34/39) times out and asserts a WHOLE-CHIP reset whenever a
+	 * command (e.g. BT func-on from hci_stp) arrives while the chip
+	 * is asleep. Keeping PS off leaves the chip awake; wifi power
+	 * behaviour is unchanged (bring-up already leans on the console /
+	 * debugfs pwr paths) and the clamshell s2idle work owns device
+	 * sleep. If a real BTIF wake is ever implemented (GPIO WAK pulse
+	 * + host-side wake evt), this guard can go and PSM re-enabled.
+	 */
 	osal_assert(NULL != gp_soc_info);
-	if (NULL != gp_soc_info) {
-		if (MTK_WCN_BOOL_FALSE != gp_soc_info->bPsmSupport)
-			wmt_lib_ps_enable();
-		else
-			wmt_lib_ps_disable();
-	}
+	if (NULL != gp_soc_info)
+		wmt_lib_ps_disable();
 #endif
 
 	return 0;
