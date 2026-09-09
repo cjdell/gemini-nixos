@@ -5,6 +5,49 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — GEMDEMO PURGED TO A SINGLE-FILE GLES 3.1 TEMPLATE (0.3.0), DEPLOYED + CONFIRMED ON GLASS (gens 34-35)
+
+Verdict from the 0.2.0 "GEMINI: EXODUS" on-glass work: the demoscene is
+useless except as proof of hardware interaction → stripped to the
+skeleton. `pkgs/gemdemo/` is now **ONE Rust file** (`src/main.rs`, ~560
+lines incl. the receipt comments) that boots a GLES 3.1 EGL context on a
+winit Wayland surface (panfrost fork, Mali-T880) and draws one spinning
+per-vertex-shaded triangle while cpal plays a 440 Hz sine through the
+`gemini16` plug — the OpenGL-app template going forward (copy file +
+pkgs/gemdemo.nix). Deleted: gfx/show/synth/font/cpu/glctx/glutil/audio/
+shaders modules (~5200 lines; sources + the 0.2.0/0.1.0 docs live in git
+history). libc dep dropped (was only the A72-affinity code). Lockfile
+regenerated (212 pkgs; winit 0.29.15 / egl 0.2.7 / gl 0.14 / cpal 0.15.3).
+
+The hardware receipts the purge preserved — now the file-header doc + a
+compact docs/gemdemo.md: DSA `glCreate*` silent stubs → `glGen*`;
+one interleaved VBO per VAO, no instancing / no multi-buffer VAOs / no
+`glDrawElements` (panfrost crashes); `wl_egl_window` required for the
+Wayland surface; **audio wire state S16_LE @ 44100 Hz** (S32/48k on the
+16-bit MT6351 = noise) — `gemini16` by name (hint-gated) + forced I16
+config; uniform typos are silent on GLES → assert.
+
+**Deploys:** `bash bin/deploy.sh deploy` ×2 under run-job (each ~67 s,
+rc=0):
+- **gen34** `ybrd7qcd…` (commit 6f34d24) — first 0.3.0; on-glass smoke
+  FAILED at the shader: `shader tri failed:` with an EMPTY log — the
+  inlined compile closure passed the shader-TYPE enum straight to
+  glShaderSource (dropped the `glCreateShader` call; invalid object
+  handle → compile status 0). Lesson: cargo check can't see GL bugs;
+  the panic-with-log helper is only as good as the code before it.
+- **gen35** `29afwk7d…` (commit 26746d7, the fix) — **ON GLASS +
+  CONFIRMED**: identity `2xd3gy5y6…-gemdemo-0.3.0`, windowed under
+  labwc (1025×576): `gemdemo 0.3.0 — Mesa / Mali-T880 (Panfrost) —
+  OpenGL ES 3.1 Mesa 25.0.7`; `audio 'gemini16' — 44100 Hz, 1 ch, I16`;
+  steady 59-60 fps heartbeat over 12 s (no GL errors, no swap fails);
+  user confirmed triangle spins + 440 Hz sine audible.
+
+Docs updated: docs/gemdemo.md (rewritten as the template guide),
+README.md row, AGENTS.md row, flake.nix + services/gemini-pda.nix
+comments (no longer "demoscene"). Device left: **gen35**, para
+unchanged (NORMAL/NixOS), gemwl + lxqt-nested up. Next: nothing owed
+for the template itself — future GL work starts from src/main.rs.
+
 ## 2026-09-09 — GEMDEMO 0.2.0 DEPLOYED AS GEN33 (old 0.1.0 "AETHER" replaced on the device)
 
 `bash bin/deploy.sh deploy` built + switched gen33 (rc=0, ~42 s — the

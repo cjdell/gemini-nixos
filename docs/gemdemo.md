@@ -95,9 +95,9 @@ reason the template exists, and the reason the code must not be
 
 ## Next actions
 
-- ON-GLASS check of the 0.3.0 template (this session's deploy): the
-  triangle should spin smoothly at ~60 fps fullscreen on gemwl AND
-  windowed under labwc; the 440 Hz sine should be a clean steady tone
-  with no buzz (S16@44.1k) and no open click; heartbeat lines prove
-  pacing. Confirm `gemdemo` (the system copy) is the new binary, note
-  the store path + fps/audio state in the session log.
+- ✅ ON-GLASS confirmed 2026-09-09 (gen35): triangle spins at a steady
+  59-60 fps windowed under labwc (identity banner `Mesa / Mali-T880
+  (Panfrost) — OpenGL ES 3.1 Mesa 25.0.7`), 440 Hz sine clean via
+  gemini16 (S16, 44.1 kHz, no buzz/click), heartbeat lines steady, no
+  GL errors. Fullscreen-on-gemwl run still owed (same binary path, only
+  the window mode differs — low risk).
