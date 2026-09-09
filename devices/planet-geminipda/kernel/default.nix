@@ -27,7 +27,9 @@
 #           fix, see docs/bluetooth-bringup.md), verified 2026-09-11;
 #           7dce5d17 (2026-09-11: + HCI_QUIRK_LE_INIT_BEST_EFFORT - MT6630
 #           refuses LE write cmds at open (0x20); best-effort le_init3 so
-#           BR/EDR comes up), verified byte-for-byte 2026-09-10
+#           BR/EDR comes up); 16e6d817 (2026-09-11: + BTIF WAK keep-awake
+#           heartbeat - MCU dozes inside the reply window -> HCI cmd-sync
+#           desync; pulse ~30 ms while BT traffic is active), verified byte-for-byte 2026-09-10
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
 #           Regenerate after fork commits with bin/sync-kernel-delta.sh.

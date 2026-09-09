@@ -28,6 +28,7 @@
 #include <linux/io.h>
 #include <linux/firmware.h>
 #include <linux/kthread.h>
+#include <linux/workqueue.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
 
@@ -406,8 +407,59 @@ int mtk_wcn_btif_close(unsigned long u_id)
 }
 
 /* Defined below (the ioremap'd BTIF WAK pulse); called from the write
- * path so a prototype lives here. */
+ * path and the heartbeat so a prototype lives here. */
 int mtk_wcn_btif_wakeup_consys(unsigned long u_id);
+
+/* BTIF WAK keep-awake heartbeat (BT rx-stall work, 2026-09-11).
+ *
+ * The wake-before-send pulse in mtk_wcn_btif_write wakes the CONSYS MCU
+ * for the TX moment, but a reply takes ~40-80 ms to come back and the
+ * MCU's autonomous sleep can doze it again INSIDE that window - the
+ * reply then lands late or out of order and the kernel's HCI command
+ * sync machinery desyncs (observed glass 2026-09-11: command timeouts
+ * that still got their reply afterwards, -EINTR/-EREMOTEIO noise, and a
+ * cascade of bogus failures once the first one hit). Keeping the MCU
+ * pulsed every ~30 ms while traffic is active (the cadence that was
+ * proven clean on glass by hammering WAK every 80 ms) eliminates the
+ * desyncs; traffic stops -> the heartbeat stops ~200 ms later and the
+ * MCU is allowed back to sleep (the next write's wake-before-send
+ * handles the wakeup). Waking an already-awake MCU is harmless, so a
+ * 30 ms cadence is safe during bursts.
+ */
+static unsigned long btif_last_write;
+static bool btif_hb_inited;
+static struct delayed_work btif_wak_hb_work;
+static unsigned int btif_wak_hb_ms = 30; /* heartbeat cadence while active */
+static unsigned int btif_wak_hb_hold = 200; /* hb keeps running this long after last write */
+
+module_param(btif_wak_hb_ms, uint, 0644);
+module_param(btif_wak_hb_hold, uint, 0644);
+
+static void btif_wak_hb_fn(struct work_struct *work)
+{
+	if (!btif_wak_hb_ms)
+		return;
+	/* Only keep the heartbeat alive while traffic is recent. */
+	if (time_is_after_jiffies(btif_last_write +
+				   msecs_to_jiffies(btif_wak_hb_hold))) {
+		mtk_wcn_btif_wakeup_consys(0);
+		schedule_delayed_work(&btif_wak_hb_work,
+				       msecs_to_jiffies(btif_wak_hb_ms));
+	}
+}
+
+static void btif_wak_hb_kick(void)
+{
+	if (!btif_wak_hb_ms)
+		return;
+	if (!btif_hb_inited) {
+		INIT_DELAYED_WORK(&btif_wak_hb_work, btif_wak_hb_fn);
+		btif_hb_inited = true;
+	}
+	if (!work_pending(&btif_wak_hb_work.work))
+		schedule_delayed_work(&btif_wak_hb_work,
+				       msecs_to_jiffies(btif_wak_hb_ms));
+}
 
 int mtk_wcn_btif_write(unsigned long u_id, const unsigned char *p_buf,
 		      unsigned int len)
@@ -437,6 +489,11 @@ int mtk_wcn_btif_write(unsigned long u_id, const unsigned char *p_buf,
 	if (ret)
 		pr_debug("wcn-glue: btif_write: WAK pulse failed (%d) - continuing\n",
 			 ret);
+
+	/* Keep the MCU awake through the reply window (see the heartbeat
+	 * comment above). */
+	btif_last_write = jiffies;
+	btif_wak_hb_kick();
 
 	if (ops->tx(p_buf, (int)len))
 		return -EIO;
