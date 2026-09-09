@@ -735,7 +735,7 @@ static int __init hci_stp_init(void)
 	 * init, which would abort every hci0 open. Best-effort the LE init
 	 * stage so BR/EDR comes up; LE handled separately (see the quirk
 	 * comment in include/net/bluetooth/hci.h, 2026-09-11). */
-	set_bit(HCI_QUIRK_LE_INIT_BEST_EFFORT, &hdev->quirks);
+	set_bit(HCI_QUIRK_EXT_INIT_BEST_EFFORT, &hdev->quirks);
 
 	INIT_WORK(&hu->init_work, hci_stp_dev_init_work);
 

@@ -29,7 +29,10 @@
 #           refuses LE write cmds at open (0x20); best-effort le_init3 so
 #           BR/EDR comes up); 16e6d817 (2026-09-11: + BTIF WAK keep-awake
 #           heartbeat - MCU dozes inside the reply window -> HCI cmd-sync
-#           desync; pulse ~30 ms while BT traffic is active), verified byte-for-byte 2026-09-10
+#           desync; pulse ~30 ms while BT traffic is active); f6b135a3
+#           (2026-09-11: broaden to HCI_QUIRK_EXT_INIT_BEST_EFFORT - also
+#           hci_init4/le_init4: MT6630 over-advertises (MWS etc.) and
+#           refuses the extra commands), verified byte-for-byte 2026-09-10
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
 #           Regenerate after fork commits with bin/sync-kernel-delta.sh.

@@ -4321,14 +4321,12 @@ static int hci_init3_sync(struct hci_dev *hdev)
 	if (!lmp_le_capable(hdev))
 		return 0;
 
-	/* MT6630 CONSYS bring-up (HCI_QUIRK_LE_INIT_BEST_EFFORT): the
-	 * controller refuses the LE write commands in le_init3 (status
-	 * 0x20) at this point of the open sequence, which would abort the
-	 * whole hci0 open and keep BR/EDR down too. Run the stage
-	 * best-effort: log each failure and continue so the adapter comes
-	 * up BR/EDR-capable; LE is handled separately (probe + possible
-	 * post-open re-init, docs/bluetooth-bringup.md 2026-09-11). */
-	if (test_bit(HCI_QUIRK_LE_INIT_BEST_EFFORT, &hdev->quirks)) {
+	/* MT6630 CONSYS bring-up (HCI_QUIRK_EXT_INIT_BEST_EFFORT): the
+	 * controller over-advertises capabilities and refuses the extras
+	 * (see the quirk comment in include/net/bluetooth/hci.h); a
+	 * refusal here would abort the whole hci0 open and keep BR/EDR
+	 * down. Run the stage best-effort: log each failure and continue. */
+	if (test_bit(HCI_QUIRK_EXT_INIT_BEST_EFFORT, &hdev->quirks)) {
 		size_t i;
 
 		for (i = 0; le_init3[i].func; i++) {
@@ -4589,6 +4587,34 @@ static int hci_init4_sync(struct hci_dev *hdev)
 	int err;
 
 	bt_dev_dbg(hdev, "");
+
+	if (test_bit(HCI_QUIRK_EXT_INIT_BEST_EFFORT, &hdev->quirks)) {
+		size_t i;
+
+		/* MT6630 CONSYS bring-up: hci_init4 + le_init4 are the
+		 * optional extras (codecs / pairing opts / MWS / sync-train /
+		 * SC support / error-reporting + LE feature writes); the
+		 * controller over-advertises and refuses several of them.
+		 * Best-effort: log each failure and continue (see the quirk
+		 * comment in include/net/bluetooth/hci.h). */
+		for (i = 0; hci_init4[i].func; i++) {
+			err = hci_init4[i].func(hdev);
+			if (err)
+				bt_dev_warn(hdev,
+					    "BR/EDR init step %zu failed (%d) - continuing\n",
+					    i, err);
+		}
+		if (lmp_le_capable(hdev)) {
+			for (i = 0; le_init4[i].func; i++) {
+				err = le_init4[i].func(hdev);
+				if (err)
+					bt_dev_warn(hdev,
+						    "LE init step %zu failed (%d) - continuing\n",
+						    i, err);
+			}
+		}
+		return 0;
+	}
 
 	err = hci_init_stage_sync(hdev, hci_init4);
 	if (err)

@@ -331,22 +331,25 @@ enum {
 	HCI_QUIRK_BROKEN_LE_CODED,
 
 	/*
-	 * When this quirk is set, the LE controller-init command sequence
-	 * (le_init3: LE Set Event Mask, accept/resolv list setup, Write LE
-	 * Host Supported, ...) is best-effort: individual command failures
-	 * are logged but do not abort the hci0 open. Used by the MediaTek
-	 * MT6630 CONSYS bring-up (Gemini PDA), whose controller answers the
-	 * LE read commands but refuses the LE *write* commands with status
-	 * 0x20 (Command Disallowed) while it is in the state reached right
-	 * after the open-time vendor radio config (see docs/bluetooth-
-	 * bringup.md 2026-09-11). The refusal is not fatal for BR/EDR
-	 * operation, which must come up regardless; LE is then probed
-	 * separately once hci0 is up.
+	 * When this quirk is set, the optional controller-init command
+	 * sequences (le_init3: LE Set Event Mask / accept+resolv list / LE
+	 * Host Supported; hci_init4: codecs / pairing opts / MWS transport /
+	 * sync-train / SC support / error-reporting) are best-effort:
+	 * individual command failures are logged but do not abort the hci0
+	 * open. Used by the MediaTek MT6630 CONSYS bring-up (Gemini PDA),
+	 * whose controller over-advertises capabilities (its feature and
+	 * supported-command replies claim more than the firmware
+	 * implements) and then refuses the corresponding commands with
+	 * status 0x20 / 0x01 / unknown-command, which would abort the whole
+	 * hci0 open and keep BR/EDR down too (glass 2026-09-11: LE Set
+	 * Event Mask refused at open; GET_MWS_TRANSPORT_CONFIG refused with
+	 * the feature bit set). BR/EDR + basic LE must come up regardless;
+	 * the extras are then probed separately once hci0 is up.
 	 *
 	 * This quirk can be set before hci_register_dev is called or
 	 * during the hdev->setup vendor callback.
 	 */
-	HCI_QUIRK_LE_INIT_BEST_EFFORT,
+	HCI_QUIRK_EXT_INIT_BEST_EFFORT,
 };
 
 /* HCI device flags */
