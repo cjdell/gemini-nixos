@@ -21,22 +21,22 @@
 #           branch changes over v6.6 (457 added + 55 modified, 0 deleted,
 #           0 renamed; copy-replace is exact). Identity check:
 #           v6.6-base + delta == geminipda-bringup @
-#           d5bcde1a02d5ffba95f88145c983abba1edbc546 (2026-09-10: #329
-#           tree + hci_stp BT driver); 05bbb33d39 (2026-09-11: + mtk_wcn
+#           d5bcde1a02d5ffba95f88145c983abba1edbc546 (2026-09-09: #329
+#           tree + hci_stp BT driver); 05bbb33d39 (2026-09-09: + mtk_wcn
 #           wake-before-send on every BTIF transport write - BT rx-stall
-#           fix, see docs/bluetooth-bringup.md), verified 2026-09-11;
-#           7dce5d17 (2026-09-11: + HCI_QUIRK_LE_INIT_BEST_EFFORT - MT6630
+#           fix, see docs/bluetooth-bringup.md), verified 2026-09-09;
+#           7dce5d17 (2026-09-09: + HCI_QUIRK_LE_INIT_BEST_EFFORT - MT6630
 #           refuses LE write cmds at open (0x20); best-effort le_init3 so
-#           BR/EDR comes up); 16e6d817 (2026-09-11: + BTIF WAK keep-awake
+#           BR/EDR comes up); 16e6d817 (2026-09-09: + BTIF WAK keep-awake
 #           heartbeat - MCU dozes inside the reply window -> HCI cmd-sync
 #           desync; pulse ~30 ms while BT traffic is active); f6b135a3
-#           (2026-09-11: broaden to HCI_QUIRK_EXT_INIT_BEST_EFFORT - also
+#           (2026-09-09: broaden to HCI_QUIRK_EXT_INIT_BEST_EFFORT - also
 #           hci_init4/le_init4: MT6630 over-advertises (MWS etc.) and
-#           refuses the extra commands); 440be2a1 (2026-09-11: gate the
+#           refuses the extra commands); 440be2a1 (2026-09-09: gate the
 #           WAK heartbeat on the BTIF link being OPEN - write-triggered
-#           hold was too short for scans/connections); 7af6ee9c (2026-09-11:
+#           hold was too short for scans/connections); 7af6ee9c (2026-09-09:
 #           record LMP_HOST_LE + HCI_LE_ENABLED locally when the chip refuses
-#           0x200d - unblocks mgmt/LE discovery), verified byte-for-byte 2026-09-10
+#           0x200d - unblocks mgmt/LE discovery), verified byte-for-byte 2026-09-09
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
 #           Regenerate after fork commits with bin/sync-kernel-delta.sh.

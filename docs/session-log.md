@@ -5,9 +5,9 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
-## 2026-09-11 — BLUETOOTH BRING-UP part 2: CONSYS rx-stall ROOT CAUSE + fix, hci0 init to the BR/EDR wall (gens 46-48; module-only, no boot.img reflash)
+## 2026-09-09l — BLUETOOTH BRING-UP part 2: CONSYS rx-stall ROOT CAUSE + fix, hci0 init to the BR/EDR wall (gens 46-48; module-only, no boot.img reflash)
 
-Task: continue the 2026-09-10 BT work — "fix the CONSYS rx stall, then
+Task: continue the 2026-09-09k BT work — "fix the CONSYS rx stall, then
 hciconfig hci0 up / bluetoothctl scan on glass".
 
 ROOT CAUSE OF THE RX STALL (found + fixed):
@@ -75,7 +75,7 @@ start bluetoothd (nix-shell -p bluez) -> bluetoothctl power on +
 scan on -> then probe LE post-open (hcitool cmd 0x08 ...) to see if
 the 0x20 LE refusal is only an open-time artifact.
 
---- RESOLVED LATER THE SAME DAY (same entry, appended 2026-09-11): ---
+--- RESOLVED LATER THE SAME DAY (second half of this entry, appended later that evening): ---
 
 All of the above NEXT ACTION landed ON GLASS. Version lines per flash
 (module-only deploys via bin/deploy.sh + WDT reboot, gens ~46-50; the
@@ -112,7 +112,7 @@ at open, best-efforted; mgmt path still delivers DeviceFound); (3) RF
 test with a nearby device; (4) hci_stp module-vanish-on-failed-open
 cleanup TODO.
 
-## 2026-09-10 — BLUETOOTH BRING-UP (MT6630 CONSYS): hci_stp driver ported (3.18 vendor → 6.6), BT radio powers on and answers HCI — blocked on a CONSYS rx-delivery stall (BT-channel frames arrive ~17 s late) so hci0 init can't complete yet (gens 37-42; NO boot.img reflash — module-only changes)
+## 2026-09-09k — BLUETOOTH BRING-UP (MT6630 CONSYS): hci_stp driver ported (3.18 vendor → 6.6), BT radio powers on and answers HCI — blocked on a CONSYS rx-delivery stall (BT-channel frames arrive ~17 s late) so hci0 init can't complete yet (gens 37-42; NO boot.img reflash — module-only changes)
 
 Task: "get bluetooth working". The Gemini's BT = the BT half of the
 on-die MT6630 CONSYS combo (same chip Wi-Fi uses; no separate FW/HCI
@@ -162,7 +162,7 @@ planet-geminipda/kernel/{config,config.full-329,default.nix} (BT=m
 + MTK_WCN_BT_HCI=m + rev headers); new docs/bluetooth-bringup.md.
 Next: fix the CONSYS rx stall, then hciconfig/bluetoothctl on glass.
 
-## 2026-09-09 — 32-BIT WINDOWS ON THE PDA VIA WINE-WOW64: dsd_lm.exe (Doomsday "Lego Mania", Assembly 2003) RUNS — music plays, 32-bit GL stack proven on glass with the glprobe32 probe — but its scene presents BLACK; root-caused to the demo's fixed-function/display-list GL vs the guest GL being panfrost-T880 (env-llvmpipe does NOT stick); wine/wine64 CLIs added (gen36)
+## 2026-09-09j — 32-BIT WINDOWS ON THE PDA VIA WINE-WOW64: dsd_lm.exe (Doomsday "Lego Mania", Assembly 2003) RUNS — music plays, 32-bit GL stack proven on glass with the glprobe32 probe — but its scene presents BLACK; root-caused to the demo's fixed-function/display-list GL vs the guest GL being panfrost-T880 (env-llvmpipe does NOT stick); wine/wine64 CLIs added (gen36)
 
 Task: "get /root/Downloads/dsd_lm.exe running" (Doomsday's Lego-Mania
 PC demo, scene.org — fmod.dll + ijl11.dll + lmania.ogg beside it).
@@ -271,7 +271,7 @@ dsd_lm.exe.upx.bak on the device; sha256 feb7bd4c…).
    wow64 path, glprobe32, panfrost-not-llvmpipe correction) done here;
    close out gen36 verification (wine --version on device) next session.
 
-## 2026-09-09 — GEMDEMO PURGED TO A SINGLE-FILE GLES 3.1 TEMPLATE (0.3.0), DEPLOYED + CONFIRMED ON GLASS (gens 34-35)
+## 2026-09-09i — GEMDEMO PURGED TO A SINGLE-FILE GLES 3.1 TEMPLATE (0.3.0), DEPLOYED + CONFIRMED ON GLASS (gens 34-35)
 
 Verdict from the 0.2.0 "GEMINI: EXODUS" on-glass work: the demoscene is
 useless except as proof of hardware interaction → stripped to the
@@ -314,7 +314,7 @@ comments (no longer "demoscene"). Device left: **gen35**, para
 unchanged (NORMAL/NixOS), gemwl + lxqt-nested up. Next: nothing owed
 for the template itself — future GL work starts from src/main.rs.
 
-## 2026-09-09 — GEMDEMO 0.2.0 DEPLOYED AS GEN33 (old 0.1.0 "AETHER" replaced on the device)
+## 2026-09-09h — GEMDEMO 0.2.0 DEPLOYED AS GEN33 (old 0.1.0 "AETHER" replaced on the device)
 
 `bash bin/deploy.sh deploy` built + switched gen33 (rc=0, ~42 s — the
 only closure delta was gemdemo → 0.2.0). Device now serves
@@ -329,7 +329,7 @@ bake, frame dump OK, A72s up + pinned.
 Rollback: `bash bin/deploy.sh rollback` (one gen) restores 0.1.0 if the
 fullscreen QA on glass goes wrong.
 
-## 2026-09-09 — GEMDEMO 0.2.0 ON GLASS (windowed under labwc): 60 fps across the show; S5 planet bake fix measured
+## 2026-09-09g — GEMDEMO 0.2.0 ON GLASS (windowed under labwc): 60 fps across the show; S5 planet bake fix measured
 
 Deployed the 0.2.0 build to the PDA (nix copy → /nix/store, run as the
 labwc session client) and measured:
@@ -359,7 +359,7 @@ Files: pkgs/gemdemo/src/gfx.rs (planet bake), src/show.rs (PAL consts),
 docs/gemdemo.md (updated status + strategy). Session log entry above
 holds the full 0.2.0 rewrite record.
 
-## 2026-09-09 — GEMDEMO 0.2.0 "GEMINI: EXODUS": complete rewrite (assembly-style cinematic spacesynth show) — code green, NOT yet on glass
+## 2026-09-09f — GEMDEMO 0.2.0 "GEMINI: EXODUS": complete rewrite (assembly-style cinematic spacesynth show) — code green, NOT yet on glass
 
 After the 0.1.0 "AETHER" verdict (2026-09-09: single-digit FPS, flawed
 visuals, music broken — master rms ~0.88 from the naive limiter, saw-DC
@@ -400,7 +400,7 @@ Files: pkgs/gemdemo.{nix,src/{main,show,gfx,synth,cpu,audio,font,glctx,
 glutil,shaders}.rs}, docs/gemdemo.md (rewritten), Cargo.toml 0.2.0,
 bin/gemdemo-host-check.sh.
 
-## 2026-09-09 — BOOT-TIME EXT4 AUTO-REPAIR ON GLASS (defense against hard power-off): initrd e2fsck pre-mount, both paths verified, p22 flashed + sha'd
+## 2026-09-09e — BOOT-TIME EXT4 AUTO-REPAIR ON GLASS (defense against hard power-off): initrd e2fsck pre-mount, both paths verified, p22 flashed + sha'd
 
 Follow-up to the boot-panic recovery above. The panic's root cause —
 torn ext4 orphan chain that the KERNEL's mount-time journal replay
@@ -450,7 +450,7 @@ output on the fbcon console during the ~230 ms window — visible live
 but not captured in dmesg/journal (userspace console writes).
 Device left: running gen32, para cleared (NORMAL), desktop + wifi up.
 
-## 2026-09-09 — BOOT-PANIC RECOVERY (post-wedge): p32 torn-orphan ext4 from the unclean power-off → repeated pre-mount initrd panics; fixed with offline e2fsck -fy in TWRP, no reflash — device back on gen32, clean cold boot
+## 2026-09-09d — BOOT-PANIC RECOVERY (post-wedge): p32 torn-orphan ext4 from the unclean power-off → repeated pre-mount initrd panics; fixed with offline e2fsck -fy in TWRP, no reflash — device back on gen32, clean cold boot
 
 Follow-up to the wine D3D9 session below (device left WEDGED after the
 forced guest-panfrost experiment). User power-cycled; NORMAL boot then
@@ -498,7 +498,41 @@ re-run `bin/wine-x86-deploy.sh run d3d9test.exe` on the llvmpipe path +
 grim screenshot receipt; guest-panfrost stays BANNED without
 para=boot-recovery + a clean prefix (per the incident LEARNED note).
 
-## 2026-09-09 (gemdemo audio FIXED-ENOUGH, MUSIC ON GLASS — "awful mix" = the follow-up) — S32 noise trap + engine DC bugs, all committed
+
+## 2026-09-09c — Windows D3D9 on the PDA: wine64+box64 deployed, first D3D9 frame rendered; guest-panfrost run wedged the device (power cycle owed)
+
+Task: "add wine + an x86→arm translator and test a simple Windows D3D9 app".
+
+**Stack (all hydra-cached at the flake nixpkgs rev dc5d91f84032 — verified with `nix path-info --store https://cache.nixos.org`, rule 9):**
+- box64 0.4.4 (aarch64 x86-64 translator; 5 paths/81 MB)
+- wine64 11.0 (x86_64-linux; 342 paths/1.8 GB) — the closure carries glvnd (libEGL dispatch) but NO GL impl
+- mesa 26.2.2 (x86_64-linux; 273 MB) — the GL impl; eglPlatforms x11+wayland; wired in via `__EGL_VENDOR_LIBRARY_FILENAMES` (the env var glvnd 1.7.0 actually implements — verified by grepping the lib; `__EGL_VENDOR_LIBRARY_FILE` does NOT exist)
+- d3d9test 1.0 — self-written x86_64-windows PE (pkgs/d3d9test/): rotating vertex-coloured cube + GDI FPS overlay; fixed FVF 0x0042 (D3DFVF_XYZ|D3DFVF_DIFFUSE, mingw-w64 ground truth)
+- grim 1.5.0 (screenshots)
+
+**Why box64+wine64, not FEX+i686-wine:** fex-emu is not in this nixpkgs; `pkgsCross` has no i686-linux (i686 *is* a valid import system but its wine NAR is 404 on cache.nixos.org → source compile); wine64+box64 is the only all-cached path. box86 NAR also missing at this pin (not shipped — the test PE is 64-bit).
+
+**Build traps found (all in docs/wine-d3d.md §2/§3):**
+- winegcc inside the nixpkgs wine64 package is configured NATIVE (`-dumpmachine` → x86_64-unknown-linux-gnu) — emits an ELF + sh wrapper, not a PE. The PE is built with `pkgsCross.mingwW64` (x86_64-w64-mingw32-g++ 15.3.0 + mingw-w64 14.0.0 headers, needs `allowUnsupportedSystem = true`).
+- Wine's headers are partial classic-era D3D9 (no flexible-FVF macros, no DEFAULT_SWISS, D3DCAPS9 in d3d9caps.h, D3DMATRIX = anonymous union, C++ mode for COM classes).
+- **gemwl had to gain viewporter**: winewayland refuses to init without wp_viewporter. 2 lines in pkgs/gemwl/gemwl.c (wlr_viewporter_create; wlroots 0.18 handles viewport resources internally — no per-window plumbing). Shipped as **gen32** (deploy.sh; system-32-… on device at session end).
+
+**Deployment:** bin/wine-x86-deploy.sh (status/deploy/init/run/log/shot/kill) — `nix copy` of the 5 paths to the device store + /root/wine-x86 launcher + GC roots (host+device). Not a flake systemPackage (1.8 GB would bloat every deploy delta).
+
+**On-glass results:**
+- `wine cmd /c echo` → WINE-HELLO-WORLD (stack proven).
+- d3d9test: **FIRST FRAME PRESENTED — D3D9 rendering under wine64+box64**, steady **55–60 FPS** on the llvmpipe path (guest mesa swrast — stable for 10+ min).
+- Receipts in device:/root/wine-x86/logs/app.log + the WINEDEBUG=+d3d9 log (7346+ DrawIndexedPrimitive calls).
+
+**BUG 1 (wine, deferred):** GetAdapterDisplayMode/GetDeviceCaps page-fault (garbage-pointer read at 0x9000E000D030F) under box64 on wine 11's wayland driver — gemwl has no xdg_output so wine's screen struct is partly uninitialised. Worked around in d3d9test (identity query gated behind D3D9TEST_IDENTITY, off by default). Adapter string is wine's fallback "NVIDIA GeForce 6800" (GL_RENDERER unavailable via D3D9).
+
+**INCIDENT (unresolved, power cycle owed):** to find out whether the T880 could render the guest, I forced `GALLIUM_DRIVER=panfrost MESA_LOADER_DEBUG=all` on the app. Within ~20 s the **device wedged: kernel alive (ping 0.25 ms, g_ether up, ARP normal) but userspace dead** (sshd banner timeout, TCP:22 connect timeout, flat net counters). Controlled pan_js (kernel panfrost job thread) CPU-time A/B with the llvmpipe app showed +1 jiffie over 27 s — i.e. **the stable path was llvmpipe (CPU), not the T880**; the forced-panfrost run is the suspect (guest x86_64 panfrost 26.2.2 + box64 ioctl path + T880 already held by native gemwl). No software reset available (WDT-EXRST needs an ssh shell; preloader needs buttons). **LEARNED: never force guest panfrost on this stack until root-caused; llvmpipe is the safe renderer; guest-panfrost is a separate, risky experiment (fresh prefix, no other GPU users, WDT safety net via para=boot-recovery first).**
+
+Device left: **WEDGED (userspace dead) — needs physical power cycle.** After power-on: `bash bin/device-ssh.sh 'echo ok'` (auto net-up), verify gen32 + desktop, re-run `bin/wine-x86-deploy.sh run d3d9test.exe` (llvmpipe path), take the grim screenshot receipt, then leave para as-is (normal/NixOS default; system is verified) — or para=boot-recovery if more risky work is planned.
+
+Files: pkgs/wine-x86.nix, pkgs/d3d9test.nix, pkgs/d3d9test/d3d9test.cpp, bin/wine-x86-deploy.sh, docs/wine-d3d.md, pkgs/gemwl/gemwl.c (viewporter).
+
+## 2026-09-09b (gemdemo audio FIXED-ENOUGH, MUSIC ON GLASS — "awful mix" = the follow-up) — S32 noise trap + engine DC bugs, all committed
 
 Audible music now plays on the device (S16 @ 44.1 k via gemini16). Three
 separate root causes were stacked; the last two made the music NOTHING
@@ -539,7 +573,7 @@ ships the silent build; deploy gen32 when the mix is fixed).
 Device state: /root/.asoundrc stopgap present (re-add after root home
 wipes); no stray gemdemo processes.
 
-## 2026-09-09 (gemdemo audio: "no music, buzz at open + snap at close" ROOT-CAUSED + FIXED) — S32-on-wire noise trap; gemini16 now discoverable
+## 2026-09-09a (gemdemo audio: "no music, buzz at open + snap at close" ROOT-CAUSED + FIXED) — S32-on-wire noise trap; gemini16 now discoverable
 
 User report (running gemdemo in the desktop session): no music — only a
 brief buzz at start and a snap at exit. Root cause found + fixed at the
@@ -2149,36 +2183,3 @@ Next: big custom-drv compiles (kernel/mesa) stay on the host/Pi loop
 (deploy.sh) — the PDA compiles them only when their sources change
 (expect ~30+ min; RAM-bound 2×2 jobs; a zram/swapfile is the open
 improvement for desktop-up compiles). Cold-reboot check of gen30 owed.
-
-## 2026-09-09 — Windows D3D9 on the PDA: wine64+box64 deployed, first D3D9 frame rendered; guest-panfrost run wedged the device (power cycle owed)
-
-Task: "add wine + an x86→arm translator and test a simple Windows D3D9 app".
-
-**Stack (all hydra-cached at the flake nixpkgs rev dc5d91f84032 — verified with `nix path-info --store https://cache.nixos.org`, rule 9):**
-- box64 0.4.4 (aarch64 x86-64 translator; 5 paths/81 MB)
-- wine64 11.0 (x86_64-linux; 342 paths/1.8 GB) — the closure carries glvnd (libEGL dispatch) but NO GL impl
-- mesa 26.2.2 (x86_64-linux; 273 MB) — the GL impl; eglPlatforms x11+wayland; wired in via `__EGL_VENDOR_LIBRARY_FILENAMES` (the env var glvnd 1.7.0 actually implements — verified by grepping the lib; `__EGL_VENDOR_LIBRARY_FILE` does NOT exist)
-- d3d9test 1.0 — self-written x86_64-windows PE (pkgs/d3d9test/): rotating vertex-coloured cube + GDI FPS overlay; fixed FVF 0x0042 (D3DFVF_XYZ|D3DFVF_DIFFUSE, mingw-w64 ground truth)
-- grim 1.5.0 (screenshots)
-
-**Why box64+wine64, not FEX+i686-wine:** fex-emu is not in this nixpkgs; `pkgsCross` has no i686-linux (i686 *is* a valid import system but its wine NAR is 404 on cache.nixos.org → source compile); wine64+box64 is the only all-cached path. box86 NAR also missing at this pin (not shipped — the test PE is 64-bit).
-
-**Build traps found (all in docs/wine-d3d.md §2/§3):**
-- winegcc inside the nixpkgs wine64 package is configured NATIVE (`-dumpmachine` → x86_64-unknown-linux-gnu) — emits an ELF + sh wrapper, not a PE. The PE is built with `pkgsCross.mingwW64` (x86_64-w64-mingw32-g++ 15.3.0 + mingw-w64 14.0.0 headers, needs `allowUnsupportedSystem = true`).
-- Wine's headers are partial classic-era D3D9 (no flexible-FVF macros, no DEFAULT_SWISS, D3DCAPS9 in d3d9caps.h, D3DMATRIX = anonymous union, C++ mode for COM classes).
-- **gemwl had to gain viewporter**: winewayland refuses to init without wp_viewporter. 2 lines in pkgs/gemwl/gemwl.c (wlr_viewporter_create; wlroots 0.18 handles viewport resources internally — no per-window plumbing). Shipped as **gen32** (deploy.sh; system-32-… on device at session end).
-
-**Deployment:** bin/wine-x86-deploy.sh (status/deploy/init/run/log/shot/kill) — `nix copy` of the 5 paths to the device store + /root/wine-x86 launcher + GC roots (host+device). Not a flake systemPackage (1.8 GB would bloat every deploy delta).
-
-**On-glass results:**
-- `wine cmd /c echo` → WINE-HELLO-WORLD (stack proven).
-- d3d9test: **FIRST FRAME PRESENTED — D3D9 rendering under wine64+box64**, steady **55–60 FPS** on the llvmpipe path (guest mesa swrast — stable for 10+ min).
-- Receipts in device:/root/wine-x86/logs/app.log + the WINEDEBUG=+d3d9 log (7346+ DrawIndexedPrimitive calls).
-
-**BUG 1 (wine, deferred):** GetAdapterDisplayMode/GetDeviceCaps page-fault (garbage-pointer read at 0x9000E000D030F) under box64 on wine 11's wayland driver — gemwl has no xdg_output so wine's screen struct is partly uninitialised. Worked around in d3d9test (identity query gated behind D3D9TEST_IDENTITY, off by default). Adapter string is wine's fallback "NVIDIA GeForce 6800" (GL_RENDERER unavailable via D3D9).
-
-**INCIDENT (unresolved, power cycle owed):** to find out whether the T880 could render the guest, I forced `GALLIUM_DRIVER=panfrost MESA_LOADER_DEBUG=all` on the app. Within ~20 s the **device wedged: kernel alive (ping 0.25 ms, g_ether up, ARP normal) but userspace dead** (sshd banner timeout, TCP:22 connect timeout, flat net counters). Controlled pan_js (kernel panfrost job thread) CPU-time A/B with the llvmpipe app showed +1 jiffie over 27 s — i.e. **the stable path was llvmpipe (CPU), not the T880**; the forced-panfrost run is the suspect (guest x86_64 panfrost 26.2.2 + box64 ioctl path + T880 already held by native gemwl). No software reset available (WDT-EXRST needs an ssh shell; preloader needs buttons). **LEARNED: never force guest panfrost on this stack until root-caused; llvmpipe is the safe renderer; guest-panfrost is a separate, risky experiment (fresh prefix, no other GPU users, WDT safety net via para=boot-recovery first).**
-
-Device left: **WEDGED (userspace dead) — needs physical power cycle.** After power-on: `bash bin/device-ssh.sh 'echo ok'` (auto net-up), verify gen32 + desktop, re-run `bin/wine-x86-deploy.sh run d3d9test.exe` (llvmpipe path), take the grim screenshot receipt, then leave para as-is (normal/NixOS default; system is verified) — or para=boot-recovery if more risky work is planned.
-
-Files: pkgs/wine-x86.nix, pkgs/d3d9test.nix, pkgs/d3d9test/d3d9test.cpp, bin/wine-x86-deploy.sh, docs/wine-d3d.md, pkgs/gemwl/gemwl.c (viewporter).

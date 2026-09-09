@@ -1,7 +1,7 @@
 # Bluetooth bring-up: MT6630 CONSYS hci_stp
 
 > Status: ✅ **hci0 inits clean on glass; BR/EDR + LE both enabled;
-> discovery finds real devices over the air** (2026-09-11). Transport
+> discovery finds real devices over the air** (2026-09-09l). Transport
 > rx-stall root-caused and fixed (MCU autonomous sleep). Remaining
 > follow-ups: persistent bluetoothd/dbus wiring in `config/gemini.nix`
 > (MNX option — `services.bluetooth` does NOT exist in this eval, see
@@ -17,7 +17,7 @@
 - Ported the vendor's 3.18 **in-kernel BlueZ HCI driver**
   (`drv_bt/`, `CONFIG_MTK_COMBO_BT_HCI`) to 6.6 as `hci_stp` →
   hci0 is a classic `HCI_UART`-bus BR/EDR+LE controller.
-- **The CONSYS rx "stall" was ROOT-CAUSED (2026-09-11) and fixed: it
+- **The CONSYS rx "stall" was ROOT-CAUSED (2026-09-09l) and fixed: it
   was the CONSYS MCU's AUTONOMOUS SLEEP, not a vFIFO deadlock.** With
   the device idle, a HCI reset's reply sat INSIDE the asleep MCU and
   surfaced only at the next open's func-on WAK pulse — measured 17 s
@@ -49,7 +49,7 @@
      directly and the command skipped. After this, `btmgmt le on`
      reports "powered br/edr le" and discovery works.
 
-## Verified on glass (2026-09-11)
+## Verified on glass (2026-09-09l)
 
 - hci0 **UP RUNNING** — full HCI init completes (init_script=1 radio
   config works; eFUSE BD 00:00:46:02:79:01 read back; controller
@@ -141,7 +141,7 @@ tracks the fork HEAD each sync.
 | `440be2a1` | **open-gated WAK keep-awake heartbeat** (rx-stall fix 2; replaced the write-triggered `16e6d817`) |
 | `f6b135a3` | **HCI_QUIRK_EXT_INIT_BEST_EFFORT** (le_init3 + hci_init4 + le_init4 tolerance; renamed from the earlier `7dce5d17` LE-only version) |
 | `7af6ee9c` | **local LMP_HOST_LE + HCI_LE_ENABLED record** when 0x200d is refused (LE mgmt unlock) |
-| (earlier) | BTIF WAK wake fix, CONSYS PSM never armed, hci_stp driver port + polish (see git log / session log 2026-09-10) |
+| (earlier) | BTIF WAK wake fix, CONSYS PSM never armed, hci_stp driver port + polish (see git log / session log 2026-09-09k) |
 
 ## On-glass test rig
 
@@ -152,11 +152,11 @@ under `libexec`/`bin` of the bluez store path (not on the nix-shell
 PATH) — call it by store path. Discovery/daemon runs longer than one
 ssh session go under `bin/run-job.sh`.
 
-## Files touched 2026-09-11
+## Files touched 2026-09-09l
 
 - Kernel fork + repo delta (`mtk_btif` wake+heartbeat in
   `wcn_hw_glue.c`, `hci_sync.c`/`hci.h` best-effort init + LE record,
   `hci_stp.c` quirk wiring); `kernel/default.nix` rev header.
-- `bin/bt-glass-test.sh` (new); this doc; session log 2026-09-11.
+- `bin/bt-glass-test.sh` (new); this doc; session log 2026-09-09l.
 - `pkgs`-side / `config/gemini.nix`: none yet (bluetoothd wiring is
   follow-up #1 above).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bt-glass-test.sh — Bluetooth bring-up on-glass test (2026-09-11).
+# bt-glass-test.sh — Bluetooth bring-up on-glass test (2026-09-09).
 #
 # After the mtk_wcn wake-before-send fix (kernel delta 05bbb33d3, module
 # only — no boot.img reflash) this drives hci0 through a full HCI init
