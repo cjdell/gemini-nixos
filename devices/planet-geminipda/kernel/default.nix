@@ -24,7 +24,10 @@
 #           d5bcde1a02d5ffba95f88145c983abba1edbc546 (2026-09-10: #329
 #           tree + hci_stp BT driver); 05bbb33d39 (2026-09-11: + mtk_wcn
 #           wake-before-send on every BTIF transport write - BT rx-stall
-#           fix, see docs/bluetooth-bringup.md), verified 2026-09-11, verified byte-for-byte 2026-09-10
+#           fix, see docs/bluetooth-bringup.md), verified 2026-09-11;
+#           7dce5d17 (2026-09-11: + HCI_QUIRK_LE_INIT_BEST_EFFORT - MT6630
+#           refuses LE write cmds at open (0x20); best-effort le_init3 so
+#           BR/EDR comes up), verified byte-for-byte 2026-09-10
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
 #           Regenerate after fork commits with bin/sync-kernel-delta.sh.
