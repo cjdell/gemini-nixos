@@ -190,8 +190,11 @@ static int hci_stp_tx_thrd_func(void *pdata)
 		while ((skb = skb_dequeue(&hu->txq))) {
 			int len;
 
+			BT_DBG("TX %d bytes: %*ph\n", skb->len,
+			       min_t(int, skb->len, 12), skb->data);
 			len = mtk_wcn_stp_send_data(skb->data, skb->len,
 						    BT_TASK_INDX);
+			BT_DBG("stp_send_data -> %d\n", len);
 			if (unlikely(len != skb->len)) {
 				BT_ERR("stp_send_data fail (%d != %d), requeue\n",
 				       len, skb->len);
@@ -437,6 +440,8 @@ static void stp_rx_event_cb_directly(unsigned char *data, int count)
 	if (!hu || !data || count <= 0)
 		return;
 	hdev = hu->hdev;
+	BT_DBG("RX cb %d bytes: %*ph\n", count,
+	       min_t(int, count, 12), data);
 
 	/* per-call copies of the persistent parser state */
 	rx_skb = hu->rx_skb;
