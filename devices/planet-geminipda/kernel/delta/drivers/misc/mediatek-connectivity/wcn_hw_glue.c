@@ -29,6 +29,7 @@
 #include <linux/firmware.h>
 #include <linux/kthread.h>
 #include <linux/slab.h>
+#include <linux/delay.h>
 
 #include <linux/consys_wmt.h>
 #include <linux/debugfs.h>
@@ -433,17 +434,30 @@ int mtk_wcn_btif_rx_cb_register(unsigned long u_id, MTK_WCN_BTIF_RX_CB rx_cb)
 
 int mtk_wcn_btif_wakeup_consys(unsigned long u_id)
 {
-	/* Pulse the BTIF WAK line (ap_wakeup_consys) through the live
-	 * transport's wake op. Corrected 2026-09-10 (BT bring-up): the
-	 * earlier no-op ("vendor _btif_dma_write never pulses") assumed
-	 * the MCU never sleeps in DMA mode; it does (autonomous sleep
-	 * after idle) and without the pulse the WMT core's WAKEUP
-	 * handshake times out and asserts a whole-chip reset. Safe while
-	 * awake (the vendor raises WAK routinely before TX). */
-	const struct consys_wmt_ops *ops = consys_wmt_transport;
+	/* Pulse the BTIF WAK line (ap_wakeup_consys, BTIF base 0x1100c000
+	 * + 0x64, vendor hal_btif_send_wakeup_signal: low > one 32k period
+	 * then high) to wake the CONSYS MCU from its autonomous sleep.
+	 *
+	 * Self-contained ioremap on purpose (corrected 2026-09-10, BT
+	 * bring-up): the sleep is real even on the DMA transport (observed
+	 * ~70 s idle -> WMT WAKEUP handshake timeout -> whole-chip assert
+	 * when hci_stp turns BT on), and a module->builtin ops call for the
+	 * wake would ABI-mismatch until the boot.img catches up (the spike
+	 * is builtin - Image; the .wake op only exists in Image builds
+	 * newer than the one on glass today, and dereferencing it there
+	 * oopses). The BTIF clock is left running by the spike after the
+	 * transport handover, so the poke is safe. A kernel that HAS the
+	 * spike wake op could use ops->wake instead; this is the portable
+	 * path.
+	 */
+	void __iomem *wak = ioremap(0x1100c000UL + 0x64, 4);
 
-	if (ops && ops->wake)
-		return ops->wake();
+	if (!wak)
+		return -ENOMEM;
+	writel(0, wak);
+	usleep_range(64, 96);
+	writel(1, wak);
+	iounmap(wak);
 	return 0;
 }
 
