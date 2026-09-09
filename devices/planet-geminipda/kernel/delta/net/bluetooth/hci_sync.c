@@ -3006,6 +3006,29 @@ int hci_write_le_host_supported_sync(struct hci_dev *hdev, u8 le, u8 simul)
 	    simul == lmp_host_le_br_capable(hdev))
 		return 0;
 
+	/* MT6630 CONSYS bring-up (HCI_QUIRK_EXT_INIT_BEST_EFFORT, see the
+	 * quirk comment in include/net/bluetooth/hci.h): the controller
+	 * refuses HCI_OP_WRITE_LE_HOST_SUPPORTED (0x200d, status 0x12)
+	 * even though its LE stack demonstrably works (LE reads, scan
+	 * enable, event-mask low bits all accepted on glass). The whole
+	 * LE-enabled state of the kernel hangs off this one command
+	 * (mgmt set-le / powered-update send it; the completion handler
+	 * sets LMP_HOST_LE + HCI_LE_ENABLED), so a refusal leaves the
+	 * adapter permanently BR/EDR-only. For this controller the host
+	 * side just records the state - patch it locally and skip the
+	 * command. */
+	if (test_bit(HCI_QUIRK_EXT_INIT_BEST_EFFORT, &hdev->quirks)) {
+		if (le) {
+			hdev->features[1][0] |= LMP_HOST_LE;
+			hci_dev_set_flag(hdev, HCI_LE_ENABLED);
+		} else {
+			hdev->features[1][0] &= ~LMP_HOST_LE;
+			hci_dev_clear_flag(hdev, HCI_LE_ENABLED);
+			hci_dev_clear_flag(hdev, HCI_ADVERTISING);
+		}
+		return 0;
+	}
+
 	memset(&cp, 0, sizeof(cp));
 
 	cp.le = le;
