@@ -1,7 +1,9 @@
 # Phosh on the Gemini PDA (nested inside gemwl) — bring-up design + receipts
 
-Last updated: 2026-09-09. Status: 🟡 built + packaged, **not yet on glass** —
-this doc is the design + the on-glass verification checklist.
+Last updated: 2026-09-09. Status: 🟡 built + packaged; **the DEFAULT
+desktop since 2026-09-09** (module defaults flipped: phosh on, lxqt off)
+— deployed as gen59, on-glass verification owed (see the checklist +
+session log).
 
 ## TL;DR — the answer to "will gemwl support phosh with GPU accel?"
 
@@ -79,10 +81,12 @@ fork's libgbm in place of nixpkgs' mesa-libgbm. Receipts:
   GNOME-sized closure) substitutes from cache.nixos.org — the pinned
   rev is the hydra-built channel snapshot (golden rule 9).
 
-## What was implemented (2026-09-09, built + eval'd, NOT switched)
+## What was implemented (2026-09-09, built + eval'd; 2026-09-09 → default desktop + deployed as gen59)
 
 - `services/phosh.nix` — option `services.phoshDesktop.enable`
-  (default **false**; LXQt stays the default desktop) + `.scale`
+  (default **true** since 2026-09-09 — Phosh is the DEFAULT desktop;
+  was **false** — LXQt the default — from the module's 2026-09-09o
+  landing until the flip) + `.scale`
   (default 1.5 — the verified LXQt readability on this panel; phoc
   parses scale with `strtof`, src/settings.c, fractional fine). Enabling
   is assert-guarded to require `services.lxqtNested.enable = false`
@@ -149,13 +153,18 @@ fork's libgbm in place of nixpkgs' mesa-libgbm. Receipts:
   the wlroots wayland-backend nested output name (upstream phosh
   data/phoc.ini carries the identical section for the nested dev flow).
 
-## How to switch (once on glass / on the device clone)
+## Desktop default (changed 2026-09-09) / how to switch
+
+Phosh is the DEFAULT desktop since 2026-09-09: `services.phoshDesktop.enable`
+defaults **true** and `services.lxqtNested.enable` defaults **false** (the
+module defaults flipped; before that LXQt defaulted on — since its
+2026-09-07 landing — and phosh was off). To boot the LXQt alternative:
 
 ```nix
 # config/gemini.nix (or the /root/gemini-nixos clone on the device)
-services.lxqtNested.enable = false;   # required by the assert
-services.phoshDesktop.enable = true;
-# services.phoshDesktop.scale = 1.5; # or 2 for a phone-like 1080x540
+services.phoshDesktop.enable = false;
+services.lxqtNested.enable = true;    # phosh's assert needs it off
+# services.phoshDesktop.scale = 1.5;  # phosh UI scale; 2 = phone 1080x540
 ```
 
 Host loop: commit → `bash bin/deploy.sh build|deploy` (profile switch,
@@ -186,9 +195,10 @@ phosh-nested`.
    size path (phoc's output vs gemwl's sizing) — check
    `journalctl -u phosh-nested` for phoc's output geometry and compare
    with the WL-1 size labwc reports. Scale feel = `phoshDesktop.scale`.
-6. Record the version line (rule 0) + outcome in `docs/session-log.md`;
-   leave the device on LXQt (or the safer known-good desktop) until
-   phosh is judged.
+6. Record the version line (rule 0) + outcome in `docs/session-log.md`.
+   Phosh is the default desktop since 2026-09-09; if the glass is wrong:
+   `bash bin/deploy.sh rollback` (gen58 = the LXQt desktop) or flip the
+   options back (above).
 
 ## Known gaps / deliberate v1 scope (next steps, in rough order)
 

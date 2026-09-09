@@ -49,7 +49,12 @@
 # pavucontrol-qt need — qtsvg, lxqt-qtplugin's platform theme) for apps
 # whose own closure does not carry them.
 #
-# The desktop is enabled by default (services.lxqtNested.enable). To boot
+# [changed 2026-09-09] LXQt is the ALTERNATIVE desktop: this module now
+# defaults OFF (services.lxqtNested.enable = false) — Phosh
+# (services/phosh.nix, phoc 0.54.0 nested the same way) is the repo's
+# DEFAULT desktop since 2026-09-09. Enable LXQt with
+# services.lxqtNested.enable = true AND services.phoshDesktop.enable =
+# false (phosh.nix's assert enforces exactly one nested desktop). To boot
 # to the console only: `systemctl disable gemwl lxqt-nested` (gemwl
 # without a session client shows a black-but-live framebuffer; lxqt-nested
 # without gemwl fails on the missing socket and restart-loops).
@@ -132,10 +137,15 @@ in
 {
   options.services.lxqtNested.enable = lib.mkOption {
     type = lib.types.bool;
-    default = true;
+    # [changed 2026-09-09] false = the LXQt ALTERNATIVE desktop (Phosh,
+    # services/phosh.nix, is the default; was true — LXQt the default —
+    # from the 2026-09-07 LXQt landing until this flip).
+    default = false;
     description = ''
       Enable the LXQt (Wayland) desktop nested inside gemwl (labwc 0.8.3
-      on wlroots 0.18.2). Disable with gemwl for a console-only boot.
+      on wlroots 0.18.2) — the alternative to the Phosh desktop
+      (services.phoshDesktop.enable must be false; they cannot share the
+      gemwl session). Disable with gemwl for a console-only boot.
     '';
   };
 

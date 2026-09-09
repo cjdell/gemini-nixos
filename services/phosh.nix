@@ -1,4 +1,5 @@
-# Phosh (mobile/phone shell) nested inside gemwl — the LXQt alternative.
+# Phosh (mobile/phone shell) nested inside gemwl — the DEFAULT desktop
+# since 2026-09-09 (LXQt, services/lxqt.nix, is the alternative).
 #
 # Architecture (full design + receipts: docs/phosh.md):
 #
@@ -60,14 +61,16 @@
 # documents), plus XDG_CURRENT_DESKTOP=Phosh:GNOME so OnlyShowIn=Phosh
 # entries and phosh's settings schemas resolve.
 #
-# Enable by disabling the LXQt desktop first:
-#   services.lxqtNested.enable = false;
-#   services.phoshDesktop.enable = true;
-# (the assert below enforces it — two nested desktops would stack on
-# gemwl; each session owns its own runtime dir/bus now — /run/lxqt-
-# session vs /run/phosh-session, 2026-09-09 — so the shared-bus
-# argument is gone, fullscreen stacking is not). `systemctl disable
-# gemwl phosh-nested` returns to a console-only boot.
+# [changed 2026-09-09] Phosh IS the default desktop: this module now
+# defaults ON (services.phoshDesktop.enable = true) and lxqt.nix
+# defaults OFF. To boot the LXQt alternative instead:
+#   services.phoshDesktop.enable = false;
+#   services.lxqtNested.enable = true;
+# (the assert below enforces exactly one nested desktop — two would
+# stack on gemwl; each session owns its own runtime dir/bus now —
+# /run/lxqt-session vs /run/phosh-session, 2026-09-09 — so the
+# shared-bus argument is gone, fullscreen stacking is not).
+# `systemctl disable gemwl phosh-nested` returns to a console-only boot.
 { config, lib, pkgs, ... }:
 
 let
@@ -105,12 +108,16 @@ in
   options.services.phoshDesktop = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      # [changed 2026-09-09] true = Phosh is the DEFAULT desktop (was
+      # false — off, LXQt the default — since the module landed
+      # 2026-09-09o until this flip; docs/phosh.md).
+      default = true;
       description = ''
         Enable the Phosh (mobile shell) desktop nested inside gemwl
         (phoc 0.54.0 on wlroots 0.19 nested on gemwl's wayland-0, GPU-
-        accelerated through the fork mesa — docs/phosh.md). Disable
-        services.lxqtNested.enable first (they cannot share the gemwl
+        accelerated through the fork mesa — docs/phosh.md). The default
+        desktop since 2026-09-09; set false + services.lxqtNested.enable
+        = true for the LXQt alternative (they cannot share the gemwl
         session). Disable with gemwl for a console-only boot.
       '';
     };
@@ -130,16 +137,18 @@ in
     # Two nested desktops on one gemwl is never what you want: they
     # stack fullscreen on each other (each session now owns its own
     # runtime dir/bus — /run/lxqt-session vs /run/phosh-session — so
-    # the old shared-bus argument is gone, 2026-09-09). LXQt is the
-    # default desktop; switching to phosh is a deliberate one-line
-    # flip.
+    # the old shared-bus argument is gone, 2026-09-09). Phosh is the
+    # default desktop since 2026-09-09; booting LXQt is the deliberate
+    # flip (phosh off, lxqt on) — this assert catches a config that
+    # leaves both on.
     assertions = [
       {
         assertion = !config.services.lxqtNested.enable;
         message = ''
-          services.phoshDesktop.enable requires the LXQt desktop off:
-          set services.lxqtNested.enable = false (phosh + lxqt-nested
-          would both nest fullscreen on gemwl).
+          Phosh + lxqt-nested would both nest fullscreen on gemwl.
+          Phosh is the default desktop since 2026-09-09: to boot the
+          LXQt alternative set services.phoshDesktop.enable = false and
+          services.lxqtNested.enable = true.
         '';
       }
     ];

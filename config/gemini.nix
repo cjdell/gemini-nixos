@@ -6,12 +6,13 @@
 # wlroots 0.18 compositor, pkgs/gemwl.nix + pkgs/wlroots-geminipda.nix)
 # is wired as services/desktop.nix and auto-starts at boot (console-
 # less fb desktop; serial console unaffected). Since 2026-09-07 the
-# desktop payload is the nested LXQt session (services/lxqt.nix: labwc
+# desktop payload was the nested LXQt session (services/lxqt.nix: labwc
 # 0.8.3 on the pinned wlroots 0.18.2 + nixpkgs lxqt 2.4, the verified
-# GeminiPDA stack); since 2026-09-09 the ALTERNATIVE desktop is Phosh
-# (services/phosh.nix: phoc 0.54.0 nested the same way, off by default
-# — switch by disabling lxqtNested). `systemctl disable gemwl
-# lxqt-nested` = console boot.
+# GeminiPDA stack); since 2026-09-09 the DEFAULT desktop is Phosh
+# (services/phosh.nix: phoc 0.54.0 nested the same way — the module
+# defaults flipped so phosh boots by default and LXQt is the
+# alternative; docs/phosh.md). `systemctl disable gemwl phosh-nested`
+# = console boot.
 { config, lib, pkgs, ... }:
 let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
@@ -49,13 +50,15 @@ in
     # LXQt (Wayland) desktop nested inside gemwl — labwc 0.8.3 (pinned
     # against wlroots 0.18.2) hosting the nixpkgs lxqt 2.4 session
     # (panel, pcmanfm-qt desktop, qterminal, audio GUIs). The verified
-    # GeminiPDA desktop stack as NixOS services (2026-09-07).
+    # GeminiPDA desktop stack as NixOS services (2026-09-07); the
+    # ALTERNATIVE desktop since 2026-09-09 (services.lxqtNested.enable
+    # now defaults false — phosh is the default).
     ../services/lxqt.nix
     # Phosh (mobile shell) desktop nested inside gemwl — phoc 0.54.0 on
     # wlroots 0.19 (fork-gbm override, pkgs/phoc-geminipda.nix) hosting
     # the nixpkgs phosh 0.54.0 shell; GPU-accelerated through the same
-    # fork-mesa chain as LXQt. OFF by default; enable + disable
-    # lxqtNested to switch (services.phoshDesktop.enable; docs/phosh.md).
+    # fork-mesa chain as LXQt. The DEFAULT desktop since 2026-09-09
+    # (services.phoshDesktop.enable defaults true; LXQt off).
     ../services/phosh.nix
   ];
 
