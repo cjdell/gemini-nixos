@@ -32,10 +32,10 @@ let
   # flipped yet; the on-glass parity pass (`gemcli selfcheck` + the
   # per-command diff recipe in docs/gemcli.md) precedes every flip.
   gemcli = pkgs.callPackage ../pkgs/gemcli.nix { };
-  # gemdemo — the demoscene + GPU stress test (docs/gemdemo.md). In the
-  # rootfs closure so it is available on-glass without a separate copy;
-  # run it from the LXQt/labwc session (needs the Wayland compositor
-  # running + the audio card up).
+  # gemdemo — the minimal GLES 3.1 + ALSA template (docs/gemdemo.md). In
+  # the rootfs closure so it is available on-glass without a separate copy;
+  # run it from the LXQt/labwc session or on gemwl (needs the Wayland
+  # compositor running + the audio card up).
   gemdemo = pkgs.callPackage ../pkgs/gemdemo.nix { };
   kernelModulePath =
     # Runtime path of the A72 bring-up module in the booted system's

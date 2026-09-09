@@ -494,12 +494,11 @@ dependencies = [
 
 [[package]]
 name = "gemdemo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "egl",
  "gl",
- "libc 0.2.189",
  "winit",
 ]
 

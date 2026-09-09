@@ -1,29 +1,25 @@
-# gemdemo — "GEMINI: EXODUS" (0.2.0): cinematic spacesynth assembly
-# for the Mali-T880 (see docs/gemdemo.md "EXODUS rewrite" for the
-# architecture + the 60 fps strategy and controls).
+# gemdemo — minimal OpenGL ES 3.1 + ALSA template for the Gemini PDA
+# (the "how do we talk to the GPU and codec from Rust" skeleton).
 #
-# Source (pkgs/gemdemo/): a single-binary Rust app:
+# 0.3.0 (2026-09-09): the 0.2.0 "GEMINI: EXODUS" demoscene (10 modules,
+# ~5200 lines) was judged useless except as proof of the hardware
+# interaction, and stripped to ONE source file (pkgs/gemdemo/src/main.rs):
+# a winit (Wayland) window with an EGL ES 3.1 context on the geminipda
+# Mesa/panfrost fork (pkgs/mesa-geminipda.nix) drawing a spinning shaded
+# triangle + a cpal 440 Hz sine out through the MT6351 codec. Copy the
+# file (and this derivation) to start a real OpenGL app; the receipts
+# (DSA stubs, one-interleaved-VAO, wl_egl_window, S16@44.1k wire state,
+# gemini16 plug) are spelled out in the file header + docs/gemdemo.md.
+#
+# Source deps (all in-tree from the demo purge):
 #   * winit 0.29 (Wayland surface) + the egl 0.2 crate (EGL 1.5 loader
 #     — eglGetPlatformDisplay(WL) + eglCreatePlatformWindowSurface)
-#     driving the geminipda Mesa/panfrost fork's GLES 3.1
-#     (pkgs/mesa-geminipda.nix);
+#     driving the fork's GLES 3.1;
 #   * gl 0.14 (bindgen-style FFI, Fallbacks::All) — no GL loader crate;
 #   * cpal 0.15 (ALSA backend only — 0.15 dropped Pulse; opens the
 #     `gemini16` S16-pinning ALSA plug defined by services/audio.nix,
 #     so the MT6351 AFE path is the verified one);
-#   * everything else (show director, synth engine, direct renderer,
-#     font) is in-tree — zero non-crate dependencies (libc for the
-#     A72 affinity call).
-#
-# 0.1.0 → 0.2.0 (2026-09-09): complete rewrite after the 0.1.0 verdict
-# (single-digit FPS, flawed visuals, music completely broken — receipts
-# docs/gemdemo.md). The renderer is now DIRECT (no multipass post chain,
-# no SSAA, no raymarch): sky/nebula/stars/glows/particles drawn straight
-# into the window as layered textured quads; the synth is a real mix
-# bus (per-part gains, dotted-8 ping-pong + reverb sends, soft ceiling +
-# transient limiter — the old naive limiter slammed every beat to full
-# scale). New cpu.rs asks the gemini-a72-up unit for the A72 cluster
-# and pins the render thread there (best-effort).
+#   * libc is GONE — it only served the 0.2.0 A72-affinity code.
 #
 # Build = native aarch64 (this flake's canonical model): rustPlatform
 # from eval.pkgs on the aarch64 remote builder. Non-crate inputs:
@@ -40,15 +36,14 @@
 #     OUTPUTS (header symlinks), so the derivation's postFixup patchelf
 #     pins the real lib dirs on the RUNPATH explicitly (see below).
 #
-# ON GLASS 2026-09-08 (verified, full receipt in docs/gemdemo.md):
+# ON GLASS 2026-09-08/09 (verified, full receipts in docs/gemdemo.md):
 # the source keeps ONE interleaved buffer per VAO with per-attr offsets
 # and glGen* objects — no DSA glCreate* (silent stubs on GLES 3.1), no
 # instancing, no multi-buffer VAOs (fork panfrost GPU page faults), no
 # DrawElements (index-minmax crash). Don't reintroduce those patterns.
 #
 # Host-side iteration: `bash bin/gemdemo-host-check.sh` type-checks the
-# crate on x86_64 (seconds); unit tests (synth score sanity) via
-# `cargo test --release` with the same pkg-config/alsa trick.
+# crate on x86_64 (seconds) with the same pkg-config/alsa trick.
 
 { lib, rustPlatform, pkg-config, alsa-lib, libglvnd, wayland, libxkbcommon, patchelf }:
 
@@ -56,7 +51,7 @@ let alsaLib = alsa-lib; in
 
 rustPlatform.buildRustPackage rec {
   pname = "gemdemo";
-  version = "0.2.0";
+  version = "0.3.0";
 
   src = ./gemdemo;
 
@@ -86,19 +81,18 @@ rustPlatform.buildRustPackage rec {
   doCheck = false;
 
   meta = with lib; {
-    description = "gemdemo — GEMINI: EXODUS: cinematic spacesynth assembly + Mali-T880 GPU stress test (GLES 3.1, synthesized score)";
+    description = "gemdemo — minimal GLES 3.1 + ALSA template for the Gemini PDA (spinning shaded triangle + 440 Hz sine)";
     longDescription = ''
-      0.2.0 rewrite of the AETHER demoscene. Seven-chapter cinematic
-      flight (Earth lift-off → warp → void beacon → rendezvous with a
-      ringed world → PLANET COMPUTERS reveal → credits), synced to an
-      epic 126 BPM spacesynth score synthesized in real time (drums,
-      analog bass, arpeggio, supersaw lead, pads — dotted-8 ping-pong
-      + reverb, soft ceiling + transient limiter). Renderer is direct
-      single-framebuffer layering for the 60 fps budget: one cheap
-      gradient, procedural-sprite fields, small-region planet sphere.
-      Best-effort A72 cluster bring-up (gemini-a72-up unit) + render
-      affinity. Run fullscreen on gemwl/labwc; keys: space pause,
-      [ ] chapter, h HUD, q quit. See docs/gemdemo.md.
+      0.3.0: the hardware-interaction skeleton that survived the 0.2.0
+      EXODUS demoscene purge — ONE Rust file that opens a Wayland window
+      (winit 0.29), boots a GLES 3.1 EGL context on the geminipda
+      Mesa/panfrost fork (Mali-T880), draws one spinning per-vertex
+      shaded triangle (ESSL 300 es, glGen* objects, one interleaved
+      VBO), and plays a 440 Hz sine via cpal 0.15 (ALSA `gemini16`
+      plug, S16 @ 44.1k). The file's comments carry the hardware
+      receipts; copy file + derivation to start a real OpenGL app.
+      Keys: q/esc quit. --windowed runs 1024×576 (nested labwc QA);
+      default is borderless fullscreen (gemwl). See docs/gemdemo.md.
     '';
     homepage = "https://github.com/planet-computers"; # gemini-nixos repo (local)
     license = licenses.mit;

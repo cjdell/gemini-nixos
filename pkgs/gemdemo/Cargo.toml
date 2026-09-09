@@ -1,25 +1,30 @@
-# gemdemo (AETHER) — demoscene + GPU stress test for the Gemini PDA.
+# gemdemo 0.3.0 — the stripped-down Gemini PDA OpenGL template.
 #
-# A self-contained demoscene: everything (geometry, textures, the 5x7 font,
-# the whole soundtrack) is synthesized at runtime in Rust. Rendering =
-# OpenGL ES 3.1 via EGL on the geminipda Mesa fork (panfrost, Mali-T880
-# MP4) as a Wayland client inside the nested LXQt/labwc session. Audio =
-# a real-time synth engine (drums/bass/arp/pad/lead + delay/reverb) out
-# through ALSA: the S16-pinning `gemini16` plug (services/audio.nix),
-# the same AFE path the WirePlumber sink uses.
+# 0.2.0 ("GEMINI: EXODUS" spacesynth demoscene, ~5200 lines over 10
+# modules) was judged useless except as proof of how to talk to the
+# hardware from Rust, so it was deleted down to this: ONE source file
+# (src/main.rs) that opens a Wayland window with an OpenGL ES 3.1
+# context (Mali-T880 / geminipda panfrost fork) and draws a spinning
+# shaded triangle while an ALSA cpal stream plays a 440 Hz sine out of
+# the MT6351 codec. That is the entire "hello, GPU + codec" — copy the
+# file (and ../gemdemo.nix) to start a real OpenGL app. Every tricky
+# bit is a hardware receipt; the comments in main.rs are the doc.
 #
-# Dependency policy (lockfile-pinned, all small pure-Rust crates):
+# Dependency policy (lockfile-pinned, small pure-Rust crates):
 #   winit 0.29  wayland windowing/input (client of gemwl/labwc)
-#   egl 0.2     EGL loader (dlopens libEGL.so.1 — glvnd client lib)
-#   gl 0.14     GLES bindings (gles3 list; the context is 3.1)
-#   cpal 0.15   audio output — ALSA backend (always on for Linux in 0.15;
-#               the old pulse backend was removed upstream)
-# No other runtime deps. See docs/gemdemo.md for the design.
+#   egl 0.2.7   EGL loader (dlopens libEGL.so.1 — glvnd client lib)
+#   gl 0.14     GL bindings (load_with via eglGetProcAddress; GLES 3.1)
+#   cpal 0.15   audio output — ALSA backend (the only Linux backend in
+#               0.15; Pulse was removed upstream)
+# libc is NOT a direct dep anymore: cpu.rs (A72 affinity) died with the
+# 0.2.0 demo. See ../gemdemo.nix for the link-time story (-lEGL via
+# libglvnd RUSTFLAGS, -lwayland-egl, RUNPATH pinning).
+
 [package]
 name = "gemdemo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "AETHER — demoscene + GPU stress for the Gemini PDA (Mali-T880 panfrost, GLES 3.1, real-time synth)"
+description = "gemdemo — minimal GLES 3.1 + ALSA template for the Gemini PDA (spinning triangle + 440 Hz sine)"
 license = "MIT"
 
 [dependencies]
@@ -27,15 +32,10 @@ winit = "0.29"
 egl = "0.2.7"
 gl = "0.14"
 cpal = "0.15"
-libc = "0.2"
 
-# The 0.2.0 rewrite pins release opts tuned for the demo: "s" kept the
-# PDA build fast; the 0.1.0 single-digit-fps verdict means the music +
-# render threads want "lto"-free fast code — "s" it is, codegen-units 1
-# for a slightly leaner hot loop.
-
-# The GPU does the heavy lifting; keep the CPU build lean + fast for the
-# on-device aarch64 build (device-rebuild.sh). No LTO (slow on the PDA).
+# Release opts from the demo days: "s" keeps the on-device aarch64
+# build fast, no LTO (slow on the PDA). A template's hot loop is a few
+# gl calls — these are about iteration speed, not performance.
 [profile.release]
 opt-level = "s"
 strip = true

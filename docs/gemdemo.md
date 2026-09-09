@@ -1,163 +1,103 @@
-# gemdemo — "GEMINI: EXODUS" (0.2.0): cinematic spacesynth assembly
+# gemdemo — minimal GLES 3.1 + ALSA template for the Gemini PDA
 
 Last updated: 2026-09-09
 
-A from-scratch Rust show for the Planet Computers Gemini PDA (1280×720
-GLES 3.1 Mali-T880 via the geminipda Mesa/panfrost fork). It is a
-**complete rewrite of the 0.1.0 "AETHER" demoscene** after that build's
-on-glass verdict (2026-09-09: single-digit FPS, flawed visuals, music
-"completely broken") — and it keeps the role the project earned: the
-first sustained T880 load + the on-glass proof that both 3D drawing and
-speaker output work on this bring-up.
+**0.3.0: the "how do we talk to the hardware from Rust" skeleton.** The
+0.2.0 "GEMINI: EXODUS" demoscene (10 modules, ~5200 lines — see git
+history) was judged useless except as proof of the GPU/codec
+interaction, so it was deleted down to a **single Rust source file**
+(`pkgs/gemdemo/src/main.rs`) that:
 
-The 0.2.0 pitch: an **Assembly-style cinematic flight with an epic
-spacesynth score**. Seven chapters, one continuous shot, musically
-driven (126 BPM, A minor, ~38 s per chapter / 4 min 45 s full loop):
+1. opens a Wayland window (winit 0.29) — fullscreen borderless by
+   default (gemwl), `--windowed` 1024×576 for nested-labwc QA;
+2. boots an **OpenGL ES 3.1** context on it via the raw `egl` crate
+   (`eglGetPlatformDisplay(Wayland)` → `wl_egl_window` →
+   `eglCreatePlatformWindowSurface` → ES3 context, gl loaded with
+   `eglGetProcAddress`) — this is the geminipda Mesa/panfrost fork
+   driving the Mali-T880;
+3. draws **one spinning shaded triangle** (per-vertex RGB → smooth
+   interpolated shading, rotated by a `u_time` uniform);
+4. plays a **440 Hz sine** through the MT6351 codec via cpal 0.15
+   (ALSA backend, `gemini16` plug, S16 @ 44100).
 
-| # | Chapter | Bars | Visuals | Score |
-|---|---|---|---|---|
-| S0 | EARTH | 16 | Earth's limb, launch glow, countdown, T-MINUS | pad/drone ambience → countdown → riser |
-| S1 | ASCENT | 8 | GEMINI ONE in formation cruise | groove enters (four-on-floor, pulse bass) |
-| S2 | WARP | 16 | Fold-drive streak storm + **EXODUS** title | full theme: gallop bass, motif lead |
-| S3 | VOID | 8 | Deep-space drift, lone pulsing beacon | breakdown: pads, blips, sub floor |
-| S4 | RENDEZVOUS | 8 | The ringed world grows ahead | build (F G F G), riser |
-| S5 | PLANET | 16 | **PLANET COMPUTERS** reveal, fly-past | anthem finale (drops back to A minor) |
-| S6 | ORIGIN | 8 | Credits, world recedes, fade | soft beat out → fade to starlight |
+That is the entire hello-world. **To start a real OpenGL app: copy
+`src/main.rs` (and `pkgs/gemdemo.nix`) and replace the "scene" section**
+— the EGL bootstrap, the audio open and the object-creation pattern are
+the hard-won parts; everything from the `// ---- The scene` marker down
+is example content.
 
-The name/branding lean is deliberate — the show is for the Planet
-Computers Gemini PDA, so it flies a GEMINI ONE spacecraft to the ringed
-homeworld "PLANET COMPUTERS".
+## Why the file looks the way it does — THE RECEIPTS
 
-Status: 🟢 ON GLASS (windowed under labwc, 2026-09-09): v0.2.0 ran the
-full show at **58.9–61 fps through every chapter** — including the S5
-PLANET reveal once the planet became a baked-map sample pass (the
-initial per-pixel-fbm planet dragged the reveal to ~42 fps; the bake
-fixed it, measured before/after on the same run path). Audio live via
-gemini16 (S16 44.1k), A72s online + render thread pinned. Visual QA of
-individual frames by eye is still owed (title centring, ring depth,
-sky-glow placements) — `--dump` PPMs exist for that.
+Each is dated/verified on glass (2026-09-08/09, gemdemo 0.1.0/0.2.0)
+and spelled out inline in the main.rs header comment — they are the
+reason the template exists, and the reason the code must not be
+"modernized" naively:
 
-## Why 0.1.0 failed and what 0.2.0 changed
+- **GLES 3.1 only** (panfrost fork); shaders ESSL 300 es. There is no
+  desktop GL / GL4 / DSA here.
+- **DSA `glCreate*` are silent stubs** on this context (create nothing)
+  → all objects via `glGen*` + Bind.
+- **One interleaved buffer per VAO**, per-attr offsets; **no
+  instancing** (segfaulted the fork), no multi-buffer VAOs (panfrost
+  JOB_BUS_FAULT storms), **no `glDrawElements`** (index-minmax crash) —
+  all draws are expanded `glDrawArrays(GL_TRIANGLES, …)`.
+- EGL's native window must be a **`wl_egl_window`** (bare wl_surface →
+  `EGL_BAD_NATIVE_WINDOW`); created at the window's current size, so
+  windows are fixed-size (resize would need `wl_egl_window_resize`).
+  Link `-lwayland-egl` (RUNPATH-pinned by the derivation).
+- **Audio wire state: S16_LE @ 44100 Hz** (the 16-bit-only MT6351 AFE
+  advertises 48k/32-bit without programming it — S32 or 48k on the
+  wire = white noise). cpal 0.15 sees the `gemini16` plug only because
+  asound.conf gives it `hint { show on }`; the `default` PCM fallback
+  converts f32→S32 = noise, so open gemini16 by name and force an I16
+  @ 44.1 k config when offered. f32 streams are still handled (the plug
+  converts) for devices that don't offer I16.
+- **Uniform typos are silent on GLES** (optimized-away uniforms return
+  -1 from GetUniformLocation) → assert, don't ignore.
 
-0.1.0 rendered at **2× SSAA into a multipass post chain** (brightness/
-blur/bloom passes + feedback FBOs at half res) **plus a 128-step
-raymarched act** — on a T880 that is ~2–3 fps for heavy per-pixel
-fragment work even at 720p. On top of that the music master was a naive
-per-sample peak-follower limiter that slammed EVERY beat to full scale
-(measured master rms ≈ 0.88) and a saw-DC bug flattened the voices
-(details below). 0.2.0:
+## File map (single file — section order)
 
-- **Direct single-framebuffer renderer** (gfx.rs): every frame is a
-  back-to-front stack of layers drawn straight into the window surface —
-  sky (the only fullscreen fragment pass, a cheap gradient) → nebula
-  cloud sprites → stars → halo glows → ring-far → planet → ring-near →
-  warp streaks → ship → particles/shocks → titles. No intermediate
-  FBOs, no SSAA, no post chain. **Glows ARE the bloom.**
-- **Sprite-field rendering**: stars (1800), nebula blobs, particles,
-  glows and shock rings are tiny textured quads (four 64–96 px RGBA
-  sprites baked once: soft, star, ring, cloud). Blending carries the
-  look; per-pixel overdraw averages ~2, and the only region with heavy
-  per-pixel math (the planet) is **baked**: the fbm surface maps are
-  generated ONCE at startup in Rust (256×128 albedo + cloud per
-  palette — Earth + the Planet Computers world) and the per-frame quad
-  just samples them with cheap sphere lighting; spin is a UV scroll.
-  That is the difference between 60 fps and ~42 fps at the S5 reveal
-  (measured on glass, windowed, 2026-09-09).
-- **Music engine rewritten** (synth.rs): per-part buses with real
-  headroom, sends to a dotted-8th ping-pong delay + Schroeder reverb,
-  per-part sidechain pump on the kick, a soft-knee ceiling (only shapes
-  overs > 0.8) and a fast-attack/slow-release transient limiter. The
-  startup chime is gone. Score sanity is unit-tested (no clipping, no
-  over-limiting, no silence, section/chord bookkeeping).
-- **A72 cores** (cpu.rs): best-effort — asks the `gemini-a72-up` unit
-  to bring cpu8/cpu9 online (bounded 20 s wait, never hangs the show),
-  then pins the render thread to them. Without the cluster it runs on
-  the A53s (the pipeline mostly fits); with it, worst-case planet/warp
-  frames hold the budget.
-
-## Architecture / files
-
-| File | Role |
+| Section | What it is |
 |---|---|
-| `pkgs/gemdemo.nix` | derivation (native aarch64; `alsa-lib.dev` for the alsa crate via pkg-config; `libglvnd` for `-lEGL` via `RUSTFLAGS -L`; wayland + libxkbcommon pinned on the RUNPATH via postFixup — winit dlopens them) |
-| `src/main.rs` | winit 0.29 event loop, frame pacing, beat-clock bridge, section jumps, titles/HUD drawing, FPS meter, `--dump` |
-| `src/show.rs` | the **director**: reads the beat clock → builds a pure-data `FrameState` (positions/colors/sizes — zero GL) for every chapter; chapter text slots |
-| `src/gfx.rs` | the **renderer**: sky gradient, sprite layers (baked textures), warp streaks, rotating planet sphere + ring arcs, vector ship, particles/shockwaves — all straight to the surface |
-| `src/synth.rs` | the **spacesynth engine**: voices (kick/snare/clap/hats/crash/tom/sub/bass/pluck-arp/supersaw lead/pads/blips/fx), dotted-8 delay + Schroeder reverb, soft-knee + limiter master, the 7-chapter score (bar counts shared with show.rs), sample-accurate `Clock` publishing |
-| `src/cpu.rs` | A72 cluster bring-up request (gemini-a72-up unit) + render-thread affinity (best-effort; libc sched_setaffinity) |
-| `src/audio.rs` | cpal 0.15 ALSA stream: opens the `gemini16` S16-pinning plug (services/audio.nix), falls back cleanly to silent mode |
-| `src/font.rs` | embedded 5×7 glyph atlas → textured quads (used by main for titles/HUD) |
-| `src/glctx.rs` | EGL 1.5 bootstrap: wayland platform + `wl_egl_window` → ES 3.1 context, `eglSwapInterval(1)` |
-| `src/glutil.rs` | gl 0.14 helpers: program build with full shader-log diagnostics, uniform lookup (missing = build-time panic — typos are the #1 demo killer), VBO/dyn-VBO. ALL object creation via `glGen*` |
-| `src/shaders.rs` | shared GLSL prelude (ES 3.00): hash/noise/fbm, IQ cosine palette, fullscreen VS |
+| header comment | the receipts (above) — read before editing |
+| EGL bootstrap | `GlCtx::new`: wayland display → config → wl_egl_window surface → ES3 context; `load_gl`; `swap` |
+| GL helpers | `build_program` (panic w/ driver log), `uniform` (assert), `check` (glGetError), `gl_string` |
+| `start_sine()` | cpal ALSA open (gemini16 → I16@44.1k) + the per-frame fill (one sample copied to all channels, 10 ms attack) |
+| The scene | `VS`/`FS` (ESSL 300), `triangle()` verts, main(): window → ctx → program/VAO → loop |
+| render loop | RedrawRequested pump (vsync via compositor), q/esc quit, 2 s heartbeat line |
 
-**Clock & sync**: the audio thread owns the synth and is the master
-clock; per render frame main reads published atomics (beat
-fixed-point, kick envelope, section). Chapter changes come from the
-engine (score) and the renderer just follows — except `[`/`]` (user
-jumps) which write a `jump` atomic the audio engine consumes. Bar
-counts live in synth.rs and show.rs imports them, so a visual beat
-always lands on a musical hit. `--silent` substitutes a system-time
-clock for development runs without a sound card.
+## Build / deploy / run
 
-## The fork-panfrost receipts (STILL TRUE — gfx.rs is written around them)
+- Build = the flake's native aarch64 package (remote builder):
+  `nix build .#packages.aarch64-linux.gemdemo`. Host type-check loop:
+  `bash bin/gemdemo-host-check.sh` (seconds, x86_64 cargo check with
+  the same pkg-config/alsa trick).
+- The package is in the rootfs closure via
+  `services/gemini-pda.nix` (`environment.systemPackages`) — a normal
+  `bin/deploy.sh deploy` (or `bin/device-rebuild.sh`) ships it.
+- On the PDA, inside the LXQt/labwc session or on gemwl:
+  `gemdemo` (fullscreen) or `gemdemo --windowed`.
+  Keys: `q` / `esc` quit. Logs: identity banner + one line per 2 s with
+  time, frame count and fps — the pacing heartbeat for the serial
+  console.
 
-From the 0.1.0 glass work (dated 2026-09-08) — these are why gfx.rs
-looks the way it does; do not "modernize" them away:
+## Version history
 
-- **DSA → `glGen*`**: `glCreateTextures/Buffers/Framebuffers/
-  VertexArrays` are "unsupported function" stubs on this GLES 3.1
-  context and silently create NOTHING. All object creation is
-  glGen + Bind.
-- **One interleaved buffer per VAO**, per-attr offsets, no instancing
-  (instancing segfaulted the fork), no multi-buffer VAOs (panfrost
-  `JOB_BUS_FAULT` storms), no DrawElements (index-minmax crash) — all
-  draws are expanded triangles.
-- **`wl_egl_window_create`** is required for a Wayland window surface
-  (bare wl_surface → EGL_BAD_NATIVE_WINDOW) — `-lwayland-egl` at link.
-- **GLES-strict shaders**: uniforms that optimize away at link are not
-  looked up (missing uniform = compile-time panic); don't declare
-  samplers twice; ES 3.00 only.
-- **glReadPixels**: GLES3 forbids GL_RGB/UNSIGNED_BYTE from an RGBA8
-  buffer — the dump reads RGBA (the old silent-failure cost a phantom
-  "everything is black" panic).
-
-## Audio receipts (from 0.1.0, still governing audio.rs)
-
-- cpal 0.15 enumerates ALSA via name hints: a custom plug needs
-  `hint { show on }` (added to `gemini16` in
-  `services/pipewire/asound.conf`) or cpal falls back to `default`,
-  which converts F32-in → S32-on-wire → **noise on the 16-bit-only
-  MT6351**. The stream is forced I16 @ 44.1 k.
-- The 0.1.0 saw bug `2.0*(p-p.fract())-1.0` was a constant -1 → every
-  saw voice was DC → limiter → flat inaudible. 0.2.0 saws are
-  `2.0*p-1.0`; the engine test asserts a sane master rms (not silence,
-  not ~0.88 over-limit).
-
-## Controls & CLI
-
-| Key | Action |
-|---|---|
-| `space` | pause/resume (audio + clock + animation) |
-| `[` / `]` | previous / next chapter (physical keys) |
-| `h` | HUD/info line on/off |
-| `q` / `esc` | quit |
-
-CLI: `--windowed` (dev, 1024×576), `--section N` (start at S0..S6),
-`--silent` (no audio; system-time clock), `--dump N path.ppm`
-(after N frames, glReadPixels the surface to a PPM and exit — the
-glass/QA screenshot path), `--help`.
-
-On glass: run in the LXQt/labwc session (windowed or maximized) or
-fullscreen on gemwl. Logs to stdout: one line per 2 s with time, beat,
-section and FPS — the pacing heartbeat for the serial console.
+- **0.3.0 (2026-09-09)** — EXODUS purge: single-file template (spinning
+  shaded triangle + 440 Hz sine). Deployed as gen34.
+- 0.2.0 (2026-09-09) — "GEMINI: EXODUS" cinematic spacesynth assembly
+  (7 chapters, real-time synth score; 60 fps on glass; gen33). Source
+  preserved in git history — still the reference for textured quads,
+  baked sprites, direct single-framebuffer layering and the synth
+  engine if a demoscene is ever wanted again.
+- 0.1.0 (2026-09-08) — "AETHER" (multipass + raymarch; single-digit
+  fps; superseded).
 
 ## Next actions
 
-- ON-GLASS visual QA of the PPM dumps (S0 launch frame, S2 EXODUS
-  title, S3 beacon, S5 reveal + ring) — model couldn't view images in
-  the 2026-09-09 session; they're on the device at /tmp/s5*.ppm.
-- Fullscreen run on gemwl (the 720p native case) to confirm the windowed
-  60 fps carries (planet bake should make it hold; S2 warp + S5 reveal
-  are the expensive chapters to watch).
-- Audio mix ears-on: delay/reverb tails, S3 beacon blip vs visual.
+- ON-GLASS check of the 0.3.0 template (this session's deploy): the
+  triangle should spin smoothly at ~60 fps fullscreen on gemwl AND
+  windowed under labwc; the 440 Hz sine should be a clean steady tone
+  with no buzz (S16@44.1k) and no open click; heartbeat lines prove
+  pacing. Confirm `gemdemo` (the system copy) is the new binary, note
+  the store path + fps/audio state in the session log.
