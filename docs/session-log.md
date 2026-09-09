@@ -55,10 +55,35 @@ bootloader on this device — nothing changes there).
 **Docs touched:** README "On-device build/switch" section (now
 nixos-rebuild-primary, device-rebuild.sh = convenience wrapper),
 README status + bin table row, AGENTS.md status + rows, config/gemini.nix
-comment, bin/device-rebuild.sh header. Nothing flashed; the device
-clone is NOT yet synced (still at 28acf2c, gens 52-53 era) and no
-on-device nixos-rebuild run has happened yet — the switch proof is the
-next step (dry-build → build → switch, then record the gen here).
+comment, bin/device-rebuild.sh header.
+
+**ON GLASS PROOF (same session, after committing df6efc2 + pushing the
+clone via bin/device-repo.sh push — device clone was dirty with a stray
+chmod +x on bin/device-rebuild.sh; cleared to unblock the push):** all
+three steps ran as root from /root/gemini-nixos on the PDA via
+device-ssh, under run-job:
+- `nixos-rebuild dry-build --flake .` — rc=0 in ~70 s (reexec built
+  the config's own nixos-rebuild-ng, full eval; only 3.6 KiB of
+  fetches needed).
+- `nixos-rebuild build --flake .` — rc=0 in ~38 s; config-glue drvs
+  (etc/system-units/dbus units) compiled locally, the rest
+  substituted; toplevel `j334wc266x2c4xmq7ndijcnm58bjzqhg`.
+- `nixos-rebuild switch --flake .` — rc=0 in ~54 s; standard NixOS
+  switch dance ("do not know how to make this configuration
+  bootable" warning expected — LK boot.img boots the device, no NixOS
+  bootloader). **gen54 current**; gemwl/lxqt-nested/gemini-sleepd/
+  bluetooth all still active.
+- `nixos-rebuild list-generations` shows gen54 with **Configuration
+  Revision = df6efc232c24cd807293f2e1abc67ea83d968b96** (older gens:
+  "Unknown" — they predate the wiring); `nixos-version
+  --configuration-revision` agrees.
+- Host/device convergence receipt: host `nix eval` of the toplevel
+  drvPath at the SAME clean commit == the device dry-build's drv
+  (f8a75ndy…nixos-system-gemini-26.11pre-git.drv) — identical store
+  path, host build == device build. Device nix = 2.34.8 (same dirty-
+  suffix semantics verified on the host).
+
+Nothing flashed (profile-only switch; para untouched).
 
 ## 2026-09-09m — BLUETOOTH GUI + CLI TOOLS: persistent bluetoothd on the system bus, bluetoothctl + blueman-manager/applet on glass (gens 52-53; config-only, no kernel/boot.img change)
 
