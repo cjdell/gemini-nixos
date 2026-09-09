@@ -205,7 +205,7 @@ static int hci_stp_tx_thrd_func(void *pdata)
 /* at a time (bluez mode).                                             */
 /* ------------------------------------------------------------------ */
 
-static void hci_stp_dev_init_rx_cb(const unsigned char *data, int count)
+static void hci_stp_dev_init_rx_cb(unsigned char *data, int count)
 {
 	struct hci_stp *hu = g_hu;
 	unsigned int idx;
@@ -385,7 +385,7 @@ static void stp_tx_event_cb(void)
  * (hu->rx_*): the STP core may deliver one HCI frame in several
  * chunks.
  */
-static void stp_rx_event_cb_directly(const unsigned char *data, int count)
+static void stp_rx_event_cb_directly(unsigned char *data, int count)
 {
 	struct hci_stp *hu = g_hu;
 	struct hci_dev *hdev;
@@ -537,7 +537,7 @@ static void stp_rx_event_cb_directly(const unsigned char *data, int count)
 
 static int hci_stp_open(struct hci_dev *hdev)
 {
-	struct hci_stp *hu = hdev->driver_data;
+	struct hci_stp *hu = hci_get_drvdata(hdev);
 	int num_tries = 0;
 	int ret;
 
@@ -601,7 +601,7 @@ err_bt_off:
 
 static int hci_stp_flush(struct hci_dev *hdev)
 {
-	struct hci_stp *hu = hdev->driver_data;
+	struct hci_stp *hu = hci_get_drvdata(hdev);
 
 	if (!hu)
 		return -EFAULT;
@@ -613,7 +613,7 @@ static int hci_stp_flush(struct hci_dev *hdev)
 
 static int hci_stp_close(struct hci_dev *hdev)
 {
-	struct hci_stp *hu = hdev->driver_data;
+	struct hci_stp *hu = hci_get_drvdata(hdev);
 
 	if (!test_and_clear_bit(HCI_RUNNING, &hdev->flags))
 		return 0;
@@ -640,7 +640,7 @@ static int hci_stp_close(struct hci_dev *hdev)
  */
 static int hci_stp_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 {
-	struct hci_stp *hu = hdev->driver_data;
+	struct hci_stp *hu = hci_get_drvdata(hdev);
 
 	if (!hu)
 		return -ENODEV;
@@ -683,7 +683,7 @@ static int __init hci_stp_init(void)
 	hu->hdev = hdev;
 	hdev->bus = HCI_UART;
 	hdev->dev_type = HCI_PRIMARY;
-	hdev->driver_data = hu;
+	hci_set_drvdata(hdev, hu);
 
 	hdev->open = hci_stp_open;
 	hdev->close = hci_stp_close;
