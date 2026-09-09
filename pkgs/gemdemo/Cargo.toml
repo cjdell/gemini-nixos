@@ -17,7 +17,7 @@
 # No other runtime deps. See docs/gemdemo.md for the design.
 [package]
 name = "gemdemo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AETHER — demoscene + GPU stress for the Gemini PDA (Mali-T880 panfrost, GLES 3.1, real-time synth)"
 license = "MIT"
@@ -27,6 +27,12 @@ winit = "0.29"
 egl = "0.2.7"
 gl = "0.14"
 cpal = "0.15"
+libc = "0.2"
+
+# The 0.2.0 rewrite pins release opts tuned for the demo: "s" kept the
+# PDA build fast; the 0.1.0 single-digit-fps verdict means the music +
+# render threads want "lto"-free fast code — "s" it is, codegen-units 1
+# for a slightly leaner hot loop.
 
 # The GPU does the heavy lifting; keep the CPU build lean + fast for the
 # on-device aarch64 build (device-rebuild.sh). No LTO (slow on the PDA).

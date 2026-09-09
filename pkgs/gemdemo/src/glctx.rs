@@ -1,3 +1,4 @@
+#![allow(dead_code)] // context handle + helpers retained for the surface
 //! EGL glue: create an OpenGL ES 3.1 context on the winit (Wayland)
 //! window surface via the raw `egl` bindings crate (0.2.7, seankerr),
 //! then load the `gl` 0.14 global facade with eglGetProcAddress.
@@ -14,9 +15,9 @@ const EGL_OPENGL_ES3_BIT: EGLint = 0x0040;
 /// EGL 1.5 platform id for Wayland (not in the egl 0.2.7 constant list).
 const EGL_PLATFORM_WAYLAND_E: EGLint = 0x31D8;
 
-/// Platform-surface entry points — the egl 0.2.7 crate predates EGL 1.5
-/// in its constant/function list. Mesa (including the geminipda
-/// panfrost fork) exports the *EXT names.
+// Platform-surface entry points — the egl 0.2.7 crate predates EGL 1.5
+// in its constant/function list. Mesa (including the geminipda
+// panfrost fork) exports the *EXT names.
 extern "C" {
     // libglvnd exports the EGL 1.5 core names (no EXT suffix)
     fn eglGetPlatformDisplay(

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // helper surface shared with old modules — keep
 //! Small GL helpers: program build with shader-log diagnostics, VBO/VAO/
 //! FBO creation, and an error checker that names the last operation so a
 //! panfrost/Mali-T880 failure is debuggable from the serial console.

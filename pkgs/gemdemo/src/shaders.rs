@@ -2,6 +2,16 @@
 //! context; 300-level source is the safe intersection) + the fullscreen
 //! quad vertex shader. Everything is a `&str` assembled per program:
 //! `frag(body)` prepends the precision + common helpers.
+//!
+//! REWRITE NOTE (2026-09-09, gemdemo 0.2.0 "AETHER — GEMINI: EXODUS"):
+//! the renderer moved from a multipass post chain (bright/blur/bloom/
+//! feedback) + SSAA + raymarch to a DIRECT, single-framebuffer layering
+//! engine (each scene = back-to-front draws into the window surface, no
+//! intermediate FBOs at scale 1.0). The 60 fps budget is won by keeping
+//! per-pixel fragment cost low on the few large draws and confining the
+//! expensive math (planet sphere lighting etc.) to small screen regions.
+//! The prelude is slimmed to what the new layers use: hash/noise/fbm,
+//! the IQ cosine palette and the 2D rotation.
 
 pub const FULLSCREEN_VS: &str = r#"
 #version 300 es
@@ -32,11 +42,6 @@ float hash21(vec2 p) {{
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
 }}
-vec2 hash22(vec2 p) {{
-  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.xx + p3.yz) * p3.zy);
-}}
 float vnoise(vec2 p) {{
   vec2 i = floor(p);
   vec2 f = fract(p);
@@ -46,10 +51,20 @@ float vnoise(vec2 p) {{
     mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x),
     u.y);
 }}
+float fbm3(vec2 p) {{
+  float a = 0.5;
+  float r = 0.0;
+  for (int i = 0; i < 3; i++) {{
+    r += a * vnoise(p);
+    p = p * 2.03 + vec2(11.7, 5.1);
+    a *= 0.5;
+  }}
+  return r;
+}}
 float fbm(vec2 p) {{
   float a = 0.5;
   float r = 0.0;
-  for (int i = 0; i < 5; i++) {{
+  for (int i = 0; i < 4; i++) {{
     r += a * vnoise(p);
     p = p * 2.03 + vec2(11.7, 5.1);
     a *= 0.5;
@@ -62,10 +77,6 @@ vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {{
 mat2 rot(float a) {{
   float s = sin(a), c = cos(a);
   return mat2(c, -s, s, c);
-}}
-float smin(float a, float b, float k) {{
-  float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
 }}
 {body}
 "#,

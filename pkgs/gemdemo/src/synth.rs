@@ -1,34 +1,45 @@
-//! The AETHER synth engine — a complete real-time music engine in Rust.
+//! The EXODUS spacesynth engine — a real-time music engine in Rust,
+//! rewritten for gemdemo 0.2.0. Old engine problems (on glass 2026-09-09:
+//! "music completely broken", master rms ~0.88 = the naive per-sample
+//! peak-follower limiter flattened EVERY beat to full scale) are fixed by
+//! design: a proper mix bus with per-part gains leaving real headroom, a
+//! soft-knee ceiling + a fast-attack/slow-release peak limiter that only
+//! catches transients, no startup chime, and a composition written as an
+//! actual piece rather than one-bar patterns.
 //!
-//! 72-bar loop @ 128 BPM in A minor (Am–G–F–E, two bars per chord):
-//!   S0 GENESIS    8 bars   pad + arp + ghost hats          (bars  0– 7)
-//!   S1 DESCENT    8 bars   + bass, hats, kick enters bar 4 (bars  8–15)
-//!   S2 CORE      16 bars   full drums, lead riff, pump     (bars 16–31)
-//!   S3 SHATTER    8 bars   breakdown: pad/arp/sub only     (bars 32–39)
-//!   S4 SURGE      8 bars   build 2: riser + kick at bar 4  (bars 40–47)
-//!   S5 IGNITION  16 bars   everything, double-time riff    (bars 48–63)
-//!   S6 AFTERGLOW  8 bars   pad + arp, master fade-out      (bars 64–71)
+//! The score — "GEMINI: EXODUS" — is an epic spacesynth (Koto / Laserdance
+//! school): 126 BPM, A minor, a driving sequencer bass, echo-plated
+//! chord arpeggios (dotted-8th ping-pong), anthemic analog lead themes
+//! and big string pads. 80 bars, seven chapters, shared bar counts with
+//! the visual director (show.rs):
 //!
-//! Voices: kick (sine pitch-drop + click), clap/snare (banded noise + tone),
-//! hats (highpassed noise), bass (saw+sub through an env lowpass), arp
-//! (plucked saw), lead (3 detuned pulses), pad (4 detuned-saw voices),
-//! sub drop, riser + reverse-cymbal noise FX. FX chain: ping-pong dotted-8th
-//! delay + Schroeder reverb, sidechain pump on the kick, tanh soft clip +
-//! a peak limiter. The audio callback thread owns this struct; it
-//! publishes the beat clock (fixed-point) and the kick envelope to the
-//! render thread via `Clock` atomics.
+//!   S0 EARTH      16 bars  Am F C G Am F C E — pad/drone/arp, countdown
+//!   S1 ASCENT      8 bars  Am F C G             — groove enters
+//!   S2 WARP       16 bars  Am F C G Am F G E    — full theme
+//!   S3 VOID        8 bars  Am F C G             — breakdown, beacon
+//!   S4 RENDEZVOUS  8 bars  F G F G              — build
+//!   S5 PLANET     16 bars  Am F C G Am F G Am   — anthem finale
+//!   S6 ORIGIN      8 bars  Am F C G             — fade to starlight
+//!
+//! Voices: kick, snare, clap, closed/open hats, crash, tom, sub drone,
+//! analog bass (saw+sub), pluck arp, supersaw lead (mono + glide + vib),
+//! detuned-saw pads, plus FX: riser, downlifter, reverse crash, impacts,
+//! signal blips. FX chain: per-part sends → dotted-8 ping-pong delay +
+//! Schroeder reverb, sidechain pump on the kick, soft clip, limiter.
+//! Sample-accurate Clock publishing (beat/kick/section atomics) as
+//! before. The audio callback thread owns this struct.
 
 use std::sync::atomic::Ordering;
 
 use crate::Clock;
 
-pub const BPM: f64 = 128.0;
-pub const STEPS_PER_BAR: u32 = 16; // sixteenth notes
-pub const TOTAL_BARS: u32 = 72;
+pub const BPM: f64 = 126.0;
+pub const STEPS_PER_BAR: u32 = 16;
+pub const TOTAL_BARS: u32 = 80;
 
-pub const SECTION_BARS: [u32; 7] = [8, 8, 16, 8, 8, 16, 8];
+pub const SECTION_BARS: [u32; 7] = [16, 8, 16, 8, 8, 16, 8];
 pub const SECTION_NAMES: [&str; 7] = [
-    "GENESIS", "DESCENT", "CORE", "SHATTER", "SURGE", "IGNITION", "AFTERGLOW",
+    "EARTH", "ASCENT", "WARP", "VOID", "RENDEZVOUS", "PLANET", "ORIGIN",
 ];
 
 fn section_for_bar(bar: u32) -> u32 {
@@ -48,15 +59,24 @@ pub fn section_for_beat(beat: f64) -> u32 {
 }
 
 pub fn section_start_beat(section: u32) -> f64 {
-    let bar: u32 = SECTION_BARS[..section as usize].iter().sum();
-    bar as f64 * 4.0
+    section_start_bar(section) as f64 * 4.0
+}
+
+pub fn section_start_bar(section: u32) -> u32 {
+    SECTION_BARS[..section as usize].iter().sum()
 }
 
 fn midi_freq(m: i32) -> f32 {
     440.0 * 2f32.powf((m as f32 - 69.0) / 12.0)
 }
 
-/// RBJ biquad (lowpass/highpass/bandpass) with state.
+fn beat_secs(bars: f32) -> f32 {
+    bars * 4.0 * 60.0 / BPM as f32
+}
+
+// ------------------------------------------------------------------ dsp
+
+/// RBJ biquad.
 #[derive(Clone, Copy)]
 struct Biquad {
     b0: f32, b1: f32, b2: f32, a1: f32, a2: f32,
@@ -70,9 +90,9 @@ impl Biquad {
         let sw = w0.sin();
         let alpha = sw / (2.0 * q);
         let (b0, b1, b2) = match kind {
-            0 => { let x = (1.0 - cw) * 0.5; (x, 1.0 - cw, x) }             // lowpass
-            1 => { let x = (1.0 + cw) * 0.5; (x, -(1.0 + cw), x) }          // highpass
-            _ => (alpha, 0.0, -alpha),                                      // bandpass
+            0 => { let x = (1.0 - cw) * 0.5; (x, 1.0 - cw, x) }
+            1 => { let x = (1.0 + cw) * 0.5; (x, -(1.0 + cw), x) }
+            _ => (alpha, 0.0, -alpha),
         };
         let a0 = 1.0 + alpha;
         Biquad {
@@ -81,13 +101,6 @@ impl Biquad {
             x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
         }
     }
-
-    fn set_fc(&mut self, fc: f32, q: f32, kind: u8, sr: f32) {
-        let n = Self::new(fc, q, kind, sr);
-        self.b0 = n.b0; self.b1 = n.b1; self.b2 = n.b2;
-        self.a1 = n.a1; self.a2 = n.a2;
-    }
-
     #[inline]
     fn proc(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
@@ -96,14 +109,12 @@ impl Biquad {
         self.y2 = self.y1; self.y1 = y;
         y
     }
-
-    #[inline]
     fn reset(&mut self) {
         self.x1 = 0.0; self.x2 = 0.0; self.y1 = 0.0; self.y2 = 0.0;
     }
 }
 
-/// Deterministic white noise in [-1, 1) (xorshift64, no std::rand).
+/// Deterministic white noise in [-1, 1).
 struct Nsg {
     x: u64,
 }
@@ -121,63 +132,65 @@ impl Nsg {
     }
 }
 
-// ---------------------------------------------------------------- voices
+// ------------------------------------------------------------------ voices
 
 #[derive(Clone, Copy)]
 struct Kick {
     phase: f32,
     t: f32,
+    amp: f32,
     active: bool,
 }
 
 impl Kick {
     fn new() -> Self {
-        Kick { phase: 0.0, t: 0.0, active: false }
+        Kick { phase: 0.0, t: 0.0, amp: 1.0, active: false }
     }
-    fn trigger(&mut self) {
+    fn trigger(&mut self, amp: f32) {
         self.phase = 0.0;
         self.t = 0.0;
+        self.amp = amp;
         self.active = true;
     }
     fn render(&mut self, sr: f32, nz: &mut Nsg) -> f32 {
         if !self.active {
             return 0.0;
         }
-        let f = 42.0 + 150.0 * (-28.0 * self.t).exp();
-        self.phase += std::f32::consts::PI * 2.0 * f / sr;
         let two_pi = std::f32::consts::PI * 2.0;
+        // pitch 160→44 Hz exp drop over ~55 ms
+        let f = 44.0 + 116.0 * (-28.0 * self.t).exp();
+        self.phase += two_pi * f / sr;
         self.phase -= two_pi * (self.phase / two_pi).floor();
-        let body = self.phase.sin() * (-16.0 * self.t).exp() * 1.35;
-        let click = nz.next() * (-700.0 * self.t).exp() * 0.35;
+        let body = self.phase.sin() * (-18.0 * self.t).exp();
+        let click = nz.next() * (-900.0 * self.t).exp() * 0.4;
         self.t += 1.0 / sr;
-        if self.t > 0.35 {
+        if self.t > 0.32 {
             self.active = false;
         }
-        body + click
+        (body + click).tanh() * 1.5 * self.amp
     }
 }
 
-/// A filtered-noise burst (snare/hat/crash/reverse/riser).
+/// Filtered-noise burst: snare / clap / hat / crash / fx.
 #[derive(Clone, Copy)]
 struct NoiseBurst {
-    sr: f32,
     t: f32,
     dur: f32,
     amp: f32,
     active: bool,
     f: Biquad,
-    kind: u8, // 0 lp, 1 hp, 2 bp
-    sweep: bool, // riser: fc sweeps 300 -> 8000 over dur
-    reverse: bool, // gain ramps up (reverse cymbal)
+    kind: u8,
+    env: u8, // 0 exp decay, 1 clap bursts, 2 sweep up, 3 reverse
+    fc0: f32,
+    fc1: f32,
 }
 
 impl NoiseBurst {
     fn new(sr: f32) -> Self {
         NoiseBurst {
-            sr,
             t: 0.0, dur: 0.1, amp: 0.5, active: false,
-            f: Biquad::new(2000.0, 1.0, 2, sr),
-            kind: 2, sweep: false, reverse: false,
+            f: Biquad::new(2000.0, 1.0, 2, sr), kind: 2, env: 0,
+            fc0: 2000.0, fc1: 2000.0,
         }
     }
     fn trigger(&mut self, kind: u8, fc: f32, q: f32, dur: f32, amp: f32) {
@@ -186,47 +199,64 @@ impl NoiseBurst {
         self.amp = amp;
         self.active = true;
         self.kind = kind;
-        self.sweep = false;
-        self.reverse = false;
-        self.f = Biquad::new(fc, q, kind, self.sr);
+        self.env = 0;
+        self.fc0 = fc;
+        self.fc1 = fc;
+        self.f = Biquad::new(fc, q, kind, 48000.0);
     }
-    fn trigger_sweep(&mut self, dur: f32, amp: f32) {
+    fn trigger_bursts(&mut self, kind: u8, fc: f32, q: f32, dur: f32, amp: f32) {
+        self.trigger(kind, fc, q, dur, amp);
+        self.env = 1;
+    }
+    fn trigger_sweep(&mut self, fc0: f32, fc1: f32, dur: f32, amp: f32) {
         self.t = 0.0;
         self.dur = dur;
         self.amp = amp;
         self.active = true;
         self.kind = 2;
-        self.sweep = true;
-        self.reverse = false;
-        self.f = Biquad::new(300.0, 1.2, 2, self.sr);
+        self.env = 2;
+        self.fc0 = fc0;
+        self.fc1 = fc1;
+        self.f = Biquad::new(fc0, 1.1, 2, 48000.0);
     }
-    fn trigger_reverse(&mut self, dur: f32, amp: f32) {
+    fn trigger_reverse(&mut self, fc: f32, dur: f32, amp: f32) {
         self.t = 0.0;
         self.dur = dur;
         self.amp = amp;
         self.active = true;
         self.kind = 1;
-        self.sweep = false;
-        self.reverse = true;
-        self.f = Biquad::new(3500.0, 0.8, 1, self.sr);
+        self.env = 3;
+        self.fc0 = fc;
+        self.fc1 = fc;
+        self.f = Biquad::new(fc, 0.8, 1, 48000.0);
     }
-    fn render(&mut self, nz: &mut Nsg) -> f32 {
+    fn render(&mut self, nz: &mut Nsg, sr: f32) -> f32 {
         if !self.active {
             return 0.0;
         }
-        if self.sweep {
-            let p = (self.t / self.dur).clamp(0.0, 1.0);
-            self.f.set_fc(300.0 + p * p * 7700.0, 1.2, 2, self.sr);
+        let p = (self.t / self.dur).clamp(0.0, 1.0);
+        if self.env == 2 {
+            // riser: filter climbs (or falls) over the whole duration
+            let f = self.fc0 + (self.fc1 - self.fc0) * p * p;
+            self.f = Biquad::new(f, 1.1, 2, sr);
         }
         let x = nz.next();
-        let env = if self.reverse {
-            let p = (self.t / self.dur).clamp(0.0, 1.0);
-            p * p
-        } else {
-            (-self.t / (self.dur * 0.35)).exp()
+        let e = match self.env {
+            1 => {
+                // clap: three decaying bursts
+                let b = (self.t * 190.0).floor().min(2.0);
+                let bs = [1.0, 0.55, 0.25];
+                bs[b as usize] * (-25.0 * self.t).exp()
+            }
+            2 => {
+                let e = (1.0 - p) * 0.3 + 0.7;
+                e * (self.t / (self.dur * 0.5)).min(1.0)
+            }
+            3 => p * p,
+            _ => (-self.t / (self.dur * 0.3)).exp(),
         };
-        let y = self.f.proc(x) * env * self.amp;
-        self.t += 1.0 / self.sr;
+        let y = self.f.proc(x) * e * self.amp;
+        self.t += 1.0 / sr;
         if self.t > self.dur {
             self.active = false;
         }
@@ -234,6 +264,79 @@ impl NoiseBurst {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Tom {
+    phase: f32,
+    t: f32,
+    f0: f32,
+    amp: f32,
+    active: bool,
+}
+
+impl Tom {
+    fn new() -> Self {
+        Tom { phase: 0.0, t: 0.0, f0: 180.0, amp: 0.5, active: false }
+    }
+    fn trigger(&mut self, f0: f32, amp: f32) {
+        self.phase = 0.0;
+        self.t = 0.0;
+        self.f0 = f0;
+        self.amp = amp;
+        self.active = true;
+    }
+    fn render(&mut self, sr: f32) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        let f = self.f0 * (-6.0 * self.t).exp() + 55.0;
+        self.phase += std::f32::consts::PI * 2.0 * f / sr;
+        let y = self.phase.sin() * (-14.0 * self.t).exp() * self.amp;
+        self.t += 1.0 / sr;
+        if self.t > 0.3 {
+            self.active = false;
+        }
+        y
+    }
+}
+
+/// Sub drone (sine at the root, slow vibrato).
+#[derive(Clone, Copy)]
+struct Sub {
+    phase: f32,
+    t: f32,
+    f: f32,
+    amp: f32,
+    active: bool,
+}
+
+impl Sub {
+    fn new() -> Self {
+        Sub { phase: 0.0, t: 0.0, f: 55.0, amp: 0.4, active: false }
+    }
+    fn trigger(&mut self, f: f32, amp: f32) {
+        self.f = f;
+        self.phase = 0.0;
+        self.t = 0.0;
+        self.amp = amp;
+        self.active = true;
+    }
+    fn render(&mut self, sr: f32) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        let vib = 1.0 + 0.004 * (self.t * 5.0).sin();
+        self.phase += std::f32::consts::PI * 2.0 * self.f * vib / sr;
+        let atk = (self.t * 200.0).min(1.0);
+        let y = self.phase.sin() * atk * self.amp;
+        self.t += 1.0 / sr;
+        if self.t > 4.0 {
+            self.active = false;
+        }
+        y
+    }
+}
+
+/// Analog bass: sub sine + saw, lp env.
 #[derive(Clone, Copy)]
 struct Bass {
     f: f32,
@@ -243,18 +346,17 @@ struct Bass {
     dur: f32,
     amp: f32,
     active: bool,
-    sub_only: bool,
     lp: Biquad,
 }
 
 impl Bass {
     fn new(sr: f32) -> Self {
         Bass {
-            f: 55.0, phase: 0.0, sub_phase: 0.0, t: 0.0, dur: 0.2, amp: 0.5,
-            active: false, sub_only: false, lp: Biquad::new(400.0, 1.0, 0, sr),
+            f: 55.0, phase: 0.0, sub_phase: 0.0, t: 0.0, dur: 0.3, amp: 0.5,
+            active: false, lp: Biquad::new(200.0, 1.0, 0, sr),
         }
     }
-    fn trigger(&mut self, freq: f32, dur: f32, amp: f32, sub_only: bool) {
+    fn trigger(&mut self, freq: f32, dur: f32, amp: f32) {
         self.f = freq;
         self.phase = 0.0;
         self.sub_phase = 0.0;
@@ -262,39 +364,33 @@ impl Bass {
         self.dur = dur;
         self.amp = amp;
         self.active = true;
-        self.sub_only = sub_only;
         self.lp.reset();
-        self.lp.set_fc(200.0, 1.4, 0, 48000.0);
     }
     fn render(&mut self, sr: f32) -> f32 {
         if !self.active {
             return 0.0;
         }
-        let dt = 1.0 / sr;
         let two_pi = std::f32::consts::PI * 2.0;
-        let p = self.phase / two_pi;
-        let saw = 2.0 * p - 1.0;
-        self.phase += self.f * dt;
-        self.sub_phase += self.f * dt;
+        let dt = 1.0 / sr;
+        let saw = 2.0 * (self.phase / two_pi) - 1.0;
+        self.phase += two_pi * self.f * dt;
+        self.sub_phase += two_pi * self.f * dt;
         self.sub_phase -= two_pi * (self.sub_phase / two_pi).floor();
         let sub = self.sub_phase.sin();
-        self.lp.set_fc(160.0 + (1500.0 - 160.0) * (-12.0 * self.t).exp(), 1.4, 0, sr);
-        let x = if self.sub_only { sub } else { sub * 0.9 + saw * 0.55 };
-        let atk = (self.t * 500.0).min(1.0);
-        let rel = if self.t > self.dur {
-            ((self.t - self.dur) / 0.08).min(1.0)
-        } else {
-            0.0
-        };
-        let a = atk * (1.0 - rel) * self.amp;
+        // filter opens from a pluck then settles
+        let fc = 120.0 + 1900.0 * (-14.0 * self.t).exp();
+        self.lp = Biquad::new(fc, 0.9, 0, sr);
+        let x = self.lp.proc(saw * 0.6 + sub * 1.1);
+        let a = (self.t * 900.0).min(1.0) * (if self.t > self.dur { ((self.t - self.dur) / 0.05).min(1.0) } else { 0.0 } * -1.0 + 1.0) * self.amp;
         self.t += dt;
-        if self.t > self.dur + 0.1 {
+        if self.t > self.dur + 0.06 {
             self.active = false;
         }
-        self.lp.proc(x) * a
+        x * a
     }
 }
 
+/// Pluck (arp): saw through a fast lp decay.
 #[derive(Clone, Copy)]
 struct Pluck {
     f: f32,
@@ -309,7 +405,7 @@ impl Pluck {
     fn new(sr: f32) -> Self {
         Pluck {
             f: 440.0, phase: 0.0, t: 0.0, amp: 0.3, active: false,
-            lp: Biquad::new(3800.0, 0.8, 0, sr),
+            lp: Biquad::new(2600.0, 0.8, 0, sr),
         }
     }
     fn trigger(&mut self, freq: f32, amp: f32) {
@@ -326,24 +422,30 @@ impl Pluck {
         }
         let dt = 1.0 / sr;
         let two_pi = std::f32::consts::PI * 2.0;
-        let p = self.phase / two_pi;
-        let saw = 2.0 * p - 1.0;
-        self.phase += self.f * dt;
-        let a = (-18.0 * self.t).exp() * self.amp;
+        self.phase += two_pi * self.f * dt;
+        self.phase -= two_pi * (self.phase / two_pi).floor();
+        let saw = 2.0 * (self.phase / two_pi) - 1.0;
+        let fc = 1800.0 + 4200.0 * (-60.0 * self.t).exp();
+        self.lp = Biquad::new(fc, 0.7, 0, sr);
+        let y = self.lp.proc(saw);
+        let a = (-22.0 * self.t).exp() * self.amp;
         self.t += dt;
-        if self.t > 0.28 {
+        if self.t > 0.24 {
             self.active = false;
         }
-        self.lp.proc(saw * 0.3) * (a * 4.0)
+        y * a
     }
 }
 
-/// Lead: 3 detuned pulse oscillators through a lowpass.
+/// Supersaw lead (4 detuned saws) with per-note env + optional glide.
 #[derive(Clone, Copy)]
 struct Lead {
     f: f32,
-    ph: [f32; 3],
+    tf: f32, // glide target
+    ph: [f32; 4],
+    det: [f32; 4],
     t: f32,
+    dur: f32,
     amp: f32,
     active: bool,
     lp: Biquad,
@@ -352,14 +454,22 @@ struct Lead {
 impl Lead {
     fn new(sr: f32) -> Self {
         Lead {
-            f: 440.0, ph: [0.0; 3], t: 0.0, amp: 0.3, active: false,
-            lp: Biquad::new(4200.0, 0.7, 0, sr),
+            f: 440.0, tf: 440.0, ph: [0.0; 4], det: [0.996, 0.999, 1.001, 1.004],
+            t: 0.0, dur: 0.3, amp: 0.3, active: false,
+            lp: Biquad::new(3000.0, 0.8, 0, sr),
         }
     }
-    fn trigger(&mut self, freq: f32, amp: f32) {
-        self.f = freq;
-        self.ph = [0.0, 0.0, 0.0];
+    fn trigger(&mut self, freq: f32, dur: f32, amp: f32) {
+        if self.active {
+            // glide from the previous note if it is still ringing
+            self.tf = freq;
+        } else {
+            self.f = freq;
+            self.tf = freq;
+            self.ph = [0.0; 4];
+        }
         self.t = 0.0;
+        self.dur = dur;
         self.amp = amp;
         self.active = true;
         self.lp.reset();
@@ -370,29 +480,36 @@ impl Lead {
         }
         let dt = 1.0 / sr;
         let two_pi = std::f32::consts::PI * 2.0;
-        let ratios = [0.996, 1.0, 1.004];
+        // portamento toward target while the note is young
+        self.f += (self.tf - self.f) * (20.0 * dt).min(1.0);
+        let vib = 1.0 + 0.006 * ((self.t - 0.18).max(0.0) * 42.0).sin();
         let mut x = 0.0;
-        for i in 0..3 {
-            let fr = self.f * ratios[i];
-            self.ph[i] += fr * dt;
+        for i in 0..4 {
+            let fr = self.f * self.det[i] * vib;
+            self.ph[i] += two_pi * fr * dt;
             self.ph[i] -= two_pi * (self.ph[i] / two_pi).floor();
-            if self.ph[i] / two_pi < 0.25 {
-                x += 1.0;
-            } else {
-                x -= 1.0;
-            }
+            let p = self.ph[i] / two_pi;
+            x += 2.0 * p - 1.0;
         }
-        x /= 3.0;
-        let atk = (self.t * 300.0).min(1.0);
-        let a = atk * (-9.0 * self.t).exp() * self.amp;
+        x *= 0.25;
+        let fc = 900.0 + 5200.0 * (-24.0 * self.t).exp() * (0.5 + 0.5 * (1.0 - (self.t / self.dur).clamp(0.0, 1.0)));
+        self.lp = Biquad::new(fc.clamp(300.0, 6000.0), 0.7, 0, sr);
+        let atk = (self.t * 600.0).min(1.0);
+        let rel = if self.t > self.dur {
+            ((self.t - self.dur) / 0.06).min(1.0)
+        } else {
+            0.0
+        };
+        let a = atk * (1.0 - rel) * self.amp;
         self.t += dt;
-        if self.t > 0.32 {
+        if self.t > self.dur + 0.07 {
             self.active = false;
         }
-        self.lp.proc(x) * (a * 1.6)
+        self.lp.proc(x) * a
     }
 }
 
+/// Detuned-saw pad voice (2 saws + chorus LFO), returns (L, R).
 #[derive(Clone, Copy)]
 struct PadVoice {
     f: f32,
@@ -400,17 +517,17 @@ struct PadVoice {
     t: f32,
     dur: f32,
     amp: f32,
-    pan: f32, // -1..1
+    pan: f32,
     active: bool,
-    lp: Biquad,
     lfo: f32,
+    lp: Biquad,
 }
 
 impl PadVoice {
     fn new(sr: f32) -> Self {
         PadVoice {
-            f: 220.0, ph: [0.0; 2], t: 0.0, dur: 3.0, amp: 0.1, pan: 0.0,
-            active: false, lp: Biquad::new(1200.0, 0.7, 0, sr), lfo: 0.0,
+            f: 220.0, ph: [0.0; 2], t: 0.0, dur: 4.0, amp: 0.1, pan: 0.0,
+            active: false, lfo: 0.0, lp: Biquad::new(1800.0, 0.7, 0, sr),
         }
     }
     fn trigger(&mut self, freq: f32, dur: f32, amp: f32, pan: f32) {
@@ -429,88 +546,119 @@ impl PadVoice {
         }
         let dt = 1.0 / sr;
         let two_pi = std::f32::consts::PI * 2.0;
-        self.lfo += 0.31 * dt;
-        let det = 1.0 + 0.004 * self.lfo.sin();
+        self.lfo += 0.24 * dt;
+        let det = 1.0 + 0.005 * self.lfo.sin();
         let mut x = 0.0;
         for i in 0..2 {
-            let fr = self.f * det * if i == 0 { 0.998 } else { 1.002 };
-            self.ph[i] += fr * dt;
+            let fr = self.f * if i == 0 { 0.997 * det } else { 1.003 * det };
+            self.ph[i] += two_pi * fr * dt;
             self.ph[i] -= two_pi * (self.ph[i] / two_pi).floor();
-            let p = self.ph[i] / two_pi;
-            x += 2.0 * p - 1.0;
+            x += 2.0 * (self.ph[i] / two_pi) - 1.0;
         }
         x *= 0.5;
-        let atk = (self.t / 0.35).min(1.0);
+        let fc = 1500.0 + 900.0 * (0.5 + 0.5 * self.lfo.sin());
+        self.lp = Biquad::new(fc, 0.7, 0, sr);
+        let atk = (self.t / 0.5).min(1.0);
+        let atk = atk * atk;
         let rel = if self.t > self.dur {
-            ((self.t - self.dur) / 0.8).min(1.0)
+            ((self.t - self.dur) / 1.1).min(1.0)
         } else {
             0.0
         };
         let a = atk * (1.0 - rel) * self.amp;
         self.t += dt;
-        if self.t > self.dur + 0.85 {
+        if self.t > self.dur + 1.2 {
             self.active = false;
         }
         let y = self.lp.proc(x) * a;
-        // equal-power pan
         let gl = y * ((1.0 - self.pan) * 0.5).sqrt();
         let gr = y * ((1.0 + self.pan) * 0.5).sqrt();
         (gl, gr)
     }
 }
 
-// ---------------------------------------------------------------- fx
+/// Sine blip (the VOID beacon / UI-ish accents) with fast decay.
+#[derive(Clone, Copy)]
+struct Blip {
+    f: f32,
+    phase: f32,
+    t: f32,
+    amp: f32,
+    active: bool,
+}
 
-/// Ping-pong delay. TAP = dotted 8th = 0.75 beat (16875 samples @48k).
+impl Blip {
+    fn new() -> Self {
+        Blip { f: 880.0, phase: 0.0, t: 0.0, amp: 0.4, active: false }
+    }
+    fn trigger(&mut self, f: f32, amp: f32) {
+        self.f = f;
+        self.phase = 0.0;
+        self.t = 0.0;
+        self.amp = amp;
+        self.active = true;
+    }
+    fn render(&mut self, sr: f32) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        self.phase += std::f32::consts::PI * 2.0 * self.f / sr;
+        let y = self.phase.sin() * (-55.0 * self.t).exp() * self.amp;
+        self.t += 1.0 / sr;
+        if self.t > 0.3 {
+            self.active = false;
+        }
+        y
+    }
+}
+
+// ------------------------------------------------------------------ fx
+
+/// Ping-pong dotted-8th delay with damped feedback.
 struct Delay {
     buf: [Vec<f32>; 2],
     wr: usize,
     rd_l: usize,
     rd_r: usize,
     fb: f32,
-    tap: usize,
+    lp: Biquad,
 }
 
 impl Delay {
-    const N: usize = 32768;
-
     fn new(sr: f32) -> Self {
-        // 0.75 beat at the device's sample rate
         let tap = ((0.75 * 60.0 / BPM) * sr as f64) as usize;
         let rd_l = (Self::N - tap) % Self::N;
         Delay {
             buf: [vec![0.0; Self::N], vec![0.0; Self::N]],
             wr: 0,
             rd_l,
-            rd_r: (rd_l + Self::N - 37) % Self::N,
-            fb: 0.38,
-            tap,
+            rd_r: (rd_l + Self::N - 53) % Self::N,
+            fb: 0.42,
+            lp: Biquad::new(4800.0, 0.7, 0, sr),
         }
     }
-
+    const N: usize = 65536;
     fn push(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let dl = self.buf[0][self.rd_l];
         let dr = self.buf[1][self.rd_r];
-        self.buf[0][self.wr] = xl + dr * self.fb;
-        self.buf[1][self.wr] = xr + dl * self.fb;
+        // cross-feed + damping in the feedback loop
+        let fb_l = self.lp.proc(dr) * self.fb;
+        self.buf[0][self.wr] = xl + fb_l;
+        self.buf[1][self.wr] = xr + self.lp.proc(dl) * self.fb;
         self.wr = (self.wr + 1) % Self::N;
         self.rd_l = (self.rd_l + 1) % Self::N;
         self.rd_r = (self.rd_r + 1) % Self::N;
         (dl, dr)
     }
-
     fn flush(&mut self) {
         for b in self.buf.iter_mut() {
             b.fill(0.0);
         }
-        self.wr = 0;
-        let rd_l = (Self::N - self.tap) % Self::N;
-        self.rd_l = rd_l;
-        self.rd_r = (rd_l + Self::N - 37) % Self::N;
+        self.lp.reset();
     }
 }
 
-/// Schroeder reverb: 4 combs + 2 allpasses per channel.
+/// Schroeder reverb (4 combs + 2 allpasses per channel).
 struct Reverb {
     combs: [Vec<f32>; 8],
     cpos: [usize; 8],
@@ -520,8 +668,8 @@ struct Reverb {
 
 impl Reverb {
     fn new() -> Self {
-        let comb_lens = [257usize, 251, 241, 233, 257, 251, 241, 233];
-        let ap_lens = [55usize, 33, 55, 33];
+        let comb_lens = [355usize, 271, 229, 197, 331, 257, 223, 191];
+        let ap_lens = [61usize, 37, 61, 37];
         Reverb {
             combs: comb_lens.map(|l| vec![0.0; l]),
             cpos: [0; 8],
@@ -529,7 +677,6 @@ impl Reverb {
             apos: [0; 4],
         }
     }
-
     fn flush(&mut self) {
         for b in self.combs.iter_mut() {
             b.fill(0.0);
@@ -538,8 +685,6 @@ impl Reverb {
             b.fill(0.0);
         }
     }
-
-    /// Process one sample per channel; returns the wet signal (scaled).
     fn process(&mut self, xl: f32, xr: f32) -> (f32, f32) {
         let fb = [0.84, 0.81, 0.78, 0.75, 0.84, 0.81, 0.78, 0.75];
         let mut x = [xl, xr];
@@ -550,9 +695,8 @@ impl Reverb {
                 let y = x[ch] - fb[ci] * self.combs[ci][self.cpos[ci]];
                 self.combs[ci][self.cpos[ci]] = y;
                 self.cpos[ci] = (self.cpos[ci] + 1) % l;
-                x[ch] += y * 0.4;
+                x[ch] += y * 0.42;
             }
-            // two allpasses (g = 0.5): y = x - g*d; d' = g*x + d
             for ai in 0..2 {
                 let ci = ch * 2 + ai;
                 let l = self.allp[ci].len();
@@ -563,18 +707,109 @@ impl Reverb {
                 x[ch] = y;
             }
         }
-        (x[0] * 0.20, x[1] * 0.20)
+        (x[0] * 0.22, x[1] * 0.22)
     }
 }
 
-// ---------------------------------------------------------------- engine
+// ------------------------------------------------------------------ score
+
+/// Chord tones for a root + quality: [r, 5, 8ve, 3rd+8ve, 5th+8ve, 3rd+2·8ve].
+fn chord_tones(root: i32, minor: bool) -> [f32; 6] {
+    let t3 = if minor { 3 } else { 4 };
+    [
+        root as f32,
+        (root + 7) as f32,
+        (root + 12) as f32,
+        (root + 12 + t3) as f32,
+        (root + 19) as f32,
+        (root + 24 + t3) as f32,
+    ]
+}
+
+/// Pad voicing: [root-12? no — register around root+12..: r+12, t3+12, 5+12, 7].
+fn pad_notes(root: i32, minor: bool) -> [f32; 4] {
+    let t3 = if minor { 3 } else { 4 };
+    let t7 = if minor { 10 } else { 11 };
+    [
+        (root + 12) as f32,
+        (root + 12 + t3) as f32,
+        (root + 19) as f32,
+        (root + 12 + t7) as f32,
+    ]
+}
+
+// Chord progressions per section (2-bar chords). root midi, minor flag.
+struct Progression {
+    chords: &'static [(i32, bool)],
+}
+
+const PROG: [Progression; 7] = [
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false), (45, true), (41, false), (48, false), (40, false)] }, // S0
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false)] },                                                  // S1
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false), (45, true), (41, false), (43, false), (40, false)] }, // S2
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false)] },                                                  // S3
+    Progression { chords: &[(41, false), (43, false), (41, false), (43, false)] },                                                // S4
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false), (45, true), (41, false), (43, false), (45, true)] }, // S5
+    Progression { chords: &[(45, true), (41, false), (48, false), (43, false)] },                                                  // S6
+];
+
+fn prog_for(section: usize) -> &'static [(i32, bool)] {
+    PROG[section].chords
+}
+
+/// chord for an absolute bar index (2 bars per chord, within its section)
+fn chord_for_bar(bar: u32) -> (i32, bool) {
+    let section = section_for_bar(bar) as usize;
+    let bar_in = (bar - section_start_bar(section as u32)) % SECTION_BARS[section];
+    let chords = prog_for(section);
+    let i = (bar_in / 2) as usize % chords.len();
+    chords[i]
+}
+
+/// 2-bar melodic motif per chord, 32 slots of 16ths (0 = rest).
+const MOTIF_AM: [i32; 32] = [
+    76, 0, 76, 0, 72, 0, 76, 0, 81, 0, 76, 0, 74, 72, 0, 0,
+    69, 0, 72, 0, 76, 0, 74, 0, 72, 0, 69, 0, 67, 0, 69, 0,
+];
+const MOTIF_F: [i32; 32] = [
+    69, 0, 69, 0, 69, 0, 72, 0, 74, 0, 76, 0, 77, 0, 76, 0,
+    74, 0, 72, 0, 69, 0, 72, 0, 74, 0, 76, 0, 77, 0, 74, 0,
+];
+const MOTIF_C: [i32; 32] = [
+    72, 0, 76, 0, 79, 0, 76, 0, 81, 0, 79, 0, 76, 0, 74, 0,
+    72, 0, 74, 0, 76, 0, 79, 0, 81, 0, 79, 0, 76, 0, 72, 0,
+];
+const MOTIF_G: [i32; 32] = [
+    74, 0, 74, 0, 79, 0, 74, 0, 83, 0, 81, 0, 79, 0, 77, 0,
+    74, 0, 72, 0, 74, 0, 76, 0, 79, 0, 76, 0, 74, 0, 72, 0,
+];
+const MOTIF_E: [i32; 32] = [
+    71, 0, 71, 0, 76, 0, 71, 0, 80, 0, 76, 0, 71, 0, 71, 0,
+    71, 0, 71, 0, 71, 0, 76, 0, 71, 0, 71, 0, 71, 0, 71, 0,
+];
+
+/// motif chosen by the chord's root midi
+fn motif_for(root: i32) -> &'static [i32; 32] {
+    match root {
+        45 => &MOTIF_AM,
+        41 => &MOTIF_F,
+        48 => &MOTIF_C,
+        43 => &MOTIF_G,
+        40 => &MOTIF_E,
+        _ => &MOTIF_AM,
+    }
+}
+
+// ------------------------------------------------------------------ engine
 
 pub struct Engine {
     beat: f64,
     sr: f32,
     next_step: u64,
-    last_chord: i32,
+    last_chord_bar: i32,
     kick_env: f32,
+    lim_peak: [f32; 2],
+    sample: u64,
 
     kick: [Kick; 4],
     kick_i: usize,
@@ -582,30 +817,26 @@ pub struct Engine {
     snare_i: usize,
     hat: [NoiseBurst; 8],
     hat_i: usize,
-    fx: [NoiseBurst; 4],
+    tom: [Tom; 4],
+    tom_i: usize,
+    fx: [NoiseBurst; 6],
     fx_i: usize,
+    sub: [Sub; 2],
+    sub_i: usize,
     bass: [Bass; 8],
     bass_i: usize,
     arp: [Pluck; 16],
     arp_i: usize,
-    lead: [Lead; 16],
+    lead: [Lead; 8],
     lead_i: usize,
     pad: [PadVoice; 16],
     pad_i: usize,
+    blip: [Blip; 4],
+    blip_i: usize,
 
     delay: Delay,
     reverb: Reverb,
     nz: Nsg,
-    master_gain: f32,
-    peak: [f32; 2],
-    sample: u64,
-    // startup chime (on-glass audio debug, 2026-09-09): the first 0.6 s
-    // output a descending 880-660-440 Hz tone instead of music, so a
-    // listener can immediately tell whether the demo's stream is audible
-    // AT ALL ("no music" reports had the whole stream in doubt).
-    chime: u32,       // samples remaining
-    chime_total: u32, // total chime length (samples)
-    chime_seg: u32,   // samples per note
 }
 
 impl Engine {
@@ -613,347 +844,464 @@ impl Engine {
         Engine {
             beat: 0.0,
             sr,
-            next_step: 0,
-            last_chord: -1,
+            next_step: 1,
+            last_chord_bar: -1,
             kick_env: 0.0,
+            lim_peak: [0.0, 0.0],
+            sample: 0,
             kick: [Kick::new(); 4],
             kick_i: 0,
             snare: [NoiseBurst::new(sr); 4],
             snare_i: 0,
             hat: [NoiseBurst::new(sr); 8],
             hat_i: 0,
-            fx: [NoiseBurst::new(sr); 4],
+            tom: [Tom::new(); 4],
+            tom_i: 0,
+            fx: [NoiseBurst::new(sr); 6],
             fx_i: 0,
+            sub: [Sub::new(); 2],
+            sub_i: 0,
             bass: [Bass::new(sr); 8],
             bass_i: 0,
             arp: [Pluck::new(sr); 16],
             arp_i: 0,
-            lead: [Lead::new(sr); 16],
+            lead: [Lead::new(sr); 8],
             lead_i: 0,
             pad: [PadVoice::new(sr); 16],
             pad_i: 0,
+            blip: [Blip::new(); 4],
+            blip_i: 0,
             delay: Delay::new(sr),
             reverb: Reverb::new(),
             nz: Nsg::new(),
-            master_gain: 0.9,
-            peak: [1.0, 1.0],
-            sample: 0,
-            chime_total: (0.6 * sr) as u32,
-            chime: (0.6 * sr) as u32,
-            chime_seg: (0.2 * sr) as u32,
         }
     }
 
-    pub fn beat(&self) -> f64 {
-        self.beat
-    }
-
-    /// Reset to the start of a section (keyboard jump / --section).
     pub fn jump_to(&mut self, section: u32) {
         self.beat = section_start_beat(section);
         self.next_step = (self.beat * 4.0) as u64 + 1;
-        self.last_chord = -1;
+        self.last_chord_bar = -1;
         self.kick_env = 0.0;
         for v in self.kick.iter_mut() { v.active = false; }
         for v in self.snare.iter_mut() { v.active = false; }
         for v in self.hat.iter_mut() { v.active = false; }
+        for v in self.tom.iter_mut() { v.active = false; }
         for v in self.fx.iter_mut() { v.active = false; }
+        for v in self.sub.iter_mut() { v.active = false; }
         for v in self.bass.iter_mut() { v.active = false; }
         for v in self.arp.iter_mut() { v.active = false; }
         for v in self.lead.iter_mut() { v.active = false; }
         for v in self.pad.iter_mut() { v.active = false; }
+        for v in self.blip.iter_mut() { v.active = false; }
         self.delay.flush();
         self.reverb.flush();
-        self.peak = [1.0, 1.0];
+        self.lim_peak = [0.0, 0.0];
     }
 
-    // ------------------------------------------------- arrangement data
-
-    const CHORDS: [[i32; 4]; 4] = [
-        [57, 60, 64, 69], // Am
-        [55, 59, 62, 67], // G
-        [53, 57, 60, 65], // F
-        [52, 56, 59, 64], // E
-    ];
-    const BASS_ROOT: [i32; 4] = [33, 31, 29, 28]; // A1 G1 F1 E1
-    const ARP_SEQ: [i32; 16] =
-        [0, 7, 12, 7, 12, 7, 0, 7, 12, 19, 12, 7, 12, 19, 24, 19];
-    const LEAD_RIFFS: [[i32; 16]; 4] = [
-        [69, 0, 72, 69, 76, 0, 72, 69, 67, 0, 64, 67, 69, 0, 64, 0],
-        [67, 0, 71, 67, 74, 0, 71, 67, 62, 0, 59, 62, 67, 0, 59, 0],
-        [65, 0, 69, 65, 72, 0, 69, 65, 60, 0, 57, 60, 65, 0, 57, 0],
-        [64, 0, 68, 64, 71, 0, 68, 64, 59, 0, 56, 59, 64, 0, 56, 0],
-    ];
-    const HAT_VEL: [f32; 16] = [
-        0.85, 0.40, 0.60, 0.40, 0.85, 0.40, 0.60, 0.50,
-        0.85, 0.40, 0.60, 0.40, 0.70, 0.50, 0.60, 0.30,
-    ];
-    const BASS_PAT: [i32; 8] = [0, -1, 0, -1, 0, -1, 0, 12];
-    const BASS_GALLOP: [i32; 16] = [0, -1, 0, 12, -1, 0, 12, -1, 0, -1, 0, 12, -1, 0, 12, -1];
+    // ------------------------------------------------------------- triggers
 
     fn trigger_kick(&mut self, amp: f32) {
-        let k = &mut self.kick[self.kick_i];
-        self.kick_i = (self.kick_i + 1) % 4;
-        k.trigger();
+        let len = self.kick.len();
+        let k = &mut self.kick[self.kick_i % len];
+        self.kick_i = (self.kick_i + 1) % len;
+        k.trigger(amp);
         self.kick_env = 1.0;
-        // sub thump under the kick
-        let b = &mut self.bass[self.bass_i];
-        self.bass_i = (self.bass_i + 1) % 8;
-        b.trigger(48.0, 0.09, amp * 0.5, true);
     }
-
-    fn trigger_clap(&mut self, amp: f32) {
-        let s = &mut self.snare[self.snare_i];
-        self.snare_i = (self.snare_i + 1) % 4;
-        s.trigger(2, 1800.0, 0.9, 0.14, amp);
-    }
-
     fn trigger_snare(&mut self, amp: f32) {
-        let s = &mut self.snare[self.snare_i];
-        self.snare_i = (self.snare_i + 1) % 4;
-        s.trigger(2, 1900.0, 0.8, 0.12, amp);
+        let len = self.snare.len();
+        let s = &mut self.snare[self.snare_i % len];
+        self.snare_i = (self.snare_i + 1) % len;
+        s.trigger(2, 1900.0, 0.8, 0.16, amp);
     }
-
+    fn trigger_clap(&mut self, amp: f32) {
+        let len = self.snare.len();
+        let s = &mut self.snare[self.snare_i % len];
+        self.snare_i = (self.snare_i + 1) % len;
+        s.trigger_bursts(2, 1400.0, 1.2, 0.3, amp);
+    }
     fn trigger_hat(&mut self, amp: f32, open: bool) {
-        let h = &mut self.hat[self.hat_i];
-        self.hat_i = (self.hat_i + 1) % 8;
+        let len = self.hat.len();
+        let h = &mut self.hat[self.hat_i % len];
+        self.hat_i = (self.hat_i + 1) % len;
         if open {
-            h.trigger(1, 6000.0, 0.7, 0.30, amp);
+            h.trigger(1, 8200.0, 0.8, 0.22, amp);
         } else {
-            h.trigger(1, 7200.0, 0.7, 0.06, amp);
+            h.trigger(1, 9000.0, 0.8, 0.045, amp);
         }
     }
-
-    fn trigger_bass(&mut self, midi: i32, amp: f32, eighths: bool, sub_only: bool) {
-        let b = &mut self.bass[self.bass_i];
-        self.bass_i = (self.bass_i + 1) % 8;
-        let dur = if eighths { 0.22 } else { 0.6 };
-        b.trigger(midi_freq(midi), dur, amp, sub_only);
+    fn trigger_crash(&mut self, amp: f32) {
+        let len = self.hat.len();
+        let h = &mut self.hat[self.hat_i % len];
+        self.hat_i = (self.hat_i + 1) % len;
+        h.trigger(1, 6500.0, 0.9, 1.3, amp);
     }
-
-    fn trigger_arp(&mut self, midi: i32, amp: f32) {
-        let a = &mut self.arp[self.arp_i];
-        self.arp_i = (self.arp_i + 1) % 16;
-        a.trigger(midi_freq(midi), amp);
+    fn trigger_tom(&mut self, f0: f32, amp: f32) {
+        let len = self.tom.len();
+        let t = &mut self.tom[self.tom_i % len];
+        self.tom_i = (self.tom_i + 1) % len;
+        t.trigger(f0, amp);
     }
-
-    fn trigger_lead(&mut self, midi: i32, amp: f32) {
-        let l = &mut self.lead[self.lead_i];
-        self.lead_i = (self.lead_i + 1) % 16;
-        l.trigger(midi_freq(midi), amp);
+    fn trigger_sub(&mut self, freq: f32, amp: f32) {
+        let len = self.sub.len();
+        let s = &mut self.sub[self.sub_i % len];
+        self.sub_i = (self.sub_i + 1) % len;
+        s.trigger(freq, amp);
     }
-
-    fn trigger_pad(&mut self, chord: usize) {
-        let notes = Self::CHORDS[chord as usize];
-        let pans = [-0.6, -0.2, 0.2, 0.6];
-        let dur = (2.0 * 4.0 * 60.0 / BPM) as f32; // 2 bars
-        for i in 0..4 {
-            let p = &mut self.pad[self.pad_i];
-            self.pad_i = (self.pad_i + 1) % 16;
-            p.trigger(midi_freq(notes[i]), dur, 0.16, pans[i]);
+    fn trigger_bass(&mut self, root: i32, dur: f32, amp: f32) {
+        let len = self.bass.len();
+        let b = &mut self.bass[self.bass_i % len];
+        self.bass_i = (self.bass_i + 1) % len;
+        b.trigger(midi_freq(root), dur, amp);
+    }
+    fn trigger_arp(&mut self, freq: f32, amp: f32) {
+        let len = self.arp.len();
+        let a = &mut self.arp[self.arp_i % len];
+        self.arp_i = (self.arp_i + 1) % len;
+        a.trigger(freq, amp);
+    }
+    fn trigger_lead(&mut self, freq: f32, dur: f32, amp: f32) {
+        let len = self.lead.len();
+        let l = &mut self.lead[self.lead_i % len];
+        self.lead_i = (self.lead_i + 1) % len;
+        l.trigger(freq, dur, amp);
+    }
+    fn trigger_pad(&mut self, chord: (i32, bool)) {
+        let dur = beat_secs(2.0) + 0.6;
+        let len = self.pad.len();
+        for (i, n) in pad_notes(chord.0, chord.1).iter().enumerate() {
+            let p = &mut self.pad[(self.pad_i + i) % len];
+            let pan = [-0.7, -0.2, 0.2, 0.7][i];
+            p.trigger(midi_freq(*n as i32), dur, 0.10, pan);
         }
+        self.pad_i = (self.pad_i + 4) % len;
+    }
+    fn trigger_fx(&mut self, f: impl FnOnce(&mut NoiseBurst)) {
+        let len = self.fx.len();
+        let fx = &mut self.fx[self.fx_i % len];
+        self.fx_i = (self.fx_i + 1) % len;
+        f(fx);
+    }
+    fn trigger_blip(&mut self, freq: f32, amp: f32) {
+        let len = self.blip.len();
+        let b = &mut self.blip[self.blip_i % len];
+        self.blip_i = (self.blip_i + 1) % len;
+        b.trigger(freq, amp);
     }
 
-    /// Schedule one sixteenth step of the arrangement.
-    fn step(&mut self, step: u64) {
-        let step = step as u32;
-        let bar = (step / STEPS_PER_BAR) % TOTAL_BARS;
-        let s = step % STEPS_PER_BAR;
-        let section = section_for_bar(bar);
-        let bar_in = bar % SECTION_BARS[section as usize];
-        let chord = (bar / 2) % 4;
+    // ------------------------------------------------------------- patterns
+    // 16-step patterns; -1 = rest. Bass values = semitones above the
+    // chord root (played an octave under); arp values index chord_tones.
 
-        // chord change (every 2 bars): retrigger the pad
-        if s == 0 && chord as i32 != self.last_chord {
-            self.last_chord = chord as i32;
-            if section != 3 {
-                self.trigger_pad(chord as usize);
+    const BASS_DRIVE: [i32; 16] = [0, -1, 0, -1, 0, -1, 12, -1, 0, -1, 0, -1, 0, -1, 12, -1];
+    const BASS_PULSE: [i32; 16] = [0, -1, 12, -1, 0, -1, 12, -1, 0, -1, 12, -1, 0, -1, 12, -1];
+    const BASS_GALLOP: [i32; 16] = [0, 0, 12, -1, 0, 0, 12, -1, 7, -1, 12, -1, 0, 0, 12, 12];
+
+    const ARP_SPARSE: [i32; 16] = [0, -1, 2, -1, 3, -1, 2, -1, 1, -1, 2, -1, 4, -1, 2, -1];
+    const ARP_RIPPLE: [i32; 16] = [0, 2, 1, 2, 3, 2, 1, 2, 0, 2, 1, 3, 2, 1, 2, 0];
+    const ARP_UP: [i32; 16] = [0, -1, 1, -1, 2, -1, 3, -1, 4, -1, 3, -1, 2, -1, 1, -1];
+
+    fn chord_at(&self, bar: u32) -> (i32, bool) {
+        chord_for_bar(bar)
+    }
+
+    /// Schedule one 16th step.
+    fn step(&mut self, stepn: u64) {
+        let stepn = stepn as u32;
+        let bar = (stepn / STEPS_PER_BAR) % TOTAL_BARS;
+        let s = (stepn % STEPS_PER_BAR) as usize;
+        let section = section_for_bar(bar) as usize;
+        let bar_in = ((bar - section_start_bar(section as u32)) % SECTION_BARS[section]) as usize;
+        let (root, minor) = self.chord_at(bar);
+        let bar_in_chord = (bar_in % 2) as usize; // 0/1 within the 2-bar chord
+        let tones = chord_tones(root, minor);
+        let bass_root = root - 12;
+        let step_beat = stepn % (STEPS_PER_BAR / 4) == 0; // quarter boundary
+
+        // -------- chord changes: pads on the first bar of each chord
+        if s == 0 && bar_in_chord == 0 {
+            let b = bar as i32;
+            if b != self.last_chord_bar {
+                self.last_chord_bar = b;
+                match section {
+                    // no pads in the silent/beat-less voids
+                    _ => self.trigger_pad((root, minor)),
+                }
             }
-        }
-
-        // section-edge one-shots
-        if bar_in == 0 && s == 0 {
-            match section {
-                2 => {
-                    let f = &mut self.fx[self.fx_i];
-                    self.fx_i = (self.fx_i + 1) % 4;
-                    f.trigger(1, 4500.0, 0.7, 1.4, 0.5);
-                }
-                3 => {
-                    let f = &mut self.fx[self.fx_i];
-                    self.fx_i = (self.fx_i + 1) % 4;
-                    f.trigger(1, 4200.0, 0.7, 1.2, 0.4);
-                }
-                5 => {
-                    let f = &mut self.fx[self.fx_i];
-                    self.fx_i = (self.fx_i + 1) % 4;
-                    f.trigger(1, 4500.0, 0.7, 1.6, 0.55);
-                    // sub drop
-                    let b = &mut self.bass[self.bass_i];
-                    self.bass_i = (self.bass_i + 1) % 8;
-                    b.trigger(38.0, 0.3, 1.0, true);
-                }
-                _ => {}
-            }
-        }
-        // reverse cymbal into SHATTER (21 sixteenths before bar 32)
-        if section == 2 && bar_in == SECTION_BARS[2] - 1 && s == 11 {
-            let f = &mut self.fx[self.fx_i];
-            self.fx_i = (self.fx_i + 1) % 4;
-            f.trigger_reverse((21.0 * 60.0 / BPM / 4.0) as f32, 0.5);
-        }
-        // riser into IGNITION (4 bars, starts at SURGE bar 4)
-        if section == 4 && bar_in == 4 && s == 0 {
-            let f = &mut self.fx[self.fx_i];
-            self.fx_i = (self.fx_i + 1) % 4;
-            f.trigger_sweep((4.0 * 4.0 * 60.0 / BPM) as f32, 0.6);
         }
 
         match section {
-            // ------------------------------------------------ S0 GENESIS
+            // ================================================ S0 EARTH (ambient)
             0 => {
-                if s % 2 == 0 {
-                    let n = Self::CHORDS[chord as usize][0]
-                        + Self::ARP_SEQ[(s / 2) as usize];
-                    self.trigger_arp(n, 0.20);
+                let t = bar_in;
+                // drone + soft pad harmonics
+                if s == 0 {
+                    self.trigger_sub(midi_freq(bass_root), 0.30);
+                    if t >= 2 {
+                        self.trigger_bass(bass_root, beat_secs(2.0), 0.10);
+                    }
                 }
-                if matches!(s, 2 | 6 | 10 | 14) {
-                    self.trigger_hat(0.12, false);
+                // sparse echo arp
+                let v = Self::ARP_SPARSE[s];
+                if v >= 0 {
+                    self.trigger_arp(midi_freq(tones[v as usize] as i32 + 12), 0.09);
+                }
+                // breathy ticks at the very end of each 2-bar phrase
+                if t >= 10 && s == 0 && bar_in_chord == 1 {
+                    self.trigger_hat(0.05, false);
+                }
+                // countdown: soft ticks accelerate, then the riser
+                if t == 13 {
+                    if step_beat {
+                        self.trigger_tom(140.0, 0.12);
+                    }
+                } else if t == 14 {
+                    if s % 4 == 0 {
+                        self.trigger_tom(150.0, 0.14);
+                    }
+                } else if t == 15 {
+                    if s % 2 == 0 {
+                        self.trigger_tom(160.0 + s as f32 * 2.0, 0.16);
+                    }
+                    if s == 0 {
+                        // one-bar riser into the launch
+                        self.trigger_fx(|f| f.trigger_sweep(250.0, 6000.0, beat_secs(1.0), 0.30));
+                    }
                 }
             }
-            // ------------------------------------------------ S1 DESCENT
+            // ================================================ S1 ASCENT
             1 => {
-                self.trigger_arp(
-                    Self::CHORDS[chord as usize][0] + Self::ARP_SEQ[s as usize],
-                    0.24,
-                );
+                // groove: kick lands from the first bar (launch impact),
+                // four-on-floor after the pickup
+                if step_beat {
+                    let amp = if bar_in < 2 { 0.65 } else { 0.95 };
+                    self.trigger_kick(amp);
+                }
+                if bar_in >= 2 && (s == 4 || s == 12) {
+                    self.trigger_clap(0.45);
+                }
+                // hats: eighths, open on the off of beat 4
                 if s % 2 == 0 {
-                    let d = Self::BASS_PAT[(s / 2) as usize];
-                    if d >= 0 {
-                        self.trigger_bass(Self::BASS_ROOT[chord as usize] + d, 0.4, true, false);
-                    }
+                    self.trigger_hat(0.10, false);
                 }
-                self.trigger_hat(Self::HAT_VEL[s as usize] * 0.55, false);
-                if bar_in >= 4 && matches!(s, 0 | 4 | 8 | 12) {
-                    self.trigger_kick(0.9);
+                if s == 14 && bar_in % 2 == 1 {
+                    self.trigger_hat(0.12, true);
                 }
-                if bar_in == 7 && s >= 8 {
-                    self.trigger_snare(0.25 + 0.08 * (s - 8) as f32);
+                // bass: pulsing octaves
+                let v = Self::BASS_PULSE[s];
+                if v >= 0 {
+                    self.trigger_bass(bass_root + v, beat_secs(0.5), 0.42);
+                }
+                // arp 8ths
+                let a = Self::ARP_SPARSE[s];
+                if a >= 0 {
+                    self.trigger_arp(midi_freq(tones[a as usize] as i32 + 12), 0.13);
+                }
+                // lift riser at the very end into the warp
+                if bar_in == 7 && s == 8 {
+                    self.trigger_fx(|f| f.trigger_sweep(250.0, 7000.0, beat_secs(2.0), 0.26));
                 }
             }
-            // ------------------------------------------------ S2 CORE
+            // ================================================ S2 WARP
             2 => {
-                if matches!(s, 0 | 4 | 8 | 12) {
-                    self.trigger_kick(1.0);
+                // full kit, 4/4
+                if step_beat {
+                    let amp = if s == 0 || s == 8 { 1.0 } else { 0.85 };
+                    self.trigger_kick(amp);
                 }
-                if matches!(s, 4 | 12) {
-                    self.trigger_clap(0.8);
+                if s == 4 || s == 12 {
+                    self.trigger_clap(0.7);
                 }
-                self.trigger_hat(Self::HAT_VEL[s as usize], s == 14);
-                if s % 2 == 0 {
-                    let d = Self::BASS_PAT[(s / 2) as usize];
-                    if d >= 0 {
-                        self.trigger_bass(Self::BASS_ROOT[chord as usize] + d, 0.5, true, false);
+                if s == 14 && bar_in % 2 == 1 {
+                    self.trigger_snare(0.25);
+                }
+                self.trigger_hat(if s % 4 == 0 { 0.13 } else { 0.09 }, s == 14);
+                if bar_in == 0 && s == 0 {
+                    self.trigger_crash(0.5);
+                }
+                // 16th gallop bass
+                let v = Self::BASS_GALLOP[s];
+                if v >= 0 {
+                    self.trigger_bass(bass_root + v, beat_secs(0.22), 0.46);
+                }
+                // shimmering 16th arp under the lead
+                let a = Self::ARP_RIPPLE[s];
+                if a >= 0 {
+                    self.trigger_arp(midi_freq(tones[a as usize] as i32 + 12), 0.10);
+                }
+                // the anthem theme (2 bars per chord = the motif)
+                let m = motif_for(root);
+                let n = m[bar_in_chord * 16 + s];
+                if n > 0 {
+                    self.trigger_lead(midi_freq(n), beat_secs(0.28), 0.42);
+                }
+                // fills + section-end energy
+                if bar_in == 7 && s >= 12 {
+                    self.trigger_snare(0.2 + 0.05 * s as f32);
+                }
+                if bar_in == 15 {
+                    if s == 4 || s == 10 || s == 14 {
+                        self.trigger_snare(0.3);
+                    }
+                    if s == 15 {
+                        // downlifter into the void
+                        self.trigger_fx(|f| f.trigger_sweep(6000.0, 200.0, beat_secs(1.5), 0.3));
                     }
                 }
-                let n = Self::LEAD_RIFFS[chord as usize][s as usize];
-                if n != 0 {
-                    self.trigger_lead(n, 0.26);
+                if bar_in == 15 && s == 0 {
+                    self.trigger_fx(|f| f.trigger_reverse(4000.0, beat_secs(1.2), 0.35));
                 }
-                self.trigger_arp(
-                    Self::CHORDS[chord as usize][1] + Self::ARP_SEQ[s as usize],
-                    0.12,
-                );
             }
-            // ------------------------------------------------ S3 SHATTER
+            // ================================================ S3 VOID
             3 => {
-                self.trigger_arp(
-                    Self::CHORDS[chord as usize][0] + Self::ARP_SEQ[s as usize],
-                    0.16,
-                );
-                if s == 0 || s == 8 {
-                    self.trigger_bass(Self::BASS_ROOT[chord as usize] - 12, 0.5, false, true);
+                // near-silence: pad + sparse echo blips + a sub floor
+                if s == 0 {
+                    self.trigger_sub(midi_freq(bass_root), 0.20);
+                    // beacon blip on every bar start (visual sync)
+                    self.trigger_blip(midi_freq(76), 0.16);
+                }
+                // lonely high plucks with echo
+                if s == 0 {
+                    self.trigger_arp(midi_freq(tones[3] as i32 + 12), 0.10);
+                }
+                if s == 8 {
+                    self.trigger_arp(midi_freq(tones[0] as i32 + 24), 0.07);
+                }
+                // swells: soft tick patterns enter at the end
+                if bar_in >= 5 {
+                    if s % 4 == 2 {
+                        self.trigger_hat(0.04, false);
+                    }
+                }
+                // build out: riser + roll into the rendezvous
+                if bar_in == 7 {
+                    if s == 0 {
+                        self.trigger_fx(|f| f.trigger_sweep(300.0, 6000.0, beat_secs(2.0), 0.3));
+                    }
+                    if s >= 10 {
+                        self.trigger_snare(0.12 + 0.05 * s as f32);
+                    }
                 }
             }
-            // ------------------------------------------------ S4 SURGE
+            // ================================================ S4 RENDEZVOUS
             4 => {
-                self.trigger_arp(
-                    Self::CHORDS[chord as usize][0] + Self::ARP_SEQ[s as usize],
-                    0.22,
-                );
+                if step_beat {
+                    let amp = if bar_in < 4 { 0.7 } else { 0.95 };
+                    self.trigger_kick(amp);
+                }
+                if bar_in >= 4 && (s == 4 || s == 12) {
+                    self.trigger_clap(0.5);
+                }
                 if s % 2 == 0 {
-                    let d = Self::BASS_PAT[(s / 2) as usize];
-                    if d >= 0 {
-                        self.trigger_bass(Self::BASS_ROOT[chord as usize] + d, 0.45, true, false);
+                    self.trigger_hat(0.1, false);
+                }
+                // driving 8th bass
+                let v = Self::BASS_DRIVE[s];
+                if v >= 0 {
+                    self.trigger_bass(bass_root + v, beat_secs(0.4), 0.44);
+                }
+                // arp grows from sparse to 16ths
+                let pat = if bar_in >= 4 { Self::ARP_RIPPLE } else { Self::ARP_SPARSE };
+                let a = pat[s];
+                if a >= 0 {
+                    self.trigger_arp(midi_freq(tones[a as usize] as i32 + 12), 0.12);
+                }
+                // climbing run into the finale
+                if bar_in == 7 {
+                    let run = [69, 71, 72, 74, 76, 77, 79, 81];
+                    if s % 2 == 0 {
+                        self.trigger_lead(midi_freq(run[s / 2]), beat_secs(0.5), 0.3);
                     }
                 }
-                if bar_in >= 4 {
-                    self.trigger_hat(Self::HAT_VEL[s as usize] * 0.8, s == 14);
-                    if matches!(s, 0 | 4 | 8 | 12) {
-                        self.trigger_kick(0.95);
-                    }
-                }
-                if bar_in == 7 && s >= 8 {
-                    self.trigger_snare(0.25 + 0.08 * (s - 8) as f32);
-                }
+                // crash at the top of S5 handled there
             }
-            // ------------------------------------------------ S5 IGNITION
+            // ================================================ S5 PLANET
             5 => {
-                if matches!(s, 0 | 4 | 8 | 12) {
-                    self.trigger_kick(1.0);
+                if step_beat {
+                    let amp = if s == 0 { 1.0 } else { 0.88 };
+                    self.trigger_kick(amp);
                 }
-                if matches!(s, 4 | 12) {
-                    self.trigger_clap(0.85);
+                if s == 4 || s == 12 {
+                    self.trigger_clap(0.75);
                 }
-                if s == 10 {
-                    self.trigger_snare(0.35); // ghost
+                if s == 10 && bar_in % 4 == 3 {
+                    self.trigger_snare(0.28);
                 }
-                self.trigger_hat(Self::HAT_VEL[s as usize], s == 6 || s == 14);
-                {
-                    // galloping 16th bass
-                    let d = Self::BASS_GALLOP[s as usize];
-                    if d >= 0 {
-                        self.trigger_bass(Self::BASS_ROOT[chord as usize] + d, 0.5, true, false);
+                self.trigger_hat(if s % 4 == 0 { 0.13 } else { 0.08 }, s == 14);
+                if bar_in == 0 && s == 0 {
+                    self.trigger_crash(0.6);
+                    self.trigger_tom(170.0, 0.3);
+                }
+                // tom fills at each 4-bar mark
+                if s == 0 && (bar_in == 4 || bar_in == 8 || bar_in == 12) {
+                    self.trigger_tom(190.0, 0.35);
+                    self.trigger_tom(140.0, 0.3);
+                }
+                // gallop bass, accented
+                let v = Self::BASS_GALLOP[s];
+                if v >= 0 {
+                    self.trigger_bass(bass_root + v, beat_secs(0.2), 0.5);
+                }
+                let a = Self::ARP_UP[s];
+                if a >= 0 && bar_in < 14 {
+                    self.trigger_arp(midi_freq(tones[a as usize] as i32 + 12), 0.07);
+                }
+                // the anthem — full section, motif per chord
+                let m = motif_for(root);
+                let n = m[bar_in_chord * 16 + s];
+                if n > 0 {
+                    let amp = if bar_in < 8 { 0.44 } else { 0.5 };
+                    self.trigger_lead(midi_freq(n), beat_secs(0.26), amp);
+                }
+                // octave shimmer above the motif in the second half
+                if bar_in >= 8 {
+                    let n2 = m[bar_in_chord * 16 + s];
+                    if n2 > 0 && s % 2 == 0 {
+                        self.trigger_lead(midi_freq(n2 + 12), beat_secs(0.2), 0.16);
                     }
                 }
-                {
-                    // double-time riff: up to two notes per sixteenth
-                    let riff = Self::LEAD_RIFFS[chord as usize];
-                    let i1 = (s * 2) % 16;
-                    let i2 = (s * 2 + 1) % 16;
-                    if riff[i1 as usize] != 0 {
-                        self.trigger_lead(riff[i1 as usize], 0.22);
+                if bar_in == 15 {
+                    if s == 0 {
+                        self.trigger_fx(|f| f.trigger_reverse(4000.0, beat_secs(1.6), 0.5));
                     }
-                    if riff[i2 as usize] != 0 && s % 2 == 1 {
-                        self.trigger_lead(riff[i2 as usize], 0.16);
+                    if s == 12 {
+                        self.trigger_fx(|f| f.trigger_sweep(3000.0, 150.0, beat_secs(1.0), 0.28));
                     }
                 }
             }
-            // ------------------------------------------------ S6 AFTERGLOW (and anything unexpected)
-            6 | _ => {
-                if s % 2 == 0 {
-                    let n = Self::CHORDS[chord as usize][0]
-                        + Self::ARP_SEQ[(s / 2) as usize];
-                    self.trigger_arp(n, 0.14);
+            // ================================================ S6 ORIGIN
+            6 => {
+                if s == 0 {
+                    self.trigger_sub(midi_freq(bass_root), 0.22);
                 }
-                if bar_in >= 4 {
-                    if s == 0 || s == 8 {
-                        self.trigger_bass(Self::BASS_ROOT[chord as usize] - 12, 0.35, false, true);
+                // soft half-time beat returns, then fades out via master
+                if bar_in < 6 {
+                    if step_beat {
+                        self.trigger_kick(0.5);
                     }
-                    if matches!(s, 2 | 6 | 10 | 14) {
-                        self.trigger_hat(0.1, false);
+                    if s % 2 == 0 {
+                        self.trigger_hat(0.06, false);
                     }
+                    if s == 4 || s == 12 {
+                        self.trigger_clap(0.25);
+                    }
+                }
+                let a = Self::ARP_SPARSE[s];
+                if a >= 0 {
+                    self.trigger_arp(midi_freq(tones[a as usize] as i32 + 12), 0.08);
+                }
+                if s == 0 && bar_in >= 2 {
+                    self.trigger_bass(bass_root, beat_secs(2.0), 0.18);
                 }
             }
+            _ => {}
         }
     }
 
     /// Render `frames` stereo frames into `out` (interleaved f32).
-    /// `paused` freezes the clock and mutes. `clock` publishes beat/kick.
     pub fn render(&mut self, out: &mut [f32], clock: &Clock) {
         let frames = out.len() / 2;
+        let sr = self.sr;
 
-        // consume a section jump (cheap: once per callback chunk)
         let jump = clock.jump.swap(-1, Ordering::Relaxed);
         if jump >= 0 {
             self.jump_to(jump as u32);
@@ -964,151 +1312,162 @@ impl Engine {
             return;
         }
 
-        let dt_beat = BPM / 60.0 / self.sr as f64;
+        let dt_beat = BPM / 60.0 / sr as f64;
         for i in 0..frames {
             self.beat += dt_beat;
-            // step scheduling
             let cur = (self.beat * 4.0) as u64;
             while self.next_step <= cur {
                 self.step(self.next_step);
                 self.next_step += 1;
             }
 
-            // ---- render voices
+            // ---- voice rendering into buses
             let pump = self.kick_env;
-            let mut l = 0.0;
-            let mut r = 0.0;
-            let mut dly_l = 0.0;
-            let mut dly_r = 0.0;
-            let mut rev_l = 0.0;
-            let mut rev_r = 0.0;
-            // drums (dry, hard)
+            let mut l = 0.0f32;
+            let mut r = 0.0f32;
+            let mut dly_l = 0.0f32;
+            let mut dly_r = 0.0f32;
+            let mut rev_l = 0.0f32;
+            let mut rev_r = 0.0f32;
+
+            // drums (dry)
             for k in self.kick.iter_mut() {
-                l += k.render(self.sr, &mut self.nz);
+                let y = k.render(sr, &mut self.nz);
+                l += y * 1.0;
+                r += y * 1.0;
             }
-            for s in self.snare.iter_mut() {
-                let y = s.render(&mut self.nz);
-                l += y;
-                r += y * 0.9;
-                rev_l += y * 0.5;
-                rev_r += y * 0.55;
+            for s_ in self.snare.iter_mut() {
+                let y = s_.render(&mut self.nz, sr);
+                l += y * 0.85;
+                r += y * 0.8;
+                rev_l += y * 0.55;
+                rev_r += y * 0.6;
             }
             for h in self.hat.iter_mut() {
-                let y = h.render(&mut self.nz);
-                l += y * 0.9;
-                r += y;
-                rev_l += y * 0.15;
+                let y = h.render(&mut self.nz, sr);
+                l += y * 0.5;
+                r += y * 0.5;
+            }
+            for t in self.tom.iter_mut() {
+                let y = t.render(sr);
+                l += y * 0.8;
+                r += y * 0.8;
+                rev_l += y * 0.2;
                 rev_r += y * 0.2;
             }
             for f in self.fx.iter_mut() {
-                let y = f.render(&mut self.nz);
+                let y = f.render(&mut self.nz, sr);
                 l += y;
                 r += y;
-                rev_l += y * 0.4;
-                rev_r += y * 0.4;
-            }
-            // bass (pumped)
-            let bs = 1.0 - 0.35 * pump;
-            for b in self.bass.iter_mut() {
-                let y = b.render(self.sr) * bs;
-                l += y;
-                r += y;
-            }
-            // arp (pumped, delay send)
-            let as_ = 1.0 - 0.30 * pump;
-            for a in self.arp.iter_mut() {
-                let y = a.render(self.sr) * as_;
-                l += y * 0.9;
-                r += y;
-                dly_l += y * 0.5;
-                dly_r += y * 0.55;
-            }
-            // lead (pumped, delay + reverb sends)
-            let ls = 1.0 - 0.25 * pump;
-            for a in self.lead.iter_mut() {
-                let y = a.render(self.sr) * ls;
-                l += y * 0.95;
-                r += y * 0.95;
-                dly_l += y * 0.35;
-                dly_r += y * 0.3;
-                rev_l += y * 0.3;
+                rev_l += y * 0.35;
                 rev_r += y * 0.35;
             }
-            // pad (pumped hard, reverb send)
-            let ps = 1.0 - 0.45 * pump;
+
+            // bass (sidechain pump, centred)
+            let bs = 1.0 - 0.42 * pump;
+            for b in self.bass.iter_mut() {
+                let y = b.render(sr) * bs;
+                l += y;
+                r += y;
+            }
+            // sub drone
+            for s_ in self.sub.iter_mut() {
+                let y = s_.render(sr);
+                l += y;
+                r += y;
+            }
+            // arp (pumped, heavy delay send — the spacesynth echo)
+            let as_ = 1.0 - 0.28 * pump;
+            for a in self.arp.iter_mut() {
+                let y = a.render(sr) * as_;
+                l += y * 0.9;
+                r += y;
+                dly_l += y * 0.8;
+                dly_r += y * 0.85;
+                rev_l += y * 0.12;
+                rev_r += y * 0.12;
+            }
+            // lead (delay + reverb)
+            let ls = 1.0 - 0.18 * pump;
+            for a in self.lead.iter_mut() {
+                let y = a.render(sr) * ls;
+                l += y;
+                r += y;
+                dly_l += y * 0.22;
+                dly_r += y * 0.2;
+                rev_l += y * 0.3;
+                rev_r += y * 0.32;
+            }
+            // pad (heavy pump + reverb)
+            let ps = 1.0 - 0.5 * pump;
             for p in self.pad.iter_mut() {
-                let (y1, y2) = p.render(self.sr);
+                let (y1, y2) = p.render(sr);
                 l += y1 * ps;
                 r += y2 * ps;
-                rev_l += y1 * 0.5;
-                rev_r += y2 * 0.5;
+                rev_l += y1 * 0.6;
+                rev_r += y2 * 0.6;
+            }
+            // blips
+            for b in self.blip.iter_mut() {
+                let y = b.render(sr);
+                l += y;
+                r += y;
+                dly_l += y * 0.6;
+                dly_r += y * 0.6;
             }
 
-            // ---- fx
-            let (dl2, dr2) = self.delay.push(dly_l, dly_r);
-            l += dl2 * 0.22;
-            r += dr2 * 0.24;
-            let (rv_l, rv_r) = self.reverb.process(rev_l, rev_r);
-            l += rv_l;
-            r += rv_r;
+            // ---- fx returns
+            let (dl, dr) = self.delay.push(dly_l, dly_r);
+            l += dl * 0.34;
+            r += dr * 0.34;
+            let (rvl, rvr) = self.reverb.process(rev_l, rev_r);
+            l += rvl * 0.9;
+            r += rvr * 0.9;
 
-            // ---- master: soft clip + limiter + outro fade
-            l = l.tanh() * 1.15;
-            r = r.tanh() * 1.15;
+            // ---- master: headroom + soft ceiling + transient limiter
             let bar = (self.beat / 4.0) as u32 % TOTAL_BARS;
-            let section = section_for_bar(bar);
-            let bar_in = bar % SECTION_BARS[section as usize];
-            let fade = if section == 6 && bar_in >= 6 {
-                ((8.0 - bar_in as f32) / 2.0).clamp(0.0, 1.0)
+            let section = section_for_bar(bar) as usize;
+            let bar_in = ((bar - section_start_bar(section as u32)) % SECTION_BARS[section]) as u32;
+            let fade = if section == 6 && bar_in >= 5 {
+                ((8.0 - bar_in as f32) / 3.0).clamp(0.0, 1.0) as f32
             } else {
                 1.0
             };
-            let g = self.master_gain * fade;
-            self.peak[0] = self.peak[0].max(l.abs());
-            self.peak[1] = self.peak[1].max(r.abs());
-            let gl = if self.peak[0] > 1.0 { 1.0 / self.peak[0] } else { 1.0 };
-            let gr = if self.peak[1] > 1.0 { 1.0 / self.peak[1] } else { 1.0 };
-            out[2 * i] = l * gl * g;
-            out[2 * i + 1] = r * gr * g;
-            self.peak[0] *= 0.9997;
-            self.peak[1] *= 0.9997;
-
-            // startup chime override (see struct comment)
-            if self.chime > 0 {
-                self.chime -= 1;
-                let el = self.chime_total - self.chime; // elapsed
-                let f = [880.0, 660.0, 440.0, 220.0][(el / self.chime_seg) as usize % 4];
-                let se = el % self.chime_seg;
-                let seglen = self.chime_seg;
-                let ramp = (if se < 400 {
-                    se as f32 / 400.0
-                } else if se > seglen - 400 {
-                    (seglen - se) as f32 / 400.0
+            // soft knee: only shapes overs > 0.8
+            let soft = |x: f32| {
+                let a = x.abs();
+                if a <= 0.8 {
+                    x
                 } else {
-                    1.0
-                });
-                let v = 0.4 * ramp
-                    * (std::f32::consts::TAU * f * el as f32 / self.sr).sin();
-                out[2 * i] = v;
-                out[2 * i + 1] = v;
+                    x.signum() * (0.8 + (a - 0.8).min(0.6) * 0.5)
+                }
+            };
+            let mut gl = soft(l);
+            let mut gr = soft(r);
+            // fast-attack / ~120 ms-release peak limiter, ceiling 0.97
+            let ceil = 0.97f32;
+            self.lim_peak[0] = (self.lim_peak[0] * 0.9992).max(gl.abs());
+            self.lim_peak[1] = (self.lim_peak[1] * 0.9992).max(gr.abs());
+            if self.lim_peak[0] > ceil {
+                gl *= ceil / self.lim_peak[0];
             }
+            if self.lim_peak[1] > ceil {
+                gr *= ceil / self.lim_peak[1];
+            }
+            let g = 0.95 * fade;
+            out[2 * i] = gl * g;
+            out[2 * i + 1] = gr * g;
 
-            // ---- clock publishing
-            self.kick_env *= (-1.0 / (0.05 * self.sr)).exp();
+            // clock publishing
+            self.kick_env *= (-1.0 / (0.07 * sr)).exp();
             self.sample += 1;
             if self.sample % 4 == 0 {
-                clock
-                    .kick
-                    .store((self.kick_env * 65536.0) as u32, Ordering::Relaxed);
+                clock.kick.store((self.kick_env * 65536.0) as u32, Ordering::Relaxed);
             }
             if self.sample % 64 == 0 {
                 let b = self.beat % (TOTAL_BARS as f64 * 4.0);
-                clock
-                    .beat
-                    .store((b * 1_000_000.0) as u64, Ordering::Relaxed);
-                clock
-                    .section
-                    .store(section_for_beat(b), Ordering::Relaxed);
+                clock.beat.store((b * 1_000_000.0) as u64, Ordering::Relaxed);
+                clock.section.store(section_for_beat(b), Ordering::Relaxed);
             }
         }
     }
@@ -1119,46 +1478,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sections_cover_72_bars() {
+    fn sections_cover_80_bars() {
         let sum: u32 = SECTION_BARS.iter().sum();
         assert_eq!(sum, TOTAL_BARS);
-        assert_eq!(section_for_bar(0), 0);
-        assert_eq!(section_for_bar(7), 0);
-        assert_eq!(section_for_bar(8), 1);
-        assert_eq!(section_for_bar(15), 1);
-        assert_eq!(section_for_bar(16), 2);
-        assert_eq!(section_for_bar(31), 2);
-        assert_eq!(section_for_bar(32), 3);
-        assert_eq!(section_for_bar(39), 3);
-        assert_eq!(section_for_bar(40), 4);
-        assert_eq!(section_for_bar(47), 4);
-        assert_eq!(section_for_bar(48), 5);
-        assert_eq!(section_for_bar(63), 5);
-        assert_eq!(section_for_bar(64), 6);
-        assert_eq!(section_for_bar(71), 6);
+        assert_eq!(section_for_beat(0.0), 0);
+        assert_eq!(section_for_beat(63.9), 0);
+        assert_eq!(section_for_beat(64.0), 1);
+        assert_eq!(section_for_beat(96.0), 2);
+        assert_eq!(section_for_beat(160.0), 3);
+        assert_eq!(section_for_beat(192.0), 4);
+        assert_eq!(section_for_beat(224.0), 5);
+        assert_eq!(section_for_beat(288.0), 6);
     }
 
     #[test]
     fn beat_math() {
-        assert!((section_start_beat(2) - 64.0).abs() < 1e-9);
-        assert!((section_start_beat(5) - 192.0).abs() < 1e-9);
-        assert_eq!(section_for_beat(100.0), 2); // bar 25 = CORE
-        assert_eq!(section_for_beat(250.0), 5); // bar 62 = IGNITION
+        assert!((section_start_beat(2) - 96.0).abs() < 1e-9);
+        assert!((section_start_beat(5) - 224.0).abs() < 1e-9);
+        assert_eq!(section_for_beat(150.0), 2);
     }
 
     #[test]
-    fn engine_runs_one_bar() {
+    fn chords_reach_section_roots() {
+        // bar 0 = S0 start (Am), bar 56 = S5 start (Am), bar 70 = last
+        // S5 chord (Am), bar 78 = S6 last chord (G)
+        assert_eq!(chord_for_bar(0), (45, true));
+        assert_eq!(chord_for_bar(56), (45, true)); // start of S5
+        assert_eq!(chord_for_bar(70), (45, true)); // last chord of S5
+        assert_eq!(chord_for_bar(78), (43, false)); // S6 ends on G
+    }
+
+    #[test]
+    fn engine_runs_one_loop_cleanly() {
         let clock = Clock::default();
-        let mut e = Engine::new(48000.0);
-        let mut buf = vec![0.0f32; 2 * 48000 * 2]; // 2 s stereo
+        let mut e = Engine::new(44100.0);
+        let bars_secs = TOTAL_BARS as usize * 4 * 44100 / (BPM as usize / 60 * 60);
+        let _ = bars_secs;
+        // render 3 seconds
+        let mut buf = vec![0.0f32; 2 * 44100 * 3];
         e.render(&mut buf, &clock);
-        // something must have been produced (pad + arp + hats)
-        let energy: f32 = buf.iter().map(|s| s.abs()).sum::<f32>() / buf.len() as f32;
-        assert!(energy > 0.001, "engine produced silence: {energy}");
-        // and it must not clip
-        assert!(buf.iter().all(|s| s.abs() <= 1.0001));
-        // beat clock advanced ~2 s * 128/60 = ~4.27 beats
+        // audible, not clipped, and NOT over-limited (the 0.1.0 bug:
+        // master rms ~0.88 meant every beat was slammed to full scale)
+        let n = buf.len();
+        let mut energy = 0.0f32;
+        let mut peak = 0.0f32;
+        for &v in buf.iter() {
+            energy += v * v;
+            peak = peak.max(v.abs());
+        }
+        let rms = (energy / n as f32).sqrt();
+        assert!(rms > 0.01, "engine produced silence: rms {rms}");
+        assert!(peak <= 1.001, "engine clipped: peak {peak}");
+        assert!(rms < 0.45, "engine over-limited (the 0.1.0 bug): rms {rms}");
+        // beat clock advanced ~3 s * 126/60 ≈ 6.3 beats
         let b = clock.beat.load(Ordering::Relaxed) as f64 / 1e6;
-        assert!(b > 3.5 && b < 5.0, "beat {b}");
+        assert!(b > 5.5 && b < 8.0, "beat {b}");
     }
 }

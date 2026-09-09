@@ -5,6 +5,47 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — GEMDEMO 0.2.0 "GEMINI: EXODUS": complete rewrite (assembly-style cinematic spacesynth show) — code green, NOT yet on glass
+
+After the 0.1.0 "AETHER" verdict (2026-09-09: single-digit FPS, flawed
+visuals, music broken — master rms ~0.88 from the naive limiter, saw-DC
+voices), the whole demo was rewritten in this session:
+
+- **Renderer → direct single-framebuffer layering** (gfx.rs): no post
+  chain, no SSAA, no raymarch, no FBOs at scale 1.0. Sky gradient (only
+  fullscreen pass) → baked procedural sprite layers (soft/star/ring/
+  cloud textures: stars, nebula, halos, particles, shock rings) → warp
+  streaks (VS-animated, static VBO) → rotating lit fbm planet + banded
+  ring arcs (small-region, low noise budget) → vector ship + engine
+  trail → text. Keeps the fork receipts: glGen*, one interleaved
+  buffer/VAO, expanded triangles, no instancing/DrawElements.
+- **Score engine rewritten** (synth.rs): real mix bus with headroom,
+  per-part sends to dotted-8 ping-pong delay + Schroeder reverb,
+  sidechain pump, soft-knee ceiling + fast-attack/slow-release limiter;
+  chime removed. 126 BPM A-minor, 80 bars / 7 chapters (bar counts
+  SHARED with the visual director show.rs). Synth sanity is unit-tested
+  (no silence, no clip, no over-limit).
+- **Director** (show.rs) turns the beat clock into pure-data
+  FrameStates per chapter (S0 EARTH liftoff … S5 PLANET COMPUTERS
+  reveal … S6 ORIGIN credits); titles in chapters.
+- **A72 cores** (cpu.rs): best-effort — asks gemini-a72-up unit
+  (guarded: only on systems where the unit exists), bounded 20 s wait,
+  pins the render thread (libc added to Cargo.toml).
+- glctx/glutil warnings cleaned; dead modules scenes.rs/post.rs/
+  raymarch.rs/sensors.rs deleted; new host check loop
+  `bin/gemdemo-host-check.sh` (x86_64 cargo check + unit tests via the
+  flake's nixpkgs alsa-lib.dev/pkg-config — seconds).
+
+Verified: host `cargo check` clean; `cargo test --release` 4/4 pass;
+aarch64 flake build green (native-aarch64 remote builder, ~80 s,
+rc=0). Host kwin/XKB run attempt for frame dumps abandoned (winit
+XKBNotFound in the agent's session context) — visual QA is owed ON
+GLASS via `--dump` (PPM) + `[`/`]` chapter sweep while watching fps.
+
+Files: pkgs/gemdemo.{nix,src/{main,show,gfx,synth,cpu,audio,font,glctx,
+glutil,shaders}.rs}, docs/gemdemo.md (rewritten), Cargo.toml 0.2.0,
+bin/gemdemo-host-check.sh.
+
 ## 2026-09-09 — BOOT-TIME EXT4 AUTO-REPAIR ON GLASS (defense against hard power-off): initrd e2fsck pre-mount, both paths verified, p22 flashed + sha'd
 
 Follow-up to the boot-panic recovery above. The panic's root cause —
