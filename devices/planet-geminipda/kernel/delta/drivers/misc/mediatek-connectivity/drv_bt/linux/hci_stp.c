@@ -261,6 +261,8 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 	unsigned int idx;
 	long ret, to;
 	int i;
+	
+	phu->init_ok_cmds = 0;
 
 	if (bd_addr_param[0]) {
 		if (parse_bd_addr(bd_addr_param, cfg.addr) == 0) {
@@ -311,12 +313,15 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 					 phu->init_evt_rx_flag != 0, to);
 
 		if (phu->init_evt_rx_flag != 1) {
-			BT_ERR("init CMD(%u) %s failed: flag(%d) after %ld ms\n",
+			BT_WARN("init CMD(%u) %s no event (flag %d) after %ld ms - "
+				"continuing (the eFUSE BD read is optional; "
+				"an auto-generated address is used when it fails)\n",
 			       idx, init_table[idx].str,
 			       phu->init_evt_rx_flag,
 			       ret ? jiffies_to_msecs(ret) : -1);
-			break;
+			continue;
 		}
+		phu->init_ok_cmds++;
 
 		if (idx == 0) {
 			/* eFUSE BD address reply (6 bytes at evt[7..12],
@@ -344,6 +349,9 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 				bt_set_bd_addr[4 + i] = cfg.addr[5 - i];
 		}
 	}
+
+	BT_INFO("init script done: %d/%zu commands answered\n",
+		phu->init_ok_cmds, ARRAY_SIZE(init_table));
 
 	if (phu->p_init_comp)
 		complete(phu->p_init_comp);
@@ -377,7 +385,11 @@ static int hci_stp_dev_init(struct hci_stp *phu)
 	spin_unlock(&phu->init_lock);
 
 	ret = phu->init_evt_rx_flag;
-	if (ret == 1)
+	/* succeed when the controller answered anything (bring-up): the
+	 * whole script is a configuration hint; a deaf controller shows
+	 * up as init_ok_cmds == 0.
+	 */
+	if (phu->init_ok_cmds > 0 || ret == 1)
 		return 0;
 	return ret + 256;	/* non-zero error */
 }

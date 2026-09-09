@@ -80,6 +80,7 @@ struct hci_stp {
 	spinlock_t init_lock;	/* protects init_evt_rx_flag + waitq */
 	unsigned int init_cmd_idx;
 	int init_evt_rx_flag;	/* 1 ok / 0 timeout / -1 size / -2 content */
+	int init_ok_cmds;	/* commands answered during the last init */
 
 	/* H4 rx parser state, persistent across STP channel indications
 	 * (a single HCI frame may arrive split over several STP rx
