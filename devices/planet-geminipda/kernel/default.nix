@@ -34,7 +34,9 @@
 #           hci_init4/le_init4: MT6630 over-advertises (MWS etc.) and
 #           refuses the extra commands); 440be2a1 (2026-09-11: gate the
 #           WAK heartbeat on the BTIF link being OPEN - write-triggered
-#           hold was too short for scans/connections), verified byte-for-byte 2026-09-10
+#           hold was too short for scans/connections); 7af6ee9c (2026-09-11:
+#           record LMP_HOST_LE + HCI_LE_ENABLED locally when the chip refuses
+#           0x200d - unblocks mgmt/LE discovery), verified byte-for-byte 2026-09-10
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
 #           Regenerate after fork commits with bin/sync-kernel-delta.sh.

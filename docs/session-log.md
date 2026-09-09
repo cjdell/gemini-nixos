@@ -5,6 +5,76 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — BLUETOOTH BRING-UP part 2: CONSYS rx-stall ROOT CAUSE + fix, hci0 init to the BR/EDR wall (gens 46-48; module-only, no boot.img reflash)
+
+Task: continue the 2026-09-10 BT work — "fix the CONSYS rx stall, then
+hciconfig hci0 up / bluetoothctl scan on glass".
+
+ROOT CAUSE OF THE RX STALL (found + fixed):
+- The rx "stall" was the CONSYS MCU's AUTONOMOUS SLEEP, not a vFIFO
+  deadlock: with the device idle, a HCI reset's reply sat INSIDE the
+  asleep MCU and surfaced only at the next open's func-on WAK pulse —
+  measured 17 s late (83 min in one case). The RX vFIFO was empty at
+  every register sample while the reply was "missing" (0x11000aac
+  WPT=RPT, VALID=0), and a bare WAK pulse with NO traffic released the
+  stuck reply instantly.
+- FIX 1 (05bbb33d3, mtk_wcn): wake-before-send — mtk_wcn_btif_write
+  now pulses the BTIF WAK line (0x1100c064) before EVERY transport
+  write. On glass this converted the ~2 s cmd timeouts into ~40-120 ms
+  exchanges; the full hciconfig init sequence ran (BD read back, etc.).
+- FIX 2 (16e6d817, mtk_wcn): WAK keep-awake heartbeat — the MCU can
+  doze again INSIDE the 40-80 ms reply window, so replies landed late/
+  out-of-order and the HCI cmd-sync machinery desynced (-EINTR/
+  -EREMOTEIO noise, post-timeout replies, cascading bogus failures).
+  Now pulse WAK every ~30 ms while BT writes are recent, stop ~200 ms
+  after the last one (module params btif_wak_hb_ms / btif_wak_hb_hold).
+  Post-fix each command gets exactly ONE reply on the ~80 ms cadence.
+
+LE / FEATURE-OVER-ADVERTISING WALL (next blocker, being worked):
+- hci0 init now proceeds past the transport issues but the MT6630
+  OVER-ADVERTISES: its feature/supported-command replies claim more
+  than the firmware implements and it refuses the corresponding
+  commands — LE Set Event Mask (0x2001) -> 0x20 Command Disallowed
+  (deterministic, even with the MCU held awake), GET_MWS_TRANSPORT_
+  CONFIG (0x140c) refused with the MWS bit set, some LE 5.x commands
+  -> 0x01 unknown. Each refusal aborted the whole open and kept BR/EDR
+  down too.
+- FIX 3 (7dce5d17 -> f6b135a3, bluetooth.ko): HCI_QUIRK_EXT_INIT_BEST_
+  EFFORT (renamed from LE_INIT_...) — hci_stp sets it at probe; the
+  kernel runs the le_init3 + hci_init4 + le_init4 stages best-effort
+  (log + continue) so BR/EDR + basic LE come up. Note: 0x2001 is
+  refused even with the MCU held awake (WAK hammering) -> not a sleep
+  race; suspected radio-config/BT-firmware-state gating, deferred until
+  hci0 is UP and LE can be probed live.
+
+STATE (gens 46-48): hci_stp + bluetooth modules (no boot.img change);
+every fix module-only. Kernel fork HEAD f6b135a3 (synced to delta
+byte-identical). Latest glass run got through ALL of init1/2/3 and
+hci_init4's first 4 extras; refused 0x140c (MWS) -> init4 tolerance
+build in flight at session end. 40-80 ms per exchange still (fine);
+the 2 s HCI timeout no longer fires.
+
+EXPERIMENTAL OBSERVATIONS worth keeping:
+- hci_stp module vanishes from lsmod after a failed open attempt in
+  some runs (bluetooth+hci_stp both gone, wifi unaffected) — cause
+  not chased; modprobe hci_stp again re-creates hci0. Suspect the
+  failed-open path + deep-idle stub WARNs (mtk_wcn_stub_alps.c
+  "NULL function pointer" on COMBO_IF_BTIF deep idle, cb never
+  registered) — cleanup TODO.
+- The eFUSE BD reply 00:00:46:02:79:01 != the unprogrammed default
+  00:00:46:66:20:01, so the driver treats it as factory-programmed
+  (MediaTek OUI 00:00:46) — plausible real BD; not the blocker.
+- Host-side tooling: on-device `nix-shell -p bluez` provides
+  hciconfig/hcitool; bluetoothd needs a start (dbus bus present,
+  /var/lib/bluetooth absent). New host helper: bin/bt-glass-test.sh
+  (up / up-wak / regs / wak / init1).
+
+NEXT ACTION: verify the init4-tolerance build on glass -> hciconfig
+hci0 up should COMPLETE (BR/EDR) -> hcitool dev + hcitool scan ->
+start bluetoothd (nix-shell -p bluez) -> bluetoothctl power on +
+scan on -> then probe LE post-open (hcitool cmd 0x08 ...) to see if
+the 0x20 LE refusal is only an open-time artifact.
+
 ## 2026-09-10 — BLUETOOTH BRING-UP (MT6630 CONSYS): hci_stp driver ported (3.18 vendor → 6.6), BT radio powers on and answers HCI — blocked on a CONSYS rx-delivery stall (BT-channel frames arrive ~17 s late) so hci0 init can't complete yet (gens 37-42; NO boot.img reflash — module-only changes)
 
 Task: "get bluetooth working". The Gemini's BT = the BT half of the
