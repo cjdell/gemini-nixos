@@ -81,6 +81,16 @@ while [ $i -lt 120 ] && [ ! -S /run/gemwl/wayland-0 ]; do
 done
 [ -S /run/gemwl/wayland-0 ] || { echo "!! gemwl socket wayland-0 never appeared" >&2; exit 1; }
 
+# 3b. libwayland resolves a BARE WAYLAND_DISPLAY name against
+#    XDG_RUNTIME_DIR — but gemwl's socket lives in gemwl's own runtime
+#    dir (/run/gemwl), and this session's XDG_RUNTIME_DIR is its own
+#    cjdell-owned dir. Symlink wayland-0 in so `WAYLAND_DISPLAY=
+#    wayland-0` (below) reaches gemwl. (Before 2026-09-09 the root
+#    session shared gemwl's dir and the bare name just worked — this is
+#    the cost of running the session as cjdell.) The symlink dies with
+#    the RuntimeDirectory on restart and is recreated here.
+[ -e "$RUNTIME/wayland-0" ] || ln -s /run/gemwl/wayland-0 "$RUNTIME/wayland-0"
+
 # 4. (best-effort) scale the nested output 1.5x once labwc is up —
 #    0.8.3 has no config-file scale; wlr-randr (wlr-output-management)
 #    is the way. labwc picks the next free socket in XDG_RUNTIME_DIR

@@ -39,3 +39,11 @@ while [ $i -lt 120 ] && [ ! -S /run/gemwl/wayland-0 ]; do
     i=$((i+1))
 done
 [ -S /run/gemwl/wayland-0 ] || { echo "!! gemwl socket wayland-0 never appeared" >&2; exit 1; }
+
+# 2b. libwayland resolves a bare WAYLAND_DISPLAY against XDG_RUNTIME_DIR
+#    (/run/phosh-session), while gemwl's socket lives in gemwl's own
+#    runtime dir — symlink wayland-0 in so phoc (WLR_BACKENDS=wayland,
+#    WAYLAND_DISPLAY=wayland-0 from the unit env) reaches gemwl. Same
+#    fix as start-lxqt-nested step 3b [2026-09-09]. The symlink dies
+#    with the RuntimeDirectory on restart and is recreated here.
+[ -e "$RUNTIME/wayland-0" ] || ln -s /run/gemwl/wayland-0 "$RUNTIME/wayland-0"

@@ -205,6 +205,11 @@ in
           # [2026-09-07 receipt]).
           "XDG_RUNTIME_DIR=/run/phosh-session"
           "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/phosh-session/bus"
+          # phoc nests on gemwl (WLR_BACKENDS=wayland); the bare name
+          # resolves against XDG_RUNTIME_DIR, where prepare-phosh-
+          # session symlinked wayland-0 -> /run/gemwl/wayland-0
+          # (2026-09-09).
+          "WAYLAND_DISPLAY=wayland-0"
           "PULSE_SERVER=unix:/run/gemwl-audio/pulse/native"
           "PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio"
           # User env (HOME=/home/cjdell + XDG_* — the cjdell desktop
