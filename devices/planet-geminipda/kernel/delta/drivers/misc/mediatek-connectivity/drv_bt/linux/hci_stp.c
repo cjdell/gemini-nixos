@@ -139,6 +139,17 @@ static char bd_addr_param[18] = "";
 module_param_string(bd_addr, bd_addr_param, sizeof(bd_addr_param), 0444);
 MODULE_PARM_DESC(bd_addr, "BD address override (xx:xx:xx:xx:xx:xx); empty = read chip eFUSE");
 
+/* Run the vendor radio-config init script at open. Bring-up default 0:
+ * the glass session (2026-09-10) shows the chip answers BT HCI only
+ * ~one command-window late (slow BT-core wake after func-on), so a
+ * serial 6-cmd script stalls hci0 power-on badly. The script only
+ * sets radio/sleep/BD-address hints (chip defaults + the autogen
+ * address cover those); re-enable when the reply latency is tamed.
+ */
+static int init_script = 0;
+module_param(init_script, int, 0644);
+MODULE_PARM_DESC(init_script, "run the vendor radio-config init script at open (1=yes, bring-up default 0)");
+
 static int parse_bd_addr(const char *s, unsigned char addr[6])
 {
 	unsigned int b[6];
@@ -230,9 +241,9 @@ static void hci_stp_dev_init_rx_cb(unsigned char *data, int count)
 	}
 
 	if (unlikely(hu->init_evt_rx_flag != 1))
-		BT_WARN("EVT(%u) len(%d) flag(%d) - expected %d bytes\n",
+		BT_WARN("EVT(%u) len(%d) flag(%d) - expected %d bytes, rx: %*ph\n",
 			idx, count, hu->init_evt_rx_flag,
-			init_table[idx].evt_sz);
+			init_table[idx].evt_sz, count, data);
 
 	spin_lock(&hu->init_lock);
 	if (likely(hu->p_init_evt_wq))
@@ -366,6 +377,11 @@ static int hci_stp_dev_init(struct hci_stp *phu)
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(evt_wq);
 	int ret;
 
+	if (!init_script) {
+		BT_INFO("init script skipped (init_script=0) - controller "
+			"defaults + autogen BD address\n");
+		return 0;
+	}
 	spin_lock(&phu->init_lock);
 	phu->p_init_comp = &comp;
 	phu->p_init_evt_wq = &evt_wq;
@@ -385,9 +401,8 @@ static int hci_stp_dev_init(struct hci_stp *phu)
 	spin_unlock(&phu->init_lock);
 
 	ret = phu->init_evt_rx_flag;
-	/* succeed when the controller answered anything (bring-up): the
-	 * whole script is a configuration hint; a deaf controller shows
-	 * up as init_ok_cmds == 0.
+	/* succeed when the controller answered anything; a deaf controller
+	 * shows up as init_ok_cmds == 0.
 	 */
 	if (phu->init_ok_cmds > 0 || ret == 1)
 		return 0;
