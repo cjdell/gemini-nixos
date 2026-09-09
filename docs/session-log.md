@@ -5,6 +5,115 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — 32-BIT WINDOWS ON THE PDA VIA WINE-WOW64: dsd_lm.exe (Doomsday "Lego Mania", Assembly 2003) RUNS — music plays, 32-bit GL stack proven on glass with the glprobe32 probe — but its scene presents BLACK; root-caused to the demo's fixed-function/display-list GL vs the guest GL being panfrost-T880 (env-llvmpipe does NOT stick); wine/wine64 CLIs added (gen36)
+
+Task: "get /root/Downloads/dsd_lm.exe running" (Doomsday's Lego-Mania
+PC demo, scene.org — fmod.dll + ijl11.dll + lmania.ogg beside it).
+
+**Static analysis first (rule: never run blind):** dsd_lm.exe is a
+**PE32 Intel i386 (32-bit) + UPX-packed** app importing OPENGL32/GLU32
+(realtime GL per its readme), fmod, WINMM, GDI32-SwapBuffers
+(double-buffer via gdi32, the classic path), USER32 dialogs +
+ChangeDisplaySettings. The existing stack (wine64 11.0, 64-bit-only
+prefix) canNOT run 32-bit PEs — its lib/wine has only x86_64-unix/-windows,
+no i386 payload; prefix syswow64 was empty.
+
+**Stack extension (all hydra-cached at dc5d91f84032, rule 9):**
+- nixpkgs **`wineWow64Packages.full`** = wine-wow64 11.0
+  (`5qkxzvcr5k4pglxsnzvqz308sn6cs02m`; 706 MB closure, 1072 i386-windows
+  PEs + x86_64-unix — the new-WoW64 single-loader build, no i686 linux
+  needed). box64's README: "Wine WOW64 build to run x86 Windows programs
+  in Box64-only environments… experimental but works in most cases"
+  (the known-broken case = wined3d/D3D pointer maps; ours is GL).
+- Shipped via `nix copy` (25 s); launcher /root/wine-x86/wine-wow
+  (wine64's twin, WINEPREFIX=/root/.wine-wow default) + GC root; wineboot
+  -u in the new prefix **populated syswow64** (159 s job). VERIFIED:
+  32-bit PEs load; the 64-bit d3d9test cube also spins under wine-wow
+  (present path intact).
+- glprobe32 (new, pkgs/glprobe32): 32-bit i686-windows PE (mingw32 cross
+  — `GL/gl.h` path case matters on Linux) that mirrors a 2003 demo's GL
+  dance (2 shared contexts, display list built on ctx B executed on A,
+  colored clears, gdi32 SwapBuffers) and glReadPixels its own buffer to
+  BMPs. ON GLASS: user saw the flashing colored triangle — **32-bit
+  guest GL present under box64+wow64 WORKS and shows color**.
+
+**dsd_lm.exe on glass:** runs (32-bit PE in wow64), fmod music plays via
+winmm, window appears (small square, top-left of the 2160×1080 glass —
+ChangeDisplaySettings fails on wayland, -2, so no fullscreen), but the
+scene is BLACK (white intro frame → black, stays). Trace receipts:
+- +wgl: EGL 1.5 init fine, TWO shared contexts, pixel format 174
+  (10,10,10,2 + depth/stencil on llvmpipe's config list), MakeCurrent
+  on the window OK — but a later 120 s run showed 8302
+  win32u_wgl_context_flush (~69/s — the app presents constantly; the
+  presented content is black, not a stall). glReadPixels imports
+  suggest readback use, no GDI BitBlt (renders GL straight to window).
+- **Mesa guest GL is panfrost-T880, NOT llvmpipe** (renderer string
+  "Mali-T880 MC4 (Panfrost)", GL 3.1 Mesa 26.2.2) — with
+  GALLIUM_DRIVER=llvmpipe AND LIBGL_ALWAYS_SOFTWARE=1 exported! The
+  guest mesa's EGL-wayland opens the T880 render node via GBM and loads
+  panfrost_dri regardless of those env vars (DRI device loading ignores
+  them). **The earlier session's "llvmpipe was the safe path" claim is
+  WRONG — every wine GL run (d3d9test 55-60 fps cube incl.) was
+  panfrost-T880 through box64 all along** [corrected 2026-09-09; the
+  wedge incident stands (it was real) but its attribution to "forced
+  guest panfrost" is unsupported — today's long guest-panfrost runs
+  (probe minutes, triangle) were stable; re-root-cause needed].
+- **Hypothesis for the black scene (NEXT ACTION to test):** dsd_lm is a
+  fixed-function GL 1.x engine (glLightfv/glMaterialfv/glFog/glTexGen/
+  glPolygonMode/glListBase/glCallLists imports) — panfrost GL 3.1's
+  fixed-function + display-list coverage is the weak spot; llvmpipe
+  implements it fully. Since the guest CANNOT be env-switched to
+  llvmpipe, testing it needs a mesa build with panfrost disabled
+  (or the ICD swapped) for the guest — see handover below.
+
+**CLIs (the ask):** wine/wine64 now on the device shell via
+pkgs/wine-cli.nix + config/gemini.nix systemPackages (**gen36**,
+5fec818): thin wrappers exec'ing /root/wine-x86/wine-wow (the stack
+stays a standalone GC root — docs/wine-d3d.md §5). A first attempt to
+write wrappers into /root/.nix-profile/bin failed (that profile dir is
+uninitialised on this device — vestigial PATH entry) — systemPackages
+is the right home. Device left running gen35 at session start; gen36
+build/deploy in progress at close.
+
+Files: pkgs/wine-cli.nix, config/gemini.nix (gen36), pkgs/glprobe32.nix
++ pkgs/glprobe32/glprobe32.c, /root/wine-x86/wine-wow (device),
+docs/wine-d3d.md §7. Not committed in-repo: the UPX-unpacked exe
+(replaced /root/Downloads/dsd_lm.exe; original backed up as
+dsd_lm.exe.upx.bak on the device; sha256 feb7bd4c…).
+
+## HANDOVER — suggested actions to finish the dsd_lm.exe work
+
+1. **Test the fixed-function hypothesis:** get the demo onto a true
+   software GL. Env forcing FAILED (GALLIUM_DRIVER, LIBGL_ALWAYS_SOFTWARE
+   — panfrost_dri loads via GBM regardless). Options: (a) build the
+   x86_64 guest mesa (pkgs/wine-x86.nix `mesa`) with panfrost
+   disabled/swrast-only and redeploy just that path — cleanest;
+   (b) LIBGL_ALWAYS_SOFTWARE plus pointing __EGL_VENDOR_LIBRARY_FILENAMES
+   at a swrast-only ICD dir; (c) box64 hiding /dev/dri (no known knob).
+   If the demo shows content on llvmpipe → confirmed panfrost GL bug →
+   decide: accept llvmpipe (slow) for 32-bit GL guests or fix panfrost.
+2. **Re-root-cause the 2026-09-09 wedge** (attribution to forced guest
+   panfrost now doubtful — today's guest-panfrost runs were stable):
+   reproduce deliberately with fresh prefix + no other GPU users + WDT
+   net (para=boot-recovery) when the user approves a risky run.
+3. **Make the demo actually visible/useful on glass:** it renders into a
+   small window (ChangeDisplaySettings unsupported on winewayland).
+   Wine virtual desktop (registry) or gemwl viewport scaling could scale
+   it; or accept windowed. Also gemwl LACKS wlr-screencopy (grim fails:
+   "compositor doesn't support the screen capture protocol") — add
+   wlr_screencopy_manager_v1_create to pkgs/gemwl/gemwl.c for receipts.
+4. **Fold the wow64 stack into the tooling:** extend bin/wine-x86-deploy.sh
+   (status/deploy/init/run/log/kill) with the wine-wow64 path + wow
+   prefix so deploys are scripted (today's device setup was ad-hoc:
+   wine-wow launcher, GC root, prefix).
+5. **Cleanup:** delete the stale wine-wow prefix/probe dirs when done;
+   keep dsd_lm.exe.unpacked receipts; consider UPX-unpacking step inside
+   the run flow (wine CAN load UPX'd PEs only if wow64's 32-bit exec
+   works for the stub — unpacked on host is deterministic, prefer it).
+6. **Log/commit:** session-log entry + docs/wine-d3d.md §7 (32-bit
+   wow64 path, glprobe32, panfrost-not-llvmpipe correction) done here;
+   close out gen36 verification (wine --version on device) next session.
+
 ## 2026-09-09 — GEMDEMO PURGED TO A SINGLE-FILE GLES 3.1 TEMPLATE (0.3.0), DEPLOYED + CONFIRMED ON GLASS (gens 34-35)
 
 Verdict from the 0.2.0 "GEMINI: EXODUS" on-glass work: the demoscene is

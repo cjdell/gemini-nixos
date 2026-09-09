@@ -1,6 +1,7 @@
 # Wine on the Gemini PDA — x86-64 Windows apps via box64 + wine64
 
-Last updated: 2026-09-09 (initial: D3D9 test app deployed + on glass)
+Last updated: 2026-09-09 (32-bit guests via wine-wow64; glprobe32;
+panfrost-not-llvmpipe correction)
 
 Run the **first real Windows Direct3D 9 program on the PDA**: a
 self-written `d3d9test` (rotating vertex-coloured cube + GDI FPS
@@ -119,4 +120,53 @@ wined3d→  EGL/GBM (x86-64 mesa from the wine closure) → panfrost T880
 
 ## 6. On-glass results
 
-(filled in after the first run — console receipt + screenshot)
+First D3D9 frame + receipts in the 2026-09-09 session-log entry (d3d9test
+55-60 fps cube). NOTE [corrected 2026-09-09]: that run and every wine GL
+run is **guest panfrost on the T880**, NOT llvmpipe — see §7. grim
+screenshots were never proven on glass (gemwl lacks screencopy).
+
+## 7. 32-bit Windows apps: wine-wow64 (wineWow64Packages.full) + the
+panfrost-not-llvmpipe correction (2026-09-09)
+
+32-bit PEs (most 2003-era demos — dsd_lm.exe is PE32 i386) need the
+32-bit payload that `wine64` (nixpkgs, 64-bit-only) lacks. The flake-pin
+has `wineWow64Packages.full` = **wine-wow64 11.0** — the new-WoW64
+single-loader build: `bin/.wine` + `lib/wine/{i386-windows (1072 PEs),
+x86_64-unix, x86_64-windows}`, NO i686-linux needed, hydra-cached at
+dc5d91f84032 (`5qkxzvcr5k4pglxsnzvqz308sn6cs02m`, 706 MB closure). box64
+runs its 32-bit x86 code in most cases (experimental per box64 README;
+the known-broken case is wined3d/D3D — GL is fine). A wineboot -u in a
+fresh prefix installs syswow64; 64-bit apps run unchanged.
+
+Deployment is ad-hoc today (launcher /root/wine-x86/wine-wow, GC root
+wine-wow64, prefix /root/.wine-wow) — extending bin/wine-x86-deploy.sh
+with the wow64 path is a suggested next action (session-log handover).
+
+**glprobe32** (pkgs/glprobe32) is the 32-bit GL present probe: two shared
+contexts + display list built on B executed on A + colored clears +
+gdi32 SwapBuffers + glReadPixels→BMP. On glass it shows a flashing
+coloured triangle — 32-bit guest GL present under box64+wow64 works.
+Build note: `#include <GL/gl.h>` (uppercase dir — mingw-w64 layout,
+case matters when cross-compiling on Linux), `-mwindows`,
+`pkgsCross.mingw32` (i686) cross stdenv, NOT winegcc.
+
+**CORRECTION — guest GL is panfrost-T880, env-llvmpipe does NOT stick:**
+glGetString(GL_RENDERER) under the guest reports "Mali-T880 MC4
+(Panfrost)", GL 3.1 Mesa 26.2.2 — with BOTH `GALLIUM_DRIVER=llvmpipe`
+and `LIBGL_ALWAYS_SOFTWARE=1` exported. The x86_64 guest mesa's
+EGL-wayland platform opens the T880 render node via GBM and loads
+panfrost_dri regardless of those env vars (DRI device loading ignores
+them). Implication: the earlier session's "llvmpipe was the stable/safe
+path" claim (d3d9test cube) was wrong — it was the hardware all along,
+and the 2026-09-09 wedge's attribution to "forced guest panfrost" is
+unsupported (long guest-panfrost probe runs on 2026-09-09 were stable).
+Treat guest-panfrost as the DEFAULT path for all wine GL work;
+re-root-cause the wedge before risky runs (session-log handover).
+
+**dsd_lm.exe status (2026-09-09):** runs (music via fmod/winmm), window
+shows (small, top-left — ChangeDisplaySettings unsupported on
+winewayland), scene BLACK with ~69 presents/s (not stalled). Suspect:
+its fixed-function GL 1.x scene (glLightfv/glMaterialfv/glFog/glTexGen/
+display lists) against panfrost GL 3.1's weaker fixed-function path.
+Next: render it on a true llvmpipe guest mesa (build with panfrost
+disabled) to confirm — full handover in docs/session-log.md (top entry).
