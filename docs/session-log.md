@@ -5,6 +5,56 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — BOOT-TIME EXT4 AUTO-REPAIR ON GLASS (defense against hard power-off): initrd e2fsck pre-mount, both paths verified, p22 flashed + sha'd
+
+Follow-up to the boot-panic recovery above. The panic's root cause —
+torn ext4 orphan chain that the KERNEL's mount-time journal replay
+could not recover (oops every boot, pre-userspace) — is now defended
+in the initrd itself:
+
+**Change (commit f45befe):** `devices/planet-geminipda/initrd.nix` runs
+`e2fsck -y $ROOT` BEFORE the rw mount, both NixOS (p32) + Debian (p29)
+branches; static aarch64 e2fsck (pkgsStatic.e2fsprogs 1.47.4, 1.38 MB)
+staged into the cpio. Boot.img 9.37 → 9.52 MiB (< 16 MiB cap), header
+geometry + cmdline byte-identical (bootopt intact). Plus
+`bin/fsck-p32.sh` — scripted TWRP operator fallback (check/repair/
+status; unmounts p32 first — the live-mount spurious-drift lesson).
+
+**Why unconditional -y is free:** e2fsck 1.47.4 `check_if_skip` — on a
+HEALTHY fs (VALID set, interval=0, max_mnt_count=-1 as on ours) it
+skips in ms (verified locally: 2 ms on a 300 MB test fs). Only journal
+RECOVER / ERROR_FS / orphan / VALID-cleared force real work. After a
+journal replay e2fsck restarts but the restart re-evaluates and skips
+(replay cleared RECOVER) — so a dirty boot costs only the (small)
+journal replay, never a full 27 GiB scan (confirmed empirically below).
+
+**On-glass verification (new initrd = boot.img
+`yx3fr5qm5…`, sha256 19b299c1effdd950a7699222f9336bb133f009bef7dc554d8e9dc6d2c3aab5bf;
+flashed to p22 12:45, backup `stock-dump/boot-20260909-124502.img`):**
+1. **Clean boot** — TWRP cycle → NORMAL: boots gen32 in ~34 s
+   (unchanged; skip path), no failed units, fs clean, no kernel
+   recovery line. p22 read-back sha == image sha.
+2. **Dirty boot** — WDT EXRST reboot from the running system (unclean
+   shutdown, journal dirty, no TWRP in between): dmesg receipt —
+   p32 ro-probe 3.22 s → unmount 3.28 s → **[initrd e2fsck replays
+   journal]** → kernel rw mount 3.51 s finds CLEAN journal (NO
+   "recovery complete" line — the kernel would have replayed if the
+   initrd hadn't) → stage-2 remount 3.87 s. Boot still ~34 s total.
+   fs state clean, mount count 3→4.
+
+**Result:** the kernel no longer ever replays a possibly-torn journal
+(the incident's oops vector). Clean boots pay ~0; dirty boots (any
+hard power-off) self-recover to a clean journal before userspace. The
+full torn-orphan repair (the incident's case) is the same -y path
+(orphan state forces the full pass — minutes, on an already-broken
+boot). TWRP + bin/fsck-p32.sh remain the operator escape hatch.
+
+Note for a future serial/console watcher: the initrd prints
+`==> e2fsck -y … (auto-repair; skips fast when clean)` + e2fsck
+output on the fbcon console during the ~230 ms window — visible live
+but not captured in dmesg/journal (userspace console writes).
+Device left: running gen32, para cleared (NORMAL), desktop + wifi up.
+
 ## 2026-09-09 — BOOT-PANIC RECOVERY (post-wedge): p32 torn-orphan ext4 from the unclean power-off → repeated pre-mount initrd panics; fixed with offline e2fsck -fy in TWRP, no reflash — device back on gen32, clean cold boot
 
 Follow-up to the wine D3D9 session below (device left WEDGED after the
