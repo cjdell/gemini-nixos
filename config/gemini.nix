@@ -8,7 +8,10 @@
 # less fb desktop; serial console unaffected). Since 2026-09-07 the
 # desktop payload is the nested LXQt session (services/lxqt.nix: labwc
 # 0.8.3 on the pinned wlroots 0.18.2 + nixpkgs lxqt 2.4, the verified
-# GeminiPDA stack). `systemctl disable gemwl lxqt-nested` = console boot.
+# GeminiPDA stack); since 2026-09-09 the ALTERNATIVE desktop is Phosh
+# (services/phosh.nix: phoc 0.54.0 nested the same way, off by default
+# — switch by disabling lxqtNested). `systemctl disable gemwl
+# lxqt-nested` = console boot.
 { config, lib, pkgs, ... }:
 let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
@@ -48,6 +51,12 @@ in
     # (panel, pcmanfm-qt desktop, qterminal, audio GUIs). The verified
     # GeminiPDA desktop stack as NixOS services (2026-09-07).
     ../services/lxqt.nix
+    # Phosh (mobile shell) desktop nested inside gemwl — phoc 0.54.0 on
+    # wlroots 0.19 (fork-gbm override, pkgs/phoc-geminipda.nix) hosting
+    # the nixpkgs phosh 0.54.0 shell; GPU-accelerated through the same
+    # fork-mesa chain as LXQt. OFF by default; enable + disable
+    # lxqtNested to switch (services.phoshDesktop.enable; docs/phosh.md).
+    ../services/phosh.nix
   ];
 
   system.stateVersion = "26.11";

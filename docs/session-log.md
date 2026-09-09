@@ -5,6 +5,58 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09o — PHOSH DESKTOP LANDED (the LXQt alternative): phoc 0.54.0 nested inside gemwl hosting the phosh shell — built + readelf-verified host-side, NOT switched (no config/device change on glass)
+
+Task: "try phosh as the desktop environment instead of lxqt; will gemwl
+support it with GPU acceleration?"
+
+**Answer (design + receipts in docs/phosh.md):** gemwl cannot host phosh
+— it is a minimal xdg-shell KIOSK compositor (no layer-shell /
+foreign-toplevel / session-lock / text-input, no phoc-private protocol
+that phosh expects). The proven nested pattern (labwc in gemwl) is
+reused with phoc (phosh's own compositor):
+`WLR_BACKENDS=wayland phoc -v -S -C <ini> --socket phosh -E start-phosh-shell`
+nested on gemwl's wayland-0, exec'ing `$out/libexec/phosh` (NOT
+bin/phosh-session — that starts its own DRM phoc). GPU acceleration
+stays end-to-end fork-mesa: GTK4 (EGL ICD → fork) → phoc (wlroots
+0.19 gles2/gbm on renderD128 → fork) → gemwl (GPU blit to LK fb).
+
+**Files:** `services/phosh.nix` (option `services.phoshDesktop.enable`,
+default OFF — LXQt stays the default; assert-guarded to require
+lxqtNested off), `services/scripts/{prepare-phosh-session,
+start-phosh-shell}`, `pkgs/phoc-geminipda.nix`, flake packages
+`phoc`/`phosh`/`squeekboard`, docs/phosh.md, config/gemini.nix import.
+
+**Pins:** phosh 0.54.0 + phoc 0.54.0 + squeekboard 1.43.1 from the
+pinned nixpkgs (dc5d91f84032). phoc builds against nixpkgs'
+wlroots_0_19 (0.19.3) — phoc 0.54 does NOT build against the repo's
+wlroots 0.18.2 pin (that stays gemwl's). pkgs/phoc-geminipda.nix
+re-runs nixpkgs' phoc expression with its wlroots 0.19.3 rebuilt so its
+libgbm is the FORK mesa (single-mesa GPU closure — cross-mesa EGL/gbm
+is the AFBC landmine the fork avoids). phoc's own layer-shell
+0-dimension revert patch (nixpkgs recipe) composes on top.
+
+**Build receipts (2026-09-09):**
+- First rebuild attempt failed: replacing nixpkgs' mesa-libgbm (which
+  PROPAGATES libdrm — gbm.nix propagatedBuildInputs=[libdrm]) with the
+  fork (propagates nothing) dropped wlroots' meson `libdrm` lookup
+  ("Run-time dependency libdrm found: NO"). Fix: add pkgs.libdrm to
+  the override buildInputs.
+- `nix build .#packages.aarch64-linux.{phoc,phosh}` rc=0 (~40 s: the
+  only local compiles are wlroots 0.19.3 + phoc relink on the remote
+  builder; phosh's GNOME-sized closure substitutes from cache).
+- readelf on the forked wlroots: RUNPATH carries
+  …-mesa-geminipda-25.0.7/lib; libgbm.so.1 resolves to the fork's
+  libgbm.so.1.0.0 (single-mesa confirmed; stock mesa-libgbm 26.1.3 in
+  phoc's closure is from phoc's other deps, not its wlroots).
+- `phoc.drvPath` != stock pkgs.phoc.drvPath (override is live).
+
+**Not done (deliberate):** no gnome-session scaffolding (v1 execs the
+shell directly — the classic nested-dev flow; expect missing-session
+warnings + reduced features), no portals/stevia-ibus/upower/NM
+integration, no on-glass run (device untouched this session; next:
+switch on a clone + run the checklist in docs/phosh.md).
+
 ## 2026-09-09n — FLAKE GAINS `nixosConfigurations.gemini`: the STOCK `nixos-rebuild switch --flake .` loop works on the device (no bash script) — config-only, NOT yet switched on glass
 
 Task: "re-organise the flake so a clone of this repo ON the device can

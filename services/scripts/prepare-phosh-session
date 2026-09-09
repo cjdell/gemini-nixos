@@ -1,0 +1,36 @@
+#!/bin/sh
+# prepare-phosh-session — ExecStartPre for the phosh-nested unit
+# (services/phosh.nix): make sure the pieces phoc+phosh connect through
+# exist before phoc starts.
+#
+#   1. session bus at /run/gemwl/bus (same layout + rationale as
+#      services/scripts/start-lxqt-nested: gemwl.service's
+#      RuntimeDirectory=/run/gemwl hosts the wayland + dbus sockets;
+#      the bus is shared by phoc's session — phosh, squeekboard and any
+#      app they spawn register on it. Idempotent: start only if absent.
+#   2. gemwl's socket wayland-0 (phoc nests on it). gemwl.service being
+#      "up" (Type=simple) does not mean its socket exists yet — a cold
+#      boot can still be in panfrost-load.sh's rmmod+reprobe when this
+#      unit starts; poll like start-lxqt-nested does.
+#
+# Env (HOME/XDG_*/dbus addresses, PAN_MESA_DEBUG, GBM_BACKENDS_PATH,
+# ...) is set by the UNIT (services/phosh.nix), not here. dbus-daemon
+# comes from the unit's path=.
+set -e
+
+# 1. session bus (a second dbus-daemon on the same address would fail;
+#    the -S check makes this safe to re-run after a unit restart)
+mkdir -p /run/gemwl
+if [ ! -S /run/gemwl/bus ]; then
+    dbus-daemon --session --address=unix:path=/run/gemwl/bus --fork --print-address >/dev/null
+    sleep 1
+fi
+[ -S /run/gemwl/bus ] || { echo "!! session bus did not come up" >&2; exit 1; }
+
+# 2. gemwl's socket (phoc's WLR_BACKENDS=wayland parent)
+i=0
+while [ $i -lt 120 ] && [ ! -S /run/gemwl/wayland-0 ]; do
+    sleep 0.5
+    i=$((i+1))
+done
+[ -S /run/gemwl/wayland-0 ] || { echo "!! gemwl socket wayland-0 never appeared" >&2; exit 1; }
