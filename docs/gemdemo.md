@@ -28,9 +28,14 @@ The name/branding lean is deliberate — the show is for the Planet
 Computers Gemini PDA, so it flies a GEMINI ONE spacecraft to the ringed
 homeworld "PLANET COMPUTERS".
 
-Status: 🟡 0.2.0 built for aarch64 (host type-check + synth unit tests
-green 2026-09-09); ON-GLASS verification pending (same safe launch
-path as before: LXQt/labwc windowed or gemwl fullscreen).
+Status: 🟢 ON GLASS (windowed under labwc, 2026-09-09): v0.2.0 ran the
+full show at **58.9–61 fps through every chapter** — including the S5
+PLANET reveal once the planet became a baked-map sample pass (the
+initial per-pixel-fbm planet dragged the reveal to ~42 fps; the bake
+fixed it, measured before/after on the same run path). Audio live via
+gemini16 (S16 44.1k), A72s online + render thread pinned. Visual QA of
+individual frames by eye is still owed (title centring, ring depth,
+sky-glow placements) — `--dump` PPMs exist for that.
 
 ## Why 0.1.0 failed and what 0.2.0 changed
 
@@ -52,10 +57,12 @@ per-sample peak-follower limiter that slammed EVERY beat to full scale
   glows and shock rings are tiny textured quads (four 64–96 px RGBA
   sprites baked once: soft, star, ring, cloud). Blending carries the
   look; per-pixel overdraw averages ~2, and the only region with heavy
-  fragment math (the planet's lit, banded, rotating fbm surface + its
-  ring arcs) is kept small and the noise budget low — that's the 60 fps
-  story (ship + fields ~A53s; the planet pass is where an A72's extra
-  fragment headroom shows).
+  per-pixel math (the planet) is **baked**: the fbm surface maps are
+  generated ONCE at startup in Rust (256×128 albedo + cloud per
+  palette — Earth + the Planet Computers world) and the per-frame quad
+  just samples them with cheap sphere lighting; spin is a UV scroll.
+  That is the difference between 60 fps and ~42 fps at the S5 reveal
+  (measured on glass, windowed, 2026-09-09).
 - **Music engine rewritten** (synth.rs): per-part buses with real
   headroom, sends to a dotted-8th ping-pong delay + Schroeder reverb,
   per-part sidechain pump on the kick, a soft-knee ceiling (only shapes
@@ -147,11 +154,10 @@ section and FPS — the pacing heartbeat for the serial console.
 
 ## Next actions
 
-- ON-GLASS run of 0.2.0 (windowed first), then sweep chapters with
-  `[`/`]` while watching fps at each chapter's worst frame (planet S5 +
-  warp S2 are the expensive ones) → decide whether S5's planet radius
-  needs shrinking or the A72 unit needs to be up before the show.
-- Verify audio quality ears-on (mix headroom, delay/reverb tails, the
-  S3 beacon blip against the visual blip).
-- `--dump` frame QA per chapter: sky gradient orientation, planet/ring
-  arc depth, title centering.
+- ON-GLASS visual QA of the PPM dumps (S0 launch frame, S2 EXODUS
+  title, S3 beacon, S5 reveal + ring) — model couldn't view images in
+  the 2026-09-09 session; they're on the device at /tmp/s5*.ppm.
+- Fullscreen run on gemwl (the 720p native case) to confirm the windowed
+  60 fps carries (planet bake should make it hold; S2 warp + S5 reveal
+  are the expensive chapters to watch).
+- Audio mix ears-on: delay/reverb tails, S3 beacon blip vs visual.

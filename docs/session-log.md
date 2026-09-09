@@ -5,6 +5,36 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — GEMDEMO 0.2.0 ON GLASS (windowed under labwc): 60 fps across the show; S5 planet bake fix measured
+
+Deployed the 0.2.0 build to the PDA (nix copy → /nix/store, run as the
+labwc session client) and measured:
+
+- **Audio live**: cpal→gemini16 S16 @ 44.1k opened cleanly; per-cb
+  peak logs ~0.92 steady (under the 0.97 ceiling — the old over-limit
+  slam is gone; master rms healthy). Beat clock drives the show.
+- **A72s**: gemini-a72-up unit requested from inside the demo and the
+  render thread pinned to cpu8/cpu9 (confirmed in the banner).
+- **FPS**: full show windowed at 1025×576 held 58.9–61 fps through
+  S0–S4 and S6 (the old 0.1.0 was single digits).
+- **S5 PLANET reveal was the one miss**: the per-pixel fbm planet
+  (disc ~44k px at the reveal) dragged fps to ~42. Fixed by baking the
+  surface: albedo + cloud maps (256×128) generated ONCE at startup in
+  Rust per palette (PAL_EARTH/PAL_PC consts in show.rs, shared with
+  the bake), spin = equirect UV scroll, lighting stays per-pixel but
+  cheap (no fbm/trig-in-noise in the hot path, spec via repeated
+  squaring). Before/after on the same run path: 42 → 60 fps at the
+  reveal. No per-frame FBO involved — "bake, don't multipass."
+- PPM dumps (window readback RGBA→RGB) land on the device at
+  /tmp/s5*.ppm (s5c = S5 reveal ~60 fps build). Region stats confirm
+  content (planet mid-bright ~YAVG 134 vs sky ~97–102).
+- The 2026-09-09 model couldn't VIEW images — a human should eyeball
+  the dumps (title centring, ring depth, palette) before fullscreen.
+
+Files: pkgs/gemdemo/src/gfx.rs (planet bake), src/show.rs (PAL consts),
+docs/gemdemo.md (updated status + strategy). Session log entry above
+holds the full 0.2.0 rewrite record.
+
 ## 2026-09-09 — GEMDEMO 0.2.0 "GEMINI: EXODUS": complete rewrite (assembly-style cinematic spacesynth show) — code green, NOT yet on glass
 
 After the 0.1.0 "AETHER" verdict (2026-09-09: single-digit FPS, flawed

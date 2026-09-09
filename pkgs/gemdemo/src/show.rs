@@ -66,6 +66,31 @@ pub struct PlanetPal {
     pub phase: f32,
 }
 
+/// The two planet materials, shared by the director (show.rs) and the
+/// texture baker (gfx.rs) — phase doubles as the bake selector
+/// (0 = Earth, != 0 = Planet Computers).
+pub const PAL_EARTH: PlanetPal = PlanetPal {
+    ocean: (0.05, 0.22, 0.42),
+    land: (0.16, 0.34, 0.14),
+    desert: (0.45, 0.30, 0.12),
+    ice: (0.82, 0.88, 0.95),
+    cloud: (0.92, 0.94, 0.98),
+    atmos: (0.25, 0.6, 1.0),
+    clouds: 0.55,
+    phase: 0.0,
+};
+
+pub const PAL_PC: PlanetPal = PlanetPal {
+    ocean: (0.05, 0.35, 0.40),
+    land: (0.55, 0.30, 0.62),
+    desert: (0.78, 0.55, 0.35),
+    ice: (0.85, 0.9, 1.0),
+    cloud: (0.95, 0.9, 0.98),
+    atmos: (0.8, 0.45, 1.0),
+    clouds: 0.65,
+    phase: 3.1,
+};
+
 #[derive(Clone, Copy)]
 pub struct PlanetPose {
     pub cx: f32,
@@ -100,8 +125,7 @@ pub struct Shock {
 }
 
 /// One frame of visual data, rebuilt each frame by the Director.
-pub struct FrameState {
-    pub t: f32,
+pub struct FrameState {    pub t: f32,
     pub chapter: usize,
     pub cp: f32,
     pub kick: f32,
@@ -181,28 +205,8 @@ impl Director {
         ];
 
         // --- planet materials
-        let earth = PlanetPal {
-            ocean: (0.05, 0.22, 0.42),
-            land: (0.16, 0.34, 0.14),
-            desert: (0.45, 0.30, 0.12),
-            ice: (0.82, 0.88, 0.95),
-            cloud: (0.92, 0.94, 0.98),
-            atmos: (0.25, 0.6, 1.0),
-            clouds: 0.55,
-            phase: 0.0,
-        };
-        let pc = PlanetPal {
-            // the "Planet Computers" world: teal ocean + violet land,
-            // pale gold ring — the brand colours in space
-            ocean: (0.05, 0.35, 0.40),
-            land: (0.55, 0.30, 0.62),
-            desert: (0.78, 0.55, 0.35),
-            ice: (0.85, 0.9, 1.0),
-            cloud: (0.95, 0.9, 0.98),
-            atmos: (0.8, 0.45, 1.0),
-            clouds: 0.65,
-            phase: 3.1,
-        };
+        // --- planet materials (shared consts — gfx.rs bakes textures
+        // from the same palette literals so bake and scene never drift)
         let unused = PlanetPal {
             ocean: (0.0, 0.0, 0.0),
             land: (0.0, 0.0, 0.0),
@@ -213,7 +217,7 @@ impl Director {
             clouds: 0.0,
             phase: 0.0,
         };
-        let planet_pals = [earth, earth, unused, unused, pc, pc, pc];
+        let planet_pals = [PAL_EARTH, PAL_EARTH, unused, unused, PAL_PC, PAL_PC, PAL_PC];
 
         // --- per-chapter nebula sets (normalized positions)
         let mk_neb = |items: &[(f32, f32, f32, f32, C, f32)]| -> Vec<NebulaBlob> {

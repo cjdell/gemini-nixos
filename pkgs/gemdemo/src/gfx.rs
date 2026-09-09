@@ -393,10 +393,110 @@ void main() {
 }
 
 // ------------------------------------------------------------------ planet
+//
+// The 60 fps reveal strategy: the planet's fbm surface is PROHIBITIVELY
+// expensive as a per-pixel shader at cinematic size (measured on glass:
+// the S5 reveal of the ~44k-pixel disc dragged 60 → ~42 fps on the
+// T880). So the surface is BAKED ONCE at startup (base albedo map +
+// cloud map per palette, 256×128 — our Rust fbm, no GLSL noise in the
+// hot path) and the per-frame quad only SAMPLES the maps with cheap
+// sphere lighting. Spin = horizontal UV scroll (no re-render, no
+// per-frame FBO — the baked maps ARE the "no multipass" answer to a
+// moving globe).
+
+/// Baked maps for one palette: (base albedo, cloud) GL textures.
+struct PlanetMaps {
+    base: u32,
+    cloud: u32,
+}
+
+fn fbm3_rust(x: f32, y: f32) -> f32 {
+    let mut a = 0.5;
+    let mut r = 0.0;
+    let (mut fx, mut fy) = (x, y);
+    for _ in 0..3 {
+        r += a * value_noise2(fx, fy);
+        fx = fx * 2.03 + 11.7;
+        fy = fy * 2.03 + 5.1;
+        a *= 0.5;
+    }
+    r
+}
+
+fn smoothstep_r(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+unsafe fn tex_rgba(name: &str, w: usize, h: usize, px: &[u8]) -> u32 {
+    let mut tex = 0;
+    gl::GenTextures(1, &mut tex);
+    gl::BindTexture(gl::TEXTURE_2D, tex);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::REPEAT as i32);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as i32);
+    gl::TexImage2D(
+        gl::TEXTURE_2D, 0, gl::RGBA8 as i32, w as i32, h as i32, 0,
+        gl::RGBA, gl::UNSIGNED_BYTE, px.as_ptr() as *const _,
+    );
+    eprintln!("gfx: baked planet map '{name}' {w}x{h}");
+    tex
+}
+
+unsafe fn bake_planet_maps(name: &str, pal: &show::PlanetPal, seed_off: f32) -> PlanetMaps {
+    const W: usize = 256;
+    const H: usize = 128;
+    let mut base = vec![0u8; W * H * 4];
+    let mut cloud = vec![0u8; W * H * 4];
+    let (o, l, d, i, c) = (pal.ocean, pal.land, pal.desert, pal.ice, pal.cloud);
+    for y in 0..H {
+        for x in 0..W {
+            let u = (x as f32 + 0.5) / W as f32;
+            let v = (y as f32 + 0.5) / H as f32;
+            // lat ~ 0 at the equator band, 1 at the poles
+            let lat = (2.0 * (v - 0.5)).abs();
+            let ph = seed_off;
+            let e1 = fbm3_rust(u * 3.0 + ph * 0.13, v * 3.0);
+            let e2 = fbm3_rust(v * 4.0 - ph * 0.09, u * 3.7 + ph);
+            let elev = e1 * 0.62 + e2 * 0.38;
+            let ice = smoothstep_r(0.72, 0.60, lat);
+            let mut col = mix3(o, l, smoothstep_r(0.42, 0.56, elev));
+            let desertband = smoothstep_r(0.68, 0.80, elev) * smoothstep_r(0.62, 0.38, lat);
+            col = mix3(col, d, desertband);
+            col = mix3(col, i, ice);
+            let cl = fbm3_rust(u * 5.0 + ph * 0.2 + v * 0.35, v * 5.2);
+            let cmask = smoothstep_r(0.60, 0.76, cl) * pal.clouds;
+            let o = y * W + x;
+            base[o * 4] = (col.0.clamp(0.0, 1.0) * 255.0) as u8;
+            base[o * 4 + 1] = (col.1.clamp(0.0, 1.0) * 255.0) as u8;
+            base[o * 4 + 2] = (col.2.clamp(0.0, 1.0) * 255.0) as u8;
+            base[o * 4 + 3] = 255;
+            cloud[o * 4] = (c.0 * 255.0) as u8;
+            cloud[o * 4 + 1] = (c.1 * 255.0) as u8;
+            cloud[o * 4 + 2] = (c.2 * 255.0) as u8;
+            cloud[o * 4 + 3] = (cmask.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
+    PlanetMaps {
+        base: tex_rgba(&format!("{name}-base"), W, H, &base),
+        cloud: tex_rgba(&format!("{name}-cloud"), W, H, &cloud),
+    }
+}
+
+fn mix3(a: (f32, f32, f32), b: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
+    (
+        a.0 + (b.0 - a.0) * t,
+        a.1 + (b.1 - a.1) * t,
+        a.2 + (b.2 - a.2) * t,
+    )
+}
 
 struct Planet {
     prog: glutil::Program,
     vao: u32,
+    earth: PlanetMaps,
+    pc: PlanetMaps,
 }
 
 impl Planet {
@@ -420,14 +520,10 @@ void main() {
 "#;
         let fs = shaders::frag(
             r#"
-uniform float u_rot;
-uniform vec3 u_ocean;
-uniform vec3 u_land;
-uniform vec3 u_desert;
-uniform vec3 u_ice;
-uniform vec3 u_cloud;
+uniform sampler2D u_base;
+uniform sampler2D u_cloud;
 uniform vec3 u_atmos;
-uniform float u_phase;
+uniform float u_rot;    // spin: surface scroll (radians)
 uniform float u_clouds;
 in vec2 v_q;
 void main() {
@@ -435,36 +531,29 @@ void main() {
   if (d > 1.0) discard;
   float z = sqrt(max(0.0, 1.0 - d * d));
   vec3 n = vec3(v_q.x, v_q.y, z);
-  // spin: rotate the SURFACE coordinate around the view axis
-  float ca = cos(u_rot * 0.5), sa = sin(u_rot * 0.5);
-  vec3 m = vec3(n.x * ca + n.y * sa, -n.x * sa + n.y * ca, n.z);
-  // light from the upper-left
+  // light from the upper-left (world-locked; the globe spins under it)
   vec3 L = normalize(vec3(-0.55, -0.72, 0.42));
   float diff = clamp(dot(n, L), 0.0, 1.0);
   float night = 1.0 - diff;
 
-  float t = u_phase + u_rot;
-  float e1 = fbm(m.xy * 3.4 + vec2(t * 0.15, u_phase));
-  float e2 = fbm(m.yz * 3.1 - vec2(u_phase * 3.0, t * 0.11));
-  float elev = e1 * 0.62 + e2 * 0.38;
-  float lat = abs(m.y);
-  float ice = smoothstep(0.72, 0.60, lat);
+  // equirect map lookup; scroll u with the spin
+  float lon = atan(n.x, n.z) + u_rot;
+  float lat = asin(clamp(n.y, -1.0, 1.0));
+  vec2 uv = vec2(lon / 6.2831853, 0.5 - lat / 3.1415926);
+  vec3 base = texture(u_base, uv).rgb;
+  vec4 cl = texture(u_cloud, uv);
+  float cmask = cl.a * u_clouds;
 
-  vec3 col = mix(u_ocean, u_land, smoothstep(0.44, 0.58, elev));
-  col = mix(col, u_desert, smoothstep(0.68, 0.78, elev) * smoothstep(0.60, 0.38, abs(lat)));
-  col = mix(col, u_ice, ice);
-
-  float cl = fbm(m.xy * 5.2 + t * 0.22 + vec2(0.0, sin(t * 0.3) * 0.4));
-  float cmask = smoothstep(0.60, 0.76, cl) * u_clouds * smoothstep(0.35, 0.75, diff);
-  col = mix(col, u_cloud, cmask * 0.92);
-
+  vec3 col = mix(base, cl.rgb, cmask * 0.9);
   float lit = diff * (0.72 + 0.28 * smoothstep(0.42, 0.52, diff));
   col *= 0.05 + 1.1 * lit;
-  col += vec3(1.0, 0.72, 0.42) * night * night * 0.15 * smoothstep(0.42, 0.6, elev);
+  // spec glint (cheap repeated squaring)
   vec3 V = vec3(0.0, 0.0, 1.0);
   vec3 H = normalize(L + V);
-  float spec = pow(clamp(dot(n, H), 0.0, 1.0), 60.0);
-  col += vec3(1.0) * spec * (0.30 + 0.70 * cmask) * 0.45;
+  float s = clamp(dot(n, H), 0.0, 1.0);
+  s *= s; s *= s; s *= s; s *= s;
+  col += vec3(1.0) * s * (0.18 + 0.82 * cmask) * 0.55;
+  // limb atmosphere
   float rim = pow(1.0 - d, 2.6);
   col += u_atmos * rim * (0.35 + 0.65 * diff);
   frag = vec4(col, 1.0);
@@ -473,10 +562,7 @@ void main() {
         );
         let prog = glutil::build(
             "planet", vs, &fs,
-            &[
-                "u_c", "u_r", "u_res", "u_rot", "u_ocean", "u_land", "u_desert",
-                "u_ice", "u_cloud", "u_atmos", "u_phase", "u_clouds",
-            ],
+            &["u_c", "u_r", "u_res", "u_base", "u_cloud", "u_atmos", "u_rot", "u_clouds"],
         );
         let vao = glutil::new_vao();
         gl::BindVertexArray(vao);
@@ -484,24 +570,28 @@ void main() {
         gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 8, std::ptr::null());
         gl::EnableVertexAttribArray(0);
         gl::BindVertexArray(0);
-        Planet { prog, vao }
+        let earth = bake_planet_maps("earth", &show::PAL_EARTH, 0.0);
+        let pc = bake_planet_maps("planet-computers", &show::PAL_PC, 3.1);
+        Planet { prog, vao, earth, pc }
     }
 
     #[allow(clippy::too_many_arguments)]
     unsafe fn draw(&self, w: f32, h: f32, cx: f32, cy: f32, r: f32, p: &show::PlanetPal, spin: f32) {
+        // phase selects the baked material set (0 = Earth, else PC)
+        let maps = if p.phase < 1.0 { &self.earth } else { &self.pc };
         self.prog.use_();
         gl::Uniform2f(self.prog.uniform("u_c"), cx, cy);
         gl::Uniform2f(self.prog.uniform("u_r"), r, r);
         gl::Uniform2f(self.prog.uniform("u_res"), w, h);
         gl::Uniform1f(self.prog.uniform("u_rot"), spin);
-        gl::Uniform3f(self.prog.uniform("u_ocean"), p.ocean.0, p.ocean.1, p.ocean.2);
-        gl::Uniform3f(self.prog.uniform("u_land"), p.land.0, p.land.1, p.land.2);
-        gl::Uniform3f(self.prog.uniform("u_desert"), p.desert.0, p.desert.1, p.desert.2);
-        gl::Uniform3f(self.prog.uniform("u_ice"), p.ice.0, p.ice.1, p.ice.2);
-        gl::Uniform3f(self.prog.uniform("u_cloud"), p.cloud.0, p.cloud.1, p.cloud.2);
         gl::Uniform3f(self.prog.uniform("u_atmos"), p.atmos.0, p.atmos.1, p.atmos.2);
-        gl::Uniform1f(self.prog.uniform("u_phase"), p.phase);
         gl::Uniform1f(self.prog.uniform("u_clouds"), p.clouds);
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindTexture(gl::TEXTURE_2D, maps.base);
+        gl::Uniform1i(self.prog.uniform("u_base"), 0);
+        gl::ActiveTexture(gl::TEXTURE1);
+        gl::BindTexture(gl::TEXTURE_2D, maps.cloud);
+        gl::Uniform1i(self.prog.uniform("u_cloud"), 1);
         gl::BindVertexArray(self.vao);
         gl::DrawArrays(gl::TRIANGLES, 0, 6);
         gl::BindVertexArray(0);
