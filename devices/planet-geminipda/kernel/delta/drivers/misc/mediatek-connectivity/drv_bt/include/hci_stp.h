@@ -45,10 +45,13 @@
 #define HCI_STP_TX_THRD		(1)
 #define HCI_STP_TX		(HCI_STP_TX_THRD)
 
-/* Maximum delay per init command, x20 safe-guard (vendor values). */
+/* Maximum delay per init command, x50 safe-guard (vendor used x20 =
+ * 2 s; the glass bring-up shows BT-channel replies land ~2.0-2.5 s
+ * after TX - the STP ACT handshake tax on the BT channel - so the
+ * wait needs headroom over that). */
 #define BT_CMD_DELAY_MS_COMM	(100)
 #define BT_CMD_DELAY_MS_RESET	(600)
-#define BT_CMD_DELAY_SAFE_GUARD	(20)
+#define BT_CMD_DELAY_SAFE_GUARD	(50)
 
 /* H4 receiver states */
 #define H4_W4_PACKET_TYPE	(0)
