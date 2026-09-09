@@ -5,6 +5,54 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — BOOT-PANIC RECOVERY (post-wedge): p32 torn-orphan ext4 from the unclean power-off → repeated pre-mount initrd panics; fixed with offline e2fsck -fy in TWRP, no reflash — device back on gen32, clean cold boot
+
+Follow-up to the wine D3D9 session below (device left WEDGED after the
+forced guest-panfrost experiment). User power-cycled; NORMAL boot then
+**kernel-panicked every attempt** (fbcon bottom-third only, display mostly
+black), device ended up in TWRP. Recovery steps + receipts:
+
+**Read-only diagnosis from TWRP (all clean except the rootfs):**
+- p22 `boot` exact-length sha256 = `be6f4d2192d8a95ef762cd17b910fa3af98d3fb98f76a91eef3decd4da4a2e51` — **byte-identical to the verified lean 6.6.0 boot.img** (`boot-img-lean-20260908`); kernel image was never the problem.
+- Full 34-partition GPT present; battery 3.98→4.06 V charging (DR rule 3 ok).
+- pstore/ramoops empty (`ramoops@44410000`, 896 KiB, IS registered in the lean config/DT — but no crash record survived; the pre-mount panics never reached the backend or left no record).
+- p32 (NIXOS_SYSTEM) ext4: **journal dirty + ~50-inode torn orphan linked list (822900-822955) + stale free-block/inode counts** (groups 88/94/96/97/100/106). Pass 2/3/4 (directory structure/connectivity/refcounts) all CLEAN — pure post-crash metadata, no content damage.
+
+**Root-cause chain (receipt):** wedge power-off tore the ext4 orphan
+chain; every subsequent NixOS boot died at/before the p32 mount
+(journal replay → orphan-list error → mount fail → initrd panic) —
+proven by: (a) the journal stayed dirty across all panic attempts
+(journald never got to write), (b) `journalctl --list-boots` shows NO
+boots between the wedged session (-1) and the recovered boot (0) — the
+panics left no journal trace because they were pre-mount.
+
+**Fix (TWRP):** `umount /data /sdcard` → `e2fsck -fy /dev/block/mmcblk0p32`
+(orphan list FIXED per inode; counts rebuilt) → verify `e2fsck -fn` rc=0,
+all 5 passes clean. ~2 min total. **No reflash, no image change.**
+
+**Result:** para cleared (NORMAL) → single clean cold boot — gen32
+`0zjh8q82yb2y3qd4c4iyvk5h19v9xz7i` (current), kernel 7.5 s + userspace
+36.7 s, `tune2fs` state=clean mount count 1, `systemctl --failed` empty,
+gemwl + lxqt-nested NRestarts=0, renderD128 + card0 up, wifi active,
+battery charging 4.14 V. Also serves as the long-owed **cold-boot
+confirmation of the dual-boot initrd gen-lookup landing on the newest
+generation (gen32): PASS** (first cold boot since gen9 — gens 10-32
+were all live deploy.sh switches).
+
+Notes/learned: (1) new receipt — unclean power-off of a wedged box can
+tear the ext4 orphan chain so the NEXT boot's journal replay/mount
+fails repeatedly with no journal trace; TWRP + offline `e2fsck -fy` is
+the fix; the fs was otherwise structurally sound (nix store + profiles
+untouched). (2) If a boot-time panic recurs, check pstore from the next
+successful boot (`/sys/fs/pstore/dmesg-ramoops-*`) — the region exists
+but was empty this time (observation, unverified why).
+
+Device left: **AWAKE on gen32, para cleared (NORMAL/NixOS default),
+desktop + wifi up, battery charging.** Pending from the wine session:
+re-run `bin/wine-x86-deploy.sh run d3d9test.exe` on the llvmpipe path +
+grim screenshot receipt; guest-panfrost stays BANNED without
+para=boot-recovery + a clean prefix (per the incident LEARNED note).
+
 ## 2026-09-09 (gemdemo audio FIXED-ENOUGH, MUSIC ON GLASS — "awful mix" = the follow-up) — S32 noise trap + engine DC bugs, all committed
 
 Audible music now plays on the device (S16 @ 44.1 k via gemini16). Three
@@ -1656,3 +1704,36 @@ Next: big custom-drv compiles (kernel/mesa) stay on the host/Pi loop
 (deploy.sh) — the PDA compiles them only when their sources change
 (expect ~30+ min; RAM-bound 2×2 jobs; a zram/swapfile is the open
 improvement for desktop-up compiles). Cold-reboot check of gen30 owed.
+
+## 2026-09-09 — Windows D3D9 on the PDA: wine64+box64 deployed, first D3D9 frame rendered; guest-panfrost run wedged the device (power cycle owed)
+
+Task: "add wine + an x86→arm translator and test a simple Windows D3D9 app".
+
+**Stack (all hydra-cached at the flake nixpkgs rev dc5d91f84032 — verified with `nix path-info --store https://cache.nixos.org`, rule 9):**
+- box64 0.4.4 (aarch64 x86-64 translator; 5 paths/81 MB)
+- wine64 11.0 (x86_64-linux; 342 paths/1.8 GB) — the closure carries glvnd (libEGL dispatch) but NO GL impl
+- mesa 26.2.2 (x86_64-linux; 273 MB) — the GL impl; eglPlatforms x11+wayland; wired in via `__EGL_VENDOR_LIBRARY_FILENAMES` (the env var glvnd 1.7.0 actually implements — verified by grepping the lib; `__EGL_VENDOR_LIBRARY_FILE` does NOT exist)
+- d3d9test 1.0 — self-written x86_64-windows PE (pkgs/d3d9test/): rotating vertex-coloured cube + GDI FPS overlay; fixed FVF 0x0042 (D3DFVF_XYZ|D3DFVF_DIFFUSE, mingw-w64 ground truth)
+- grim 1.5.0 (screenshots)
+
+**Why box64+wine64, not FEX+i686-wine:** fex-emu is not in this nixpkgs; `pkgsCross` has no i686-linux (i686 *is* a valid import system but its wine NAR is 404 on cache.nixos.org → source compile); wine64+box64 is the only all-cached path. box86 NAR also missing at this pin (not shipped — the test PE is 64-bit).
+
+**Build traps found (all in docs/wine-d3d.md §2/§3):**
+- winegcc inside the nixpkgs wine64 package is configured NATIVE (`-dumpmachine` → x86_64-unknown-linux-gnu) — emits an ELF + sh wrapper, not a PE. The PE is built with `pkgsCross.mingwW64` (x86_64-w64-mingw32-g++ 15.3.0 + mingw-w64 14.0.0 headers, needs `allowUnsupportedSystem = true`).
+- Wine's headers are partial classic-era D3D9 (no flexible-FVF macros, no DEFAULT_SWISS, D3DCAPS9 in d3d9caps.h, D3DMATRIX = anonymous union, C++ mode for COM classes).
+- **gemwl had to gain viewporter**: winewayland refuses to init without wp_viewporter. 2 lines in pkgs/gemwl/gemwl.c (wlr_viewporter_create; wlroots 0.18 handles viewport resources internally — no per-window plumbing). Shipped as **gen32** (deploy.sh; system-32-… on device at session end).
+
+**Deployment:** bin/wine-x86-deploy.sh (status/deploy/init/run/log/shot/kill) — `nix copy` of the 5 paths to the device store + /root/wine-x86 launcher + GC roots (host+device). Not a flake systemPackage (1.8 GB would bloat every deploy delta).
+
+**On-glass results:**
+- `wine cmd /c echo` → WINE-HELLO-WORLD (stack proven).
+- d3d9test: **FIRST FRAME PRESENTED — D3D9 rendering under wine64+box64**, steady **55–60 FPS** on the llvmpipe path (guest mesa swrast — stable for 10+ min).
+- Receipts in device:/root/wine-x86/logs/app.log + the WINEDEBUG=+d3d9 log (7346+ DrawIndexedPrimitive calls).
+
+**BUG 1 (wine, deferred):** GetAdapterDisplayMode/GetDeviceCaps page-fault (garbage-pointer read at 0x9000E000D030F) under box64 on wine 11's wayland driver — gemwl has no xdg_output so wine's screen struct is partly uninitialised. Worked around in d3d9test (identity query gated behind D3D9TEST_IDENTITY, off by default). Adapter string is wine's fallback "NVIDIA GeForce 6800" (GL_RENDERER unavailable via D3D9).
+
+**INCIDENT (unresolved, power cycle owed):** to find out whether the T880 could render the guest, I forced `GALLIUM_DRIVER=panfrost MESA_LOADER_DEBUG=all` on the app. Within ~20 s the **device wedged: kernel alive (ping 0.25 ms, g_ether up, ARP normal) but userspace dead** (sshd banner timeout, TCP:22 connect timeout, flat net counters). Controlled pan_js (kernel panfrost job thread) CPU-time A/B with the llvmpipe app showed +1 jiffie over 27 s — i.e. **the stable path was llvmpipe (CPU), not the T880**; the forced-panfrost run is the suspect (guest x86_64 panfrost 26.2.2 + box64 ioctl path + T880 already held by native gemwl). No software reset available (WDT-EXRST needs an ssh shell; preloader needs buttons). **LEARNED: never force guest panfrost on this stack until root-caused; llvmpipe is the safe renderer; guest-panfrost is a separate, risky experiment (fresh prefix, no other GPU users, WDT safety net via para=boot-recovery first).**
+
+Device left: **WEDGED (userspace dead) — needs physical power cycle.** After power-on: `bash bin/device-ssh.sh 'echo ok'` (auto net-up), verify gen32 + desktop, re-run `bin/wine-x86-deploy.sh run d3d9test.exe` (llvmpipe path), take the grim screenshot receipt, then leave para as-is (normal/NixOS default; system is verified) — or para=boot-recovery if more risky work is planned.
+
+Files: pkgs/wine-x86.nix, pkgs/d3d9test.nix, pkgs/d3d9test/d3d9test.cpp, bin/wine-x86-deploy.sh, docs/wine-d3d.md, pkgs/gemwl/gemwl.c (viewporter).

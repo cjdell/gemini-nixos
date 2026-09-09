@@ -93,6 +93,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 
@@ -1502,6 +1503,14 @@ int main(int argc, char *argv[]) {
 
 	wlr_compositor_create(server.wl_display, 5, server.renderer);
 	wlr_subcompositor_create(server.wl_display);
+	/* Viewporter (stable protocol): REQUIRED by some Wayland clients —
+	 * wine's wayland driver (winewayland) refuses to initialise without
+	 * wp_viewporter ("Wayland compositor doesn't support wp_viewporter",
+	 * observed 2026-09-09 with wine64+box64 — docs/wine-d3d.md). wlroots
+	 * 0.18 handles the wp_viewport resources internally; the scene
+	 * renderer already accounts for viewports (buffer source box), so
+	 * registering the global is the whole job. */
+	wlr_viewporter_create(server.wl_display);
 	wlr_data_device_manager_create(server.wl_display);
 
 	server.output_layout = wlr_output_layout_create(server.wl_display);
