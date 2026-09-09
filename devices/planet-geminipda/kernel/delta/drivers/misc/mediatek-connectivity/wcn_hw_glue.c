@@ -433,7 +433,17 @@ int mtk_wcn_btif_rx_cb_register(unsigned long u_id, MTK_WCN_BTIF_RX_CB rx_cb)
 
 int mtk_wcn_btif_wakeup_consys(unsigned long u_id)
 {
-	/* No WAK pulse in DMA mode (vendor _btif_dma_write never pulses). */
+	/* Pulse the BTIF WAK line (ap_wakeup_consys) through the live
+	 * transport's wake op. Corrected 2026-09-10 (BT bring-up): the
+	 * earlier no-op ("vendor _btif_dma_write never pulses") assumed
+	 * the MCU never sleeps in DMA mode; it does (autonomous sleep
+	 * after idle) and without the pulse the WMT core's WAKEUP
+	 * handshake times out and asserts a whole-chip reset. Safe while
+	 * awake (the vendor raises WAK routinely before TX). */
+	const struct consys_wmt_ops *ops = consys_wmt_transport;
+
+	if (ops && ops->wake)
+		return ops->wake();
 	return 0;
 }
 

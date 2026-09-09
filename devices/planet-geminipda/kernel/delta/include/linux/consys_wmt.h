@@ -44,6 +44,13 @@ struct consys_wmt_ops {
 	int (*mcu_reset)(void);
 	/* Link is up (gate G2b passed, BTIF mapping alive). */
 	bool (*ready)(void);
+	/* Wake the CONSYS MCU over the BTIF WAK line (pulse ap_wakeup_consys
+	 * low > one 32k period, then high). Required before any host TX
+	 * when the MCU may have gone to its autonomous sleep (observed
+	 * 2026-09-10: the WMT core's WAKEUP handshake times out and asserts
+	 * a whole-chip reset when no wake reaches the MCU). Returns 0 on
+	 * success. */
+	int (*wake)(void);
 };
 
 /* NULL when the spike is not built / has not probed. */

@@ -532,13 +532,18 @@ static void btif_hw_init(void __iomem *btif)
 
 /* Vendor hal_btif_send_wakeup_signal(): pulse ap_wakeup_consys low
  * for longer than one 32k period, then high, before transmitting.
- * Build B: skipped in DMA mode - the vendor's _btif_dma_write never
- * pulses WAK (it is a sleep/wake-protocol signal; the MCU never
- * sleeps here). */
+ * Build B comment said "skipped in DMA mode - the vendor's
+ * _btif_dma_write never pulses WAK (the MCU never sleeps here)";
+ * corrected 2026-09-10 (BT bring-up): after ~70 s of host-side
+ * inactivity the MCU DOES go to its autonomous sleep even in DMA
+ * mode, and with no WAK pulse the WMT core's WAKEUP handshake times
+ * out and asserts a whole-chip reset (the exact crash hci_stp hit at
+ * BT func-on). Pulse unconditionally now; the line is a WO
+ * ap_wakeup_consys signal and the pulse is the vendor's own
+ * hal_btif_send_wakeup_signal, so it is safe while the MCU is awake
+ * too. */
 static void btif_wakeup_consys(void __iomem *btif)
 {
-	if (btif_dma_active)
-		return;
 	writel(0, btif + BTIF_WAK);
 	usleep_range(64, 96);
 	writel(1, btif + BTIF_WAK);
@@ -1818,12 +1823,23 @@ static bool wmt_ops_ready(void)
 	return wmt_ready;
 }
 
+static int wmt_ops_wake(void)
+{
+	if (!wmt_ready || !wmt_btif)
+		return -ENETDOWN;
+	mutex_lock(&wmt_mtx);
+	btif_wakeup_consys(wmt_btif);
+	mutex_unlock(&wmt_mtx);
+	return 0;
+}
+
 static const struct consys_wmt_ops consys_wmt_ops_impl = {
 	.tx = wmt_ops_tx,
 	.rx_cb_register = wmt_ops_rx_cb_register,
 	.rx_flush = wmt_ops_rx_flush,
 	.mcu_reset = wmt_ops_mcu_reset,
 	.ready = wmt_ops_ready,
+	.wake = wmt_ops_wake,
 };
 const struct consys_wmt_ops *consys_wmt_transport = &consys_wmt_ops_impl;
 EXPORT_SYMBOL(consys_wmt_transport);

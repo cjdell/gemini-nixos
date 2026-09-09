@@ -21,7 +21,7 @@
 #           branch changes over v6.6 (457 added + 55 modified, 0 deleted,
 #           0 renamed; copy-replace is exact). Identity check:
 #           v6.6-base + delta == geminipda-bringup @
-#           9963991f9af3e831710036513e6a30a1712c8261 (2026-09-10: #329
+#           7c05606eb4016fac72c9f7857b4a6fcccf8b2d11 (2026-09-10: #329
 #           tree + hci_stp BT driver), verified byte-for-byte 2026-09-10
 #           (previous identity: 188aade69 = the on-glass kernel #329
 #           tree, verified 2026-09-08).
