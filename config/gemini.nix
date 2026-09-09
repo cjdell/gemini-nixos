@@ -14,6 +14,10 @@ let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
   # for why this is a standalone derivation, not nixpkgs' mesa).
   mesaGeminipda = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
+
+  # wine/wine64 shell wrappers (thin; the wine-wow64 stack itself is a
+  # standalone device GC root — pkgs/wine-cli.nix header).
+  wineCli = pkgs.callPackage ../pkgs/wine-cli.nix { };
 in
 {
   imports = [
@@ -320,6 +324,13 @@ in
     pkgs.git
     pkgs.micro
     pkgs.ripgrep  # on-the-go add (gen30 demo, 2026-09-08)
+  ] ++ [
+    # wine/wine64 on the shell PATH (gen36, 2026-09-09): thin wrappers
+    # exec'ing the standalone wine-wow64 launcher /root/wine-x86/wine-wow
+    # (the stack itself stays a standalone GC root, NOT a system
+    # package — docs/wine-d3d.md §5).
+    wineCli.wine
+    wineCli.wine64
   ];
 
   # ICD manifest discovery: the compiled-in libglvnd scan list is
