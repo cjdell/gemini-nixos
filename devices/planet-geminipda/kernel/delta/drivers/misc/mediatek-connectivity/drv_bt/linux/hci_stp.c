@@ -243,6 +243,12 @@ static void hci_stp_dev_init_rx_cb(unsigned char *data, int count)
 static void hci_stp_dev_init_work(struct work_struct *work)
 {
 	struct hci_stp *phu = container_of(work, struct hci_stp, init_work);
+	/* the chip eFUSE unprogrammed default (vendor sDefaultCfg.addr):
+	 * if the fetch returns exactly this, auto-generate a random
+	 * locally-administered address (no factory BT address fused).
+	 */
+	static const unsigned char def_addr[6] =
+		{0x00, 0x00, 0x46, 0x66, 0x20, 0x01};
 	struct btradio_conf_data cfg = {
 		{0x00, 0x00, 0x46, 0x66, 0x20, 0x01},
 		{0x60, 0x00},
@@ -254,6 +260,7 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 	bool use_efuse = false;
 	unsigned int idx;
 	long ret, to;
+	int i;
 
 	if (bd_addr_param[0]) {
 		if (parse_bd_addr(bd_addr_param, cfg.addr) == 0) {
@@ -275,13 +282,12 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 
 	/* Patch the radio-config HCI commands from cfg (defaults match
 	 * the hardcoded table bytes; kept for a later config surface).
+	 * set_bd_addr payload = the 6 address bytes LSB-first (display
+	 * order reversed - the chip's eFUSE reply layout). Patched again
+	 * below when the eFUSE fetch (idx 0) returns a real address.
 	 */
-	bt_set_bd_addr[4] = cfg.addr[5];
-	bt_set_bd_addr[5] = cfg.addr[4];
-	bt_set_bd_addr[6] = cfg.addr[3];
-	bt_set_bd_addr[7] = cfg.addr[2];
-	bt_set_bd_addr[8] = cfg.addr[1];
-	bt_set_bd_addr[9] = cfg.addr[0];
+	for (i = 0; i < 6; i++)
+		bt_set_bd_addr[4 + i] = cfg.addr[5 - i];
 	memcpy(&bt_set_radio[4], cfg.radio, 6);
 	memcpy(&bt_set_tx_pwr_offset[4], cfg.tx_pwr_offset, 3);
 	memcpy(&bt_set_sleep[4], cfg.sleep, 7);
@@ -304,38 +310,39 @@ static void hci_stp_dev_init_work(struct work_struct *work)
 		ret = wait_event_timeout(*phu->p_init_evt_wq,
 					 phu->init_evt_rx_flag != 0, to);
 
-		if (phu->init_evt_rx_flag == 1) {
-			if (idx == 0) {
-				/* eFUSE BD address reply -> patch the
-				 * set_bd_addr command with it
-				 */
-				memcpy(&cfg.addr[0], &bt_get_bd_addr_evt[12], 1);
-				memcpy(&cfg.addr[1], &bt_get_bd_addr_evt[11], 1);
-				memcpy(&cfg.addr[2], &bt_get_bd_addr_evt[10], 1);
-				memcpy(&cfg.addr[3], &bt_get_bd_addr_evt[9], 1);
-				memcpy(&cfg.addr[4], &bt_get_bd_addr_evt[8], 1);
-				memcpy(&cfg.addr[5], &bt_get_bd_addr_evt[7], 1);
-
-				BT_INFO("eFUSE BD address "
-					"%02x:%02x:%02x:%02x:%02x:%02x\n",
-					cfg.addr[0], cfg.addr[1], cfg.addr[2],
-					cfg.addr[3], cfg.addr[4], cfg.addr[5]);
-
-				bt_set_bd_addr[4] = cfg.addr[5];
-				bt_set_bd_addr[5] = cfg.addr[4];
-				bt_set_bd_addr[6] = cfg.addr[3];
-				bt_set_bd_addr[7] = cfg.addr[2];
-				bt_set_bd_addr[8] = cfg.addr[1];
-				bt_set_bd_addr[9] = cfg.addr[0];
-			}
-			continue;
+		if (phu->init_evt_rx_flag != 1) {
+			BT_ERR("init CMD(%u) %s failed: flag(%d) after %ld ms\n",
+			       idx, init_table[idx].str,
+			       phu->init_evt_rx_flag,
+			       ret ? jiffies_to_msecs(ret) : -1);
+			break;
 		}
 
-		BT_ERR("init CMD(%u) %s failed: flag(%d) after %ld ms\n",
-		       idx, init_table[idx].str,
-		       phu->init_evt_rx_flag,
-		       ret ? jiffies_to_msecs(ret) : -1);
-		break;
+		if (idx == 0) {
+			/* eFUSE BD address reply (6 bytes at evt[7..12],
+			 * LSB-first). Decode to display order.
+			 */
+			for (i = 0; i < 6; i++)
+				cfg.addr[i] = bt_get_bd_addr_evt[12 - i];
+
+			if (!memcmp(cfg.addr, def_addr, 6)) {
+				get_random_bytes(cfg.addr, 6);
+				cfg.addr[0] = (cfg.addr[0] & 0xFE) | 0x02;
+				BT_WARN("eFUSE BD address unprogrammed "
+					"(default); random locally-administered "
+					"address used\n");
+			}
+			BT_INFO("BD address "
+				"%02x:%02x:%02x:%02x:%02x:%02x\n",
+				cfg.addr[0], cfg.addr[1], cfg.addr[2],
+				cfg.addr[3], cfg.addr[4], cfg.addr[5]);
+
+			/* re-patch set_bd_addr (sent as cmd 1) with the
+			 * fetched address
+			 */
+			for (i = 0; i < 6; i++)
+				bt_set_bd_addr[4 + i] = cfg.addr[5 - i];
+		}
 	}
 
 	if (phu->p_init_comp)
