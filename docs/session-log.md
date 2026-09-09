@@ -5,6 +5,77 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09p — CJDELL IS THE DEFAULT DESKTOP USER: LXQt + Phosh + audio sessions run as cjdell (not root), passwordless sudo — gens 55-57, deployed + cold-boot verified over ssh
+
+Task: "create a user cjdell that is the default user for desktop
+environments on the device, with password-less sudo."
+
+Since the 2026-09-07 LXQt landing the desktop booted as ROOT systemd
+system services with HOME=/root (every session env + seed script hard-
+coded /root; chrome needed --no-sandbox for euid 0). This session made
+cjdell a real account and moved the desktop + audio SESSIONS onto it.
+
+Changes (commits e828e5c, e572f79, d63edbc — all config/scripts, NO
+boot.img reflash; device flashed nothing):
+- config/gemini.nix: users.users.cjdell (uid 1000 — REPLACES the old
+  placeholder `gemini` account, removed at gen55 activation; home
+  /home/cjdell; groups wheel/video/audio/networkmanager; operator ssh
+  key, same as root). getty autologin -> cjdell. Passwordless sudo =
+  the existing security.sudo.wheelNeedsPassword=false (wheel). Root
+  keeps the ssh admin path. chrome --no-sandbox comment updated (the
+  desktop is no longer root; flag kept — no userns on this kernel).
+- services/lxqt.nix + services/phosh.nix: session units get
+  User=cjdell, HOME/XDG_* = /home/cjdell, and their OWN cjdell-owned
+  RuntimeDirectory (/run/lxqt-session, /run/phosh-session) hosting the
+  session bus (was: shared /run/gemwl root bus). Session configs seed
+  to /home/cjdell (services/scripts/start-lxqt-nested + config/lxqt/*
+  all $HOME-relative now).
+- services/audio.nix: pipewire/wireplumber/pipewire-pulse run as cjdell
+  (systemd chowns /run/gemwl-audio to User=) so the desktop reaches the
+  sound sockets; gemini-audio-defaults stays root (amixer + devmem
+  speaker-amp gpio). Only loss vs root: no RT scheduling (no rtkit) —
+  PipeWire logs it and runs SCHED_OTHER.
+- services/desktop.nix: gemwl STAYS a root service (fbcon unbind via
+  /sys/class/vtconsole bind + /dev/gemfb 0600 are root-only). Its
+  runtime dir is now 0755 (was 0700) + UMask=0111 -> wayland-0 socket
+  0666, so the cjdell sessions can connect. Single-user trusted PDA;
+  cjdell has passwordless sudo anyway.
+
+On-glass receipts (2 bugs found + fixed during deploy):
+- gen55: lxqt-nested restart-looped "Could not connect to remote
+  display: No such file or directory" — libwayland resolves a BARE
+  WAYLAND_DISPLAY against XDG_RUNTIME_DIR, and the session's runtime
+  dir was no longer gemwl's (/run/gemwl) where wayland-0 lives. Fix
+  (e572f79): start-lxqt-nested + prepare-phosh-session ln -s
+  $XDG_RUNTIME_DIR/wayland-0 -> /run/gemwl/wayland-0; phosh unit env
+  sets WAYLAND_DISPLAY=wayland-0 for phoc.
+- gen56: session up (NRestarts=0) but the 1.5x UI scale probe only
+  looked at wayland-1..3 — labwc's OWN listening socket now takes
+  wayland-0 in the session dir (wlroots auto-socket unlinks + reuses
+  the name after the parent link is consumed; the parent connection is
+  already established). Fix (d63edbc): probe wayland-0 first. Probing
+  gemwl itself is a safe no-op (no wlr-output-management on gemwl).
+
+Verified over ssh on gen57 after a COLD WDT reboot (para untouched):
+- gen57 current (3fjm15ims…); gemwl (root) + lxqt-nested + pipewire
+  active, NRestarts=0; labwc/lxqt-session/lxqt-panel/pcmanfm-qt/dbus-
+  daemon all run as cjdell; /run/lxqt-session + /run/gemwl-audio
+  cjdell-owned, /run/gemwl 0755 root with wayland-0 0666.
+- `su - cjdell -c 'sudo -n whoami'` -> root (passwordless);
+  `ssh cjdell@10.15.19.82` works (same key); tty1 agetty autologins
+  cjdell; /home/cjdell/.config/{lxqt,labwc} seeded; wlr-randr on
+  labwc shows WL-1 Scale: 1.5.
+
+PENDING (needs eyes): visual glass check of the cjdell LXQt session
+(was: root session on gen54). Everything else (units, sockets, perms,
+seed, sudo, ssh, audio as cjdell) verified over ssh. If the glass is
+wrong: `bash bin/deploy.sh rollback` (gen54 = the old root desktop) or
+`systemctl disable gemwl lxqt-nested` for the console.
+
+Next: eyes-on-glass; then decide whether chrome can drop --no-sandbox
+(non-root now — needs a userns or SUID test), and whether gemcli's
+units flip to a cjdell-user model.
+
 ## 2026-09-09o — PHOSH DESKTOP LANDED (the LXQt alternative): phoc 0.54.0 nested inside gemwl hosting the phosh shell — built + readelf-verified host-side, NOT switched (no config/device change on glass)
 
 Task: "try phosh as the desktop environment instead of lxqt; will gemwl
