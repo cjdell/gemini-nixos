@@ -4,6 +4,12 @@
 # remote builder — the PDA builds/substitutes straight into its own
 # store). Runs from the repo clone at /root/gemini-nixos on the PDA.
 #
+# Since 2026-09-09 the flake also exposes `nixosConfigurations.gemini`,
+# so the SAME loop works with the stock tool from the clone — no script:
+#   cd /root/gemini-nixos && nixos-rebuild switch --flake .
+# This script stays for its conveniences: the dirty-repo gate (rule 0),
+# status/rollback, and `channels` (the nix-shell -p nixpkgs re-pin).
+#
 # Model [2026-09-08]: the repo is cloned to /root/gemini-nixos (sync
 # with the host via bin/device-repo.sh seed|push|pull, or the github
 # origin). Builds are NATIVE aarch64. The flake's pinned nixpkgs rev is

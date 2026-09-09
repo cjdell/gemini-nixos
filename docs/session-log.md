@@ -5,6 +5,61 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09n — FLAKE GAINS `nixosConfigurations.gemini`: the STOCK `nixos-rebuild switch --flake .` loop works on the device (no bash script) — config-only, NOT yet switched on glass
+
+Task: "re-organise the flake so a clone of this repo ON the device can
+make on-device config changes with `nixos-rebuild switch --flake .`
+(not using a bash script)".
+
+**Why it works without a script now (receipts):**
+- The MNX eval (lib/eval-with-configuration.nix → NixOS evalConfig with
+  MNX + the FULL nixos module-list) ALREADY produces every piece the
+  tool needs: `config.system.build.toplevel` (= mobile.outputs.toplevel
+  — modules/outputs.nix default; the drv the device boots),
+  `config.system.build.nixos-rebuild` (installer/tools/tools.nix is in
+  the module list) and nixos-rebuild in sw/bin by default
+  (system.tools.nixos-rebuild.enable = config.nix.enable &&
+  !disableInstallerTools; **nix.enable is DEFAULT-TRUE at this pin** —
+  nixos/modules/config/nix.nix, verified in dc5d91f84032). The bash
+  nixos-rebuild is GONE from this nixpkgs (removed; replaced by the
+  Python nixos-rebuild-ng — pkgs/by-name/ni/nixos-rebuild-ng).
+- /etc/NIXOS + /nix/var/nix/profiles/system already exist on the
+  device (MNX rootfs postBootCommands created them at first boot),
+  `/run/current-system/nixos-version` exists (toplevel writes it).
+- The ONLY missing piece was the flake output: added
+  `nixosConfigurations.gemini = eval.eval` (the RAW evalConfig result —
+  the lib.nixosSystem shape; NOT the eval shim wrapper which carries a
+  `__please-fail` throw). Host receipt: `nix eval` of
+  .#nixosConfigurations.gemini.config.system.build.toplevel.drvPath ==
+  .#packages.aarch64-linux.toplevel.drvPath
+  (`97gjx75slr…-nixos-system-gemini-26.11pre-git.drv`, both) and
+  .config.system.build.nixos-rebuild.drvPath =
+  `nixos-rebuild-ng-26.11.drv` (the reexec step will resolve).
+- `system.configurationRevision = self.rev or null` wired into the
+  eval (flake.nix, inline module): every toplevel records the git rev
+  it was built from (self.rev = `<sha>` clean / `<sha>-dirty` modified
+  / null on a non-git copy — dirty semantics verified on nix 2.34.8
+  with a throwaway repo), shown by `nixos-rebuild list-generations` /
+  `nixos-version --configuration-revision`. Host + device builds of
+  the SAME commit therefore converge to the same store path.
+
+**nixos-rebuild-ng flow (read from its source at the pin):** reexecs
+itself from `.#nixosConfigurations."<hostname>".config.system.build.
+{nixos-rebuild,toplevel}` (hostname from `uname -n` = gemini), then
+`nix-env -p /nix/var/nix/profiles/system --set <toplevel>` (guarded by
+a `test -f nixos-version`) + `<toplevel>/bin/switch-to-configuration
+switch` via systemd-run — i.e. the same activation device-rebuild.sh /
+deploy.sh do by hand. --install-bootloader stays OFF by default (no
+bootloader on this device — nothing changes there).
+
+**Docs touched:** README "On-device build/switch" section (now
+nixos-rebuild-primary, device-rebuild.sh = convenience wrapper),
+README status + bin table row, AGENTS.md status + rows, config/gemini.nix
+comment, bin/device-rebuild.sh header. Nothing flashed; the device
+clone is NOT yet synced (still at 28acf2c, gens 52-53 era) and no
+on-device nixos-rebuild run has happened yet — the switch proof is the
+next step (dry-build → build → switch, then record the gen here).
+
 ## 2026-09-09m — BLUETOOTH GUI + CLI TOOLS: persistent bluetoothd on the system bus, bluetoothctl + blueman-manager/applet on glass (gens 52-53; config-only, no kernel/boot.img change)
 
 Task: "continue the bluetooth effort; we need gui and cli tools working".

@@ -177,7 +177,15 @@ in
   # (2026-09-08) Make the PDA a first-class build/switch target: a repo
   # clone at /root/gemini-nixos can iterate config/programs on the go
   # via `bash /root/gemini-nixos/bin/device-rebuild.sh build|switch` and
-  # `nix-shell -p <pkg>`. Background facts verified on glass gen28
+  # `nix-shell -p <pkg>`. Since 2026-09-09 the flake also exposes
+  # `nixosConfigurations.gemini` (flake.nix), so the stock loop works
+  # too: `cd /root/gemini-nixos && nixos-rebuild switch --flake .` —
+  # nixos-rebuild is in the closure by default (`system.tools.nixos-
+  # rebuild.enable` = `config.nix.enable`, default-true at this pin;
+  # the bash nixos-rebuild is gone from nixpkgs — this is the Python
+  # nixos-rebuild-ng). It needs nothing beyond what the MNX rootfs
+  # postBootCommands set up at first boot (/etc/NIXOS + the system
+  # profile). Background facts verified on glass gen28
   # (2026-09-08):
   # - /nix/store is bind-mounted ro in the MAIN mount namespace while
   #   the nix-daemon runs in a PRIVATE mount namespace that sees it rw

@@ -58,7 +58,7 @@ adb.
 | `bin/flash-nixos.sh` | Full NixOS flash orchestration: converges to TWRP from any device state, flashes boot.img → `boot` and system.img → p32 (`userdata`, Android erased — Debian p29 untouched); verbs status/boot/rootfs/all/boot-nixos/debian; safe TWRP-sticky default |
 | `bin/run-job.sh` | Detached job runner for long ops (flash waits, big builds) — never inline nohup/pgrep loops |
 | `bin/deploy.sh` | **Workstation-style generation loop (2026-09-07 → native)**: builds the NATIVE aarch64 toplevel (root `--store local` distributed build to the 192.168.49.191 remote builder, pinned via gc-pin), `nix copy` delta → device store over ssh, profile switch + activate. Verbs status/build/deploy [PATH]/rollback [N]. Reboot lands on the new gen; old gens stay selectable — no reflash, no TWRP |
-| `bin/device-rebuild.sh` | **The SAME loop, run ON the PDA** (2026-09-08, from a repo clone at `/root/gemini-nixos`): native aarch64 build straight into the device store (cache.nixos.org substitutes; the custom drvs compile locally only when changed) + profile switch/activate. Verbs status/build/switch [PATH]/rollback [N]/channels/gc. `build` refuses a dirty repo (rule 0) |
+| `bin/device-rebuild.sh` | **The SAME loop, run ON the PDA** (2026-09-08, from a repo clone at `/root/gemini-nixos`): native aarch64 build straight into the device store (cache.nixos.org substitutes; the custom drvs compile locally only when changed) + profile switch/activate. Verbs status/build/switch [PATH]/rollback [N]/channels/gc. `build` refuses a dirty repo (rule 0). **Since 2026-09-09 the flake also exposes `nixosConfigurations.gemini`, so the plain `nixos-rebuild switch --flake .` loop works directly from the clone** (this script stays for its status/rollback/channels/gc conveniences) |
 | `bin/device-repo.sh` | Seed + sync the repo between host and the device clone over g_ether as a git bundle (no github round-trip; works offline). Verbs seed/push/pull — directional, nothing silently lost |
 | `bin/gc-pin.sh` | GC-root a build (NAME STORE_PATH | list | unpin) so host `nix-collect-garbage` can't sweep the aarch64 closure (happened once — gen3 silently rebuilt ~259 packages); milestone closures get a root-level root too (`sudo nix-store --add-root /nix/var/nix/gcroots/<name> -r <out>`) |
 | `bin/flash-nixos.sh` `grow-rootfs` | Offline-grow the p32 rootfs to the full partition from TWRP (e2fsck + resize2fs, static musl e2fsprogs) — the recovery path for make_ext4fs-geometry fs the kernel can't online-grow (R13); images since 2026-09-07 grow on first boot via growfs-root |
@@ -323,24 +323,47 @@ and match the bring-up boot contract, but **NixOS now RUNS on glass**
 p32; see `docs/phase-2-on-glass.md` for the bootopt discovery + the
 open TODO). The device runs the NixOS rootfs on p32 (Debian stays on
 p29); the rootfs `growfs` (TODO P0), a few services and the
-`nixos-rebuild` round-trip are the remaining on-glass work.
+`nixos-rebuild` round-trip were the remaining on-glass work — the
+round-trip is CLOSED (2026-09-08 on-device gens via
+`bin/device-rebuild.sh`; since 2026-09-09 the real `nixos-rebuild
+switch --flake .` works from the device clone — see the next section).
 
-## On-device build/switch (2026-09-08, gen30 verified)
+## On-device build/switch — `nixos-rebuild switch --flake .` (2026-09-09, flake `nixosConfigurations` added)
 
 The PDA is a first-class flake target: a repo clone at
 `/root/gemini-nixos` (sync with this host via `bin/device-repo.sh`
 seed/push/pull or the github origin) can iterate the config and add
-programs with NO host involved:
+programs with NO host involved, using the real NixOS tool now:
 
 ```sh
-# on the device (repo clone at /root/gemini-nixos):
-bash /root/gemini-nixos/bin/device-rebuild.sh status   # generations
-# edit config/gemini.nix, git add+commit, then:
-bash /root/gemini-nixos/bin/device-rebuild.sh build    # flake eval + build on the PDA
-bash /root/gemini-nixos/bin/device-rebuild.sh switch   # nix-env --set + activate (no reflash)
-# and the classic ad-hoc shell:
+# on the device (root, in the repo clone at /root/gemini-nixos):
+nixos-rebuild list-generations --flake .     # what is installed / selectable
+# edit config/gemini.nix, git add + commit, then:
+nixos-rebuild build --flake .                # eval + build on the PDA (no activation)
+nixos-rebuild switch --flake .               # profile switch + activate (no reflash)
+# ...and the classic ad-hoc shell:
 nix-shell -p pkgname        # pinned to the same nixpkgs rev as the flake (rule 9)
 ```
+
+`--flake .` resolves to `.#nixosConfigurations.gemini` (the device
+hostname). The flake exposes that configuration (single eval shared
+with `packages.aarch64-linux.toplevel` — the SAME toplevel
+derivation, verified 2026-09-09), so `nixos-rebuild` builds, sets the
+system profile and runs switch-to-configuration exactly as
+`bin/device-rebuild.sh` / `bin/deploy.sh` do by hand. Nothing extra
+needed on the device: `nixos-rebuild` (the Python nixos-rebuild-ng —
+the bash one is gone from nixpkgs at this pin) lands in the system
+closure by default (`system.tools.nixos-rebuild.enable` =
+`config.nix.enable`, itself default-true), and MNX's rootfs
+postBootCommands created `/etc/NIXOS` + the system profile at first
+boot. Every toplevel also records the git rev of the tree it was built
+from (`system.configurationRevision` → `nixos-rebuild
+list-generations` / `nixos-version --configuration-revision`; a dirty
+tree shows as `<sha>-dirty`) — commit before switching so the
+generation is a clean commit (rule 0). `bin/device-rebuild.sh` stays
+as the convenience wrapper (status/rollback/gc + the `channels`
+re-pin for `nix-shell -p`); rollback without it =
+`nixos-rebuild --rollback switch --flake .`.
 
 Builds are native aarch64 into the device store (store writes flow
 through the socket-activated nix-daemon — `/nix/store` is bind-mounted

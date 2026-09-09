@@ -89,11 +89,27 @@
       # passed; pass ours (system comes from pkgs.stdenv.hostPlatform,
       # and the nixpkgs module re-imports the same source via pkgs.path,
       # so module pkgs == eval pkgs == this rev).
+      #
+      # `system.configurationRevision` records the git rev of THIS flake
+      # tree in every toplevel (rule 0 — a switched generation carries an
+      # identity): self.rev = the HEAD sha on a clean git checkout,
+      # "<sha>-dirty" when the tree is modified (nix 2.34 suffix — see
+      # the 2026-09-09 flake restructure), null only when evaluated from
+      # a non-git copy. It shows in `nixos-rebuild list-generations` /
+      # `nixos-version --configuration-revision` and makes a host build
+      # and an on-device build of the SAME commit converge to the same
+      # store path (both evals carry the same rev string). Commit before
+      # switching so the generation is a clean commit, not "-dirty".
+      configurationRevisionModule = {
+        system.configurationRevision = self.rev or null;
+      };
+
       eval = import (mnx + "/lib/eval-with-configuration.nix") {
         pkgs = import nixpkgs { system = buildSystem; };
         device = ./devices/planet-geminipda;
         configuration = [
           { nixpkgs.buildPlatform = buildSystem; }
+          configurationRevisionModule
           ./config/gemini.nix
         ];
       };
@@ -151,6 +167,35 @@
       gemdemo = eval.pkgs.callPackage ./pkgs/gemdemo.nix { };
     in
     {
+      # nixosConfiguration for the device hostname (`networking.hostName`
+      # = "gemini", config/gemini.nix) — the flake output that makes the
+      # classic NixOS on-device loop work from a clone of this repo
+      # (/root/gemini-nixos on the PDA):
+      #
+      #   nixos-rebuild switch --flake .          # hostname lookup -> .#gemini
+      #   nixos-rebuild build|dry-build|list-generations --flake .
+      #   nixos-rebuild switch --rollback --flake .
+      #
+      # nixos-rebuild-ng (the Python nixos-rebuild; the bash one is gone
+      # from nixpkgs at this pin) evaluates `nixosConfigurations."gemini"
+      # .config.system.build.{toplevel,nixos-rebuild}`, sets the system
+      # profile and runs switch-to-configuration — the SAME toplevel
+      # `packages.aarch64-linux.toplevel` exposes (mobile.outputs.toplevel
+      # defaults to config.system.build.toplevel, so the two attributes
+      # are literally the same derivation — verified 2026-09-09), and the
+      # same activation bin/device-rebuild.sh / bin/deploy.sh do by hand.
+      # Nothing else was needed on the device: nixos-rebuild lands in the
+      # system closure by default (system.tools.nixos-rebuild.enable =
+      # config.nix.enable, itself default-true at this pin — installer
+      # tools are NOT disabled by Mobile NixOS), and /etc/NIXOS + the
+      # /nix/var/nix/profiles/system profile were created by the MNX
+      # rootfs postBootCommands at first boot.
+      #
+      # The value is the RAW evalConfig result (eval.eval) — the same
+      # shape lib.nixosSystem returns (config/options/pkgs/lib/_module/…),
+      # not the eval shim wrapper (which carries a __please-fail throw).
+      nixosConfigurations.gemini = eval.eval;
+
       packages.${buildSystem} = {
         # android-fastboot-images: boot.img + system.img + flash script
         # (no recovery partition on this device; see the device module).
