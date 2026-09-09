@@ -5,6 +5,21 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-09 — GEMDEMO 0.2.0 DEPLOYED AS GEN33 (old 0.1.0 "AETHER" replaced on the device)
+
+`bash bin/deploy.sh deploy` built + switched gen33 (rc=0, ~42 s — the
+only closure delta was gemdemo → 0.2.0). Device now serves
+`/run/current-system/sw/bin/gemdemo` →
+`/nix/store/xxy3r8rld35a5m97wfv3ly366w52ng2i-gemdemo-0.2.0` (the exact
+store path measured at ~60 fps on glass; banner "GEMINI: EXODUS
+v0.2.0"). Old AETHER 0.1.0 (`k9njxxs…`) is out of the active profile
+(still in the gen32 store — rollback-safe via `deploy.sh rollback`).
+Smoke-run of the installed copy under the labwc session: planet maps
+bake, frame dump OK, A72s up + pinned.
+
+Rollback: `bash bin/deploy.sh rollback` (one gen) restores 0.1.0 if the
+fullscreen QA on glass goes wrong.
+
 ## 2026-09-09 — GEMDEMO 0.2.0 ON GLASS (windowed under labwc): 60 fps across the show; S5 planet bake fix measured
 
 Deployed the 0.2.0 build to the PDA (nix copy → /nix/store, run as the
