@@ -54,6 +54,14 @@ let
   # Static: no dynamic libc/libgcc to ship at all.
   busybox = pkgs.busybox.override { enableStatic = true; };
 
+  # Static e2fsck (e2fsprogs 1.47.x, musl-static, ~1.3 MB) for the
+  # boot-time ext4 auto-repair in the init script (2026-09-09). Busybox
+  # has no ext4 fsck, and the kernel's mount-time journal replay cannot
+  # recover a torn orphan chain (the 2026-09-09 boot-panic incident).
+  # Plain file copy like busybox — no store paths in the cpio; the
+  # boot.img stays well under the 16 MiB partition cap.
+  e2fsck = pkgs.pkgsStatic.e2fsprogs.bin;
+
   # The applets the init script uses. `sh` is busybox ash; the shebang
   # in /init is `#!/bin/busybox sh`.
   applets = [
@@ -232,9 +240,27 @@ let
         exec /bin/sh
     fi
 
+    # ---- ext4 auto-repair before the rw mount (2026-09-09) --------------
+    # A hard power-off can leave the rootfs needing journal replay, or a
+    # torn orphan chain that the KERNEL's mount-time replay cannot recover
+    # (oops/panic every boot — the 2026-09-09 incident; offline e2fsck -y
+    # in TWRP was the fix). Run the same offline repair HERE, before the
+    # kernel ever replays the journal. e2fsck -y on a HEALTHY fs skips in
+    # milliseconds (1.47 check_if_skip: no full 5-pass scan unless
+    # VALID_FS/ERROR_FS/orphan/RECOVER signals or mount-count/interval
+    # forcing — all absent/disabled on this fs); on a dirty fs it replays
+    # the journal; on a damaged fs it runs the full repair. Unattended-safe
+    # (-y), offline (fs unmounted), applies to both the NixOS and Debian
+    # branches.
+    echo "==> e2fsck -y $ROOT (auto-repair; skips fast when clean)"
+    e2fsck -y "$ROOT" 2>&1 || echo "!! e2fsck -y returned an error — continuing to mount"
+
     echo "==> mounting $ROOT rw"
-    mount -t ext4 -o rw "$ROOT" /newroot 2>/dev/null || \
-        mount -t ext4 -o rw "$ROOT" /newroot 2>&1 || { echo "!! mount failed — shell"; exec /bin/sh; }
+    if ! mount -t ext4 -o rw "$ROOT" /newroot 2>/dev/null; then
+        echo "!! rw mount of $ROOT failed — e2fsck -y repair, then retry"
+        e2fsck -y "$ROOT" 2>&1 || true
+        mount -t ext4 -o rw "$ROOT" /newroot 2>&1 || { echo "!! mount failed after repair — shell"; exec /bin/sh; }
+    fi
 
     if [ "$KIND" = debian ]; then
         # ---- Debian handoff ---------------------------------------------
@@ -329,6 +355,9 @@ pkgs.runCommand "gemini-minimal-initrd" {
   # Plain file copy: the cpio must contain no nix/store paths.
   cp $busyboxBinary root/bin/busybox
   chmod 555 root/bin/busybox
+  # static e2fsck (boot-time auto-repair, see init) — plain copy, self-contained
+  cp ${e2fsck}/bin/e2fsck root/bin/e2fsck
+  chmod 555 root/bin/e2fsck
   for app in ${lib.escapeShellArgs applets}; do
     ln -s busybox root/bin/$app
   done
