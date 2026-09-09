@@ -21,3 +21,14 @@ config MTK_WCN_GEN3
 	  MAC/MGMT/OS layer) for the on-die MT6630 Wi-Fi. Loaded after
 	  mtk_wcn; wlan0 appears when the WMT core turns the Wi-Fi
 	  function on (wlan_probe callback).
+
+config MTK_WCN_BT_HCI
+	tristate "MediaTek MT6797 Bluetooth (CONSYS MT6630) hci_stp driver"
+	depends on MTK_WCN && BT
+	help
+	  HCI transport for the Bluetooth side of the on-die MT6630 CONSYS
+	  combo (same chip the Wi-Fi bring-up uses). H4-framed HCI over the
+	  STP BT channel of the WMT core (module mtk_wcn); BlueZ sees a
+	  classic HCI_UART-bus controller (hci0). Port of the vendor 3.18
+	  drv_bt (CONFIG_MTK_COMBO_BT_HCI, the halium defconfig path for
+	  this device).

@@ -80,3 +80,9 @@ mtk_wcn-objs := \
 # wlan_drv_gen3.ko-on-wmt_drv.ko split. Its own Makefile holds the gen3
 # ccflags + object list (this dir's ccflags-y does NOT propagate down).
 obj-$(CONFIG_MTK_WCN_GEN3) += wlan/gen3/
+
+# --- Bluetooth HCI (BT bring-up, 2026-09-10) ------------------------------
+# Separate module hci_stp (CONFIG_MTK_WCN_BT_HCI): the BlueZ HCI transport
+# over the STP BT channel of the WMT core (the BT side of the same MT6630
+# CONSYS combo). Ported from the vendor 3.18 drv_bt (CONFIG_MTK_COMBO_BT_HCI).
+obj-$(CONFIG_MTK_WCN_BT_HCI) += drv_bt/
