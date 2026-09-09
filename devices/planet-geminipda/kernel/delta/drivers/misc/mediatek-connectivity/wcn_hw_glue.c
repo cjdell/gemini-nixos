@@ -382,6 +382,11 @@ INT32 wmt_plat_get_tdm_antsel_index(VOID)
  * is left patched in full mode; the live client is re-synced by the
  * spike (full-mode probe + seq jump).
  * ========================================================================== */
+/* WAK keep-awake heartbeat for the BTIF session (defined below, after the
+ * wake-pulse implementation); open-gated start/stop. */
+static void btif_wak_hb_start(void);
+static void btif_wak_hb_stop(void);
+
 int mtk_wcn_btif_open(char *p_owner, unsigned long *p_id)
 {
 	const struct consys_wmt_ops *ops = consys_wmt_transport;
@@ -395,7 +400,13 @@ int mtk_wcn_btif_open(char *p_owner, unsigned long *p_id)
 	 * non-zero per-user pointer. Opaque to the spike's ops. */
 	if (p_id)
 		*p_id = 1;
-	pr_info("wcn-glue: btif_open (spike BTIF/DMA transport)\n");
+	/* Keep the CONSYS MCU awake for the whole BT session (see the
+	 * heartbeat comment below): a scan/connection runs for seconds with
+	 * no host writes, and the MCU's autonomous sleep mid-session made
+	 * the STP layer hit its TX retry limit and forced a spike resync
+	 * (glass 2026-09-11, bluetoothd discovery). */
+	btif_wak_hb_start();
+	pr_info("wcn-glue: btif_open (spike BTIF/DMA transport, WAK heartbeat on)\n");
 	return 0;
 }
 
@@ -403,6 +414,7 @@ int mtk_wcn_btif_close(unsigned long u_id)
 {
 	/* The link release (MCU reset + live-client re-init) happens in
 	 * rx_cb_register(NULL); nothing to do here. */
+	btif_wak_hb_stop();
 	return 0;
 }
 
@@ -413,42 +425,45 @@ int mtk_wcn_btif_wakeup_consys(unsigned long u_id);
 /* BTIF WAK keep-awake heartbeat (BT rx-stall work, 2026-09-11).
  *
  * The wake-before-send pulse in mtk_wcn_btif_write wakes the CONSYS MCU
- * for the TX moment, but a reply takes ~40-80 ms to come back and the
- * MCU's autonomous sleep can doze it again INSIDE that window - the
- * reply then lands late or out of order and the kernel's HCI command
- * sync machinery desyncs (observed glass 2026-09-11: command timeouts
- * that still got their reply afterwards, -EINTR/-EREMOTEIO noise, and a
- * cascade of bogus failures once the first one hit). Keeping the MCU
- * pulsed every ~30 ms while traffic is active (the cadence that was
- * proven clean on glass by hammering WAK every 80 ms) eliminates the
- * desyncs; traffic stops -> the heartbeat stops ~200 ms later and the
- * MCU is allowed back to sleep (the next write's wake-before-send
- * handles the wakeup). Waking an already-awake MCU is harmless, so a
- * 30 ms cadence is safe during bursts.
+ * for the TX moment, but the controller's own activity windows (a reply
+ * taking ~40-80 ms, a scan/connect running for seconds with NO host
+ * writes at all) far outlive that single pulse, and the MCU's
+ * autonomous sleep dozes it again mid-window: replies land late or
+ * never, the STP TX layer hits its retry limit and the spike live
+ * client has to resync (glass 2026-09-11 during a bluetoothd LE
+ * discovery: no host writes for the discovery interval -> MCU asleep ->
+ * the scan-disable got no ACK -> "stp_do_tx_timeout: TX retry limit =
+ * 10" -> spike resync).
+ *
+ * So the heartbeat is gated by the BTIF link being OPEN, not by recent
+ * writes: mtk_wcn_btif_open starts a WAK pulse train every ~30 ms and
+ * mtk_wcn_btif_close stops it. While BT is in use the MCU stays awake
+ * (waking an awake MCU is harmless; the cadence that was proven clean
+ * on glass by hammering WAK every 80 ms); when hci0 is closed the MCU
+ * is allowed back to sleep and the next open's first write wakes it via
+ * wake-before-send. The 30 ms train costs nothing measurable vs the
+ * vendor's negotiated-sleep path that this port disables.
  */
-static unsigned long btif_last_write;
 static bool btif_hb_inited;
+static bool btif_hb_running;
 static struct delayed_work btif_wak_hb_work;
-static unsigned int btif_wak_hb_ms = 30; /* heartbeat cadence while active */
-static unsigned int btif_wak_hb_hold = 200; /* hb keeps running this long after last write */
+static unsigned int btif_wak_hb_ms = 30; /* WAK pulse cadence while the BTIF link is open */
 
 module_param(btif_wak_hb_ms, uint, 0644);
-module_param(btif_wak_hb_hold, uint, 0644);
 
 static void btif_wak_hb_fn(struct work_struct *work)
 {
 	if (!btif_wak_hb_ms)
 		return;
-	/* Only keep the heartbeat alive while traffic is recent. */
-	if (time_is_after_jiffies(btif_last_write +
-				   msecs_to_jiffies(btif_wak_hb_hold))) {
+	/* Pulse and keep going for as long as the BTIF link is open. */
+	if (btif_hb_running) {
 		mtk_wcn_btif_wakeup_consys(0);
 		schedule_delayed_work(&btif_wak_hb_work,
 				       msecs_to_jiffies(btif_wak_hb_ms));
 	}
 }
 
-static void btif_wak_hb_kick(void)
+static void btif_wak_hb_start(void)
 {
 	if (!btif_wak_hb_ms)
 		return;
@@ -456,9 +471,19 @@ static void btif_wak_hb_kick(void)
 		INIT_DELAYED_WORK(&btif_wak_hb_work, btif_wak_hb_fn);
 		btif_hb_inited = true;
 	}
-	if (!work_pending(&btif_wak_hb_work.work))
+	if (!btif_hb_running) {
+		btif_hb_running = true;
 		schedule_delayed_work(&btif_wak_hb_work,
 				       msecs_to_jiffies(btif_wak_hb_ms));
+	}
+}
+
+static void btif_wak_hb_stop(void)
+{
+	if (btif_hb_running) {
+		btif_hb_running = false;
+		cancel_delayed_work_sync(&btif_wak_hb_work);
+	}
 }
 
 int mtk_wcn_btif_write(unsigned long u_id, const unsigned char *p_buf,
@@ -490,11 +515,9 @@ int mtk_wcn_btif_write(unsigned long u_id, const unsigned char *p_buf,
 		pr_debug("wcn-glue: btif_write: WAK pulse failed (%d) - continuing\n",
 			 ret);
 
-	/* Keep the MCU awake through the reply window (see the heartbeat
-	 * comment above). */
-	btif_last_write = jiffies;
-	btif_wak_hb_kick();
-
+	/* The open-gated heartbeat normally keeps the MCU awake; this
+	 * immediate pulse covers the first write of a session before the
+	 * heartbeat's first tick lands. */
 	if (ops->tx(p_buf, (int)len))
 		return -EIO;
 	return (int)len;
