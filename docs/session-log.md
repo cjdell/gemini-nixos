@@ -75,6 +75,43 @@ start bluetoothd (nix-shell -p bluez) -> bluetoothctl power on +
 scan on -> then probe LE post-open (hcitool cmd 0x08 ...) to see if
 the 0x20 LE refusal is only an open-time artifact.
 
+--- RESOLVED LATER THE SAME DAY (same entry, appended 2026-09-11): ---
+
+All of the above NEXT ACTION landed ON GLASS. Version lines per flash
+(module-only deploys via bin/deploy.sh + WDT reboot, gens ~46-50; the
+kernel Image/boot.img untouched all day):
+
+1. gen46 05bbb33d3 (wake-before-send)
+2. gen47 7dce5d17 -> f6b135a3 (LE-init tolerance -> ext-init best-
+   effort incl. hci_init4: the NEXT wall after LE was GET_MWS_TRANSPORT_
+   CONFIG 0x140c refused with the MWS feature bit set)
+3. gen48/49 16e6d817 -> 440be2a1 (WAK heartbeat: write-triggered 200 ms
+   hold -> OPEN-GATED. Why: the first bluetoothd discovery ran the
+   transport into "stp_do_tx_timeout: TX retry limit = 10" -> spike
+   resync — no host writes for the whole discovery interval -> MCU
+   dozed -> scan-disable got no ACK. Heartbeat now runs
+   mtk_wcn_btif_open..close (~30 ms pulse train), write-pulse kept for
+   the session's first write.)
+4. gen50 7af6ee9c (LE local record: btmgmt le on -> "powered br/edr le";
+   without it mgmt discovery REJECTED 0x0b because HCI_LE_ENABLED hangs
+   off the refused Write LE Host Supported 0x200d).
+
+FINAL GLASS STATE (gen50): hci0 UP RUNNING, BR/EDR + LE both on;
+`btmgmt find` finds real LE devices over the air (4A:A8:59:57:1B:65,
+41:BE:81:BB:F9:E4 — LE Random, rssi -96..-98, distant beacons);
+bluetoothctl power on + scan on work end-to-end on a private system
+dbus (org.bluez policy missing from the stock /etc/dbus-1 static tree
+-> test bus with permissive policy under systemd-run units); 0 STP
+timeouts / 0 resyncs across repeated 40 s discoveries. Left on glass:
+hci0 UP (safe — no panel/fastboot involvement).
+
+Still open: (1) persistent bluetoothd/dbus in config/gemini.nix —
+services.bluetooth does NOT exist in this MNX eval (see bring-up doc);
+(2) LE event-mask 0x2001 low-bit acceptance quirk (kernel d0 05 refused
+at open, best-efforted; mgmt path still delivers DeviceFound); (3) RF
+test with a nearby device; (4) hci_stp module-vanish-on-failed-open
+cleanup TODO.
+
 ## 2026-09-10 — BLUETOOTH BRING-UP (MT6630 CONSYS): hci_stp driver ported (3.18 vendor → 6.6), BT radio powers on and answers HCI — blocked on a CONSYS rx-delivery stall (BT-channel frames arrive ~17 s late) so hci0 init can't complete yet (gens 37-42; NO boot.img reflash — module-only changes)
 
 Task: "get bluetooth working". The Gemini's BT = the BT half of the
