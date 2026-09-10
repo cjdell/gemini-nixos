@@ -396,9 +396,11 @@ only opened on text focus, so no object ⇒ no keyboard, ever).
 system `XDG_DATA_DIRS`. dconf enabling takes effect on the next session
 start (gnome-shell only scans extension dirs at startup); no reboot/rootfs
 flash is involved. During bring-up it was also installed under
-`~/.local/share/gnome-shell/extensions/` for the live A/B — that copy
-shadows the system one and should be removed after the first
-`nixos-rebuild switch`/deploy that carries this change.
+`~/.local/share/gnome-shell/extensions/` for the live A/B. That copy was
+removed after the first deploy that carried this change (gen8,
+2026-09-10s); the extension is now served from the system profile
+(`/run/current-system/sw/share/gnome-shell/extensions/no-osk@gemini-nixos`)
+and dconf reports both keys locked (`gsettings writable` = false).
 
 ## Where it lives
 

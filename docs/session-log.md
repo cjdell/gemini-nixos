@@ -23,7 +23,7 @@ the OSK. Pre-fix the shell log even showed it: `maybeHandleEvent`
 (`keyboard.js:1159`) threw on a null actor, which only runs when the OSK
 object exists.
 
-**Fix (committed; build-level — not yet in a deployed generation):**
+**Fix (committed `03b5379`; deployed as gen8 the same session):**
 
 - new `pkgs/gnome-extension-no-osk/` — a GNOME 45+ ESM Shell extension
   forcing `KeyboardManager._lastDeviceIsTouchscreen() = false` (private
@@ -45,15 +45,24 @@ and called the real `_syncEnabled()`:
 | off | `true` | **CREATED** |
 | on | `true` | **not-created** |
 
-The diagnostic was then removed; the hand-installed extension is left
-enabled, so the device is already OSK-free. **Device state:** the GNOME
-session was restarted twice via `systemctl restart display-manager` during
-the A/B (autologin restored it each time, ~6 s); `para`/`boot` untouched;
-no boot.img/reflash; generation unchanged.
+The diagnostic was then removed; the hand-installed extension was left
+enabled, so the device was immediately OSK-free. **Device state:** the
+GNOME session was restarted via `systemctl restart display-manager`
+twice during the A/B and once more after the deploy (autologin restored
+it each time, ~4–6 s); `para`/`boot` untouched; no boot.img/reflash.
 
-**Next:** deploy a generation carrying the change (profile-only switch),
-then remove the hand-installed user copy so the system extension is the
-sole source. **Doc:** `docs/desktop-plumbing.md` §"On-screen keyboard".
+**Deployed + verified (same session).** `bin/deploy.sh deploy` (57 s)
+installed the extension as a SYSTEM extension and switched the device to
+gen8 `mf8baq82aw90djz5ppwq4fvack2kmbsh-nixos-system-gemini-26.11pre-git`.
+The hand-installed user copy was then removed and `display-manager`
+restarted; `gnome-extensions info` reports the extension from
+`/run/current-system/sw/share/gnome-shell/extensions/no-osk@gemini-nixos`,
+Enabled: **Yes**, State: **ACTIVE**, and both
+`org.gnome.shell enabled-extensions` and
+`org.gnome.desktop.a11y.applications screen-keyboard-enabled` read the
+intended values with `gsettings writable` = **false** (the dconf locks
+hold — so the system extension is the sole source and cannot be turned
+off). **Doc:** `docs/desktop-plumbing.md` §"On-screen keyboard".
 
 ## 2026-09-10r — A2DP stutter + after-playback crackle: ROOT CAUSE = the STP PSM (fixed in the delta, verified on glass)
 
