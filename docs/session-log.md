@@ -60,21 +60,40 @@ What landed (all DE-agnostic system services, no shell-specific glue):
   — same as PinePhone). Documented as a follow-up (actkbd/wevdaemon
   style daemon → `wpctl`), deliberately not part of this layer.
 
-Eval: `nixosConfigurations.gemini` toplevel builds green, drv
-`48w4r954…`; verified config values (upower 15/5/2 + Ignore, NM
-enabled/unmanaged usb0/rand=false, modemmanager false, brightnessctl
-in the closure). Deployed: **NO** — nothing flashed/switched this
-session (kernel + system built only).
+Eval: `nixosConfigurations.gemini` toplevel builds green; verified
+config values (upower 15/5/2 + Ignore, NM enabled/unmanaged usb0/rand=
+false, modemmanager false, brightnessctl in the closure).
 
-On-glass checklist (owed, docs/desktop-plumbing.md §end): battery in
-upower + phosh top bar tracks AC plug/unplug; `nmcli dev` wlan0 +
-phosh wifi page; `ls -l /sys/class/backlight/*/brightness` = rw-rw-rw-
-and the phosh brightness slider moves the LCD; also confirm the
-backlight class device even registers on this kernel (if
-`/sys/class/backlight` is empty, the disp-pwm backlight node needs
-finishing — the root `backlight` devmem CLI still works). Next action=
-`bin/deploy.sh build && bin/deploy.sh deploy` (or the device-side
-`nixos-rebuild switch --flake .`), then the checklist + a version line.
+**DEPLOYED: gen62** (`bin/deploy.sh deploy`, 2026-09-10 — device
+switched to `k5n57yqb…`, gc-pinned; kernel flash NOT done, see below).
+Sleep-path fixes found while checking the device (it was ASLEEP — the
+silver button had stopped gemwl; `gemcli sleep off` woke it):
+`phosh-nested.service` was missing from gemcli's sleep SERVICES list
+(a sleep left phoc + the phosh session running against a stopped gemwl
+— the observed "phosh not usable"), and the wifi sleep/wake path was
+legacy-only (killed NM's wpa_supplicant + restarted the non-existent
+gemini-wifi-auto). gemcli sleep.rs is now NM-aware (link park/raise +
+NM autoconnect; legacy path retained when NM is inactive) and stops
+phosh-nested. Fork commit c8f0787d + pkgs/gemcli/src/sleep.rs.
+
+On-glass results, gen62 (over g_ether): **NetworkManager works** —
+wlan0 managed and already CONNECTED to "The Lab" (autoconnect via the
+seeded profile), usb0 unmanaged, both home profiles present; upower
+running (D-Bus activated) with the line_power device and
+`battery-missing-symbolic` on the DisplayDevice; the backlight class
+device exists (`/sys/class/backlight/backlight`, type raw, max 255)
+and after `udevadm trigger --action=add …` the attrs are rw-rw-rw- —
+unprivileged `su cjdell -c 'brightnessctl -c backlight set 9%'` writes
+23/255; gemwl + phosh-nested active. The class-glob udev trigger
+(`--subsystem-match=backlight`) does NOT fire the rule; syspath does
+(and a reboot will).
+
+Remaining: the battery supply is built into the KERNEL — a rootfs
+generation switch cannot deliver it, so the phosh battery icon stays
+absent until the new boot.img is flashed (`bash bin/flash-nixos.sh
+boot`; deferred — needs the user's go-ahead, it reboots the device).
+Then: `upower -d` battery % + bolt in phosh, sleep/wake round trip,
+and post-reboot backlight perms. Full checklist: docs/desktop-plumbing.md.
 
 Also touched: docs/phosh.md (closed the stale "no upower / no NM"
 Known-gaps bullet, marked [corrected 2026-09-10]), README services

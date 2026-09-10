@@ -1,6 +1,6 @@
 # Power sleep on the Gemini PDA — investigation + the silver-button sleep/wake
 
-**Last updated:** 2026-09-08
+**Last updated:** 2026-09-10 (sleep/NetworkManager + phosh-nested integration notes)
 
 Scope: how to make the unit draw as little battery current as possible,
 and the silver side button (KEY_SLEEP, mt6351-keys) as device sleep/wake.
@@ -64,18 +64,31 @@ worst case total, nothing blocks on the wifi chip):
    cl2-down receipts); the A53 *cluster* power-down (below) is not
    wired.
 4. **Heavyweight services stopped** (only those actually running, the
-   list is recorded): `gemwl.service` + `lxqt-nested.service` (the GPU
+   list is recorded): `gemwl.service` + `phosh-nested.service` (the
+   default desktop since 2026-09-10) + `lxqt-nested.service` (the GPU
    desktop), `pipewire/wireplumber/pipewire-pulse` (audio). `sshd` +
    `gemini-battery-guard` + `gemini-sleepd` STAY (control link, the
-   safety daemon, the wake button).
+   safety daemon, the wake button). **[fixed 2026-09-10]**
+   `phosh-nested.service` was missing from `SERVICES` — a sleep left
+   phoc + the session running against a stopped gemwl (the observed
+   "phosh not usable after the silver button"), so it is now stopped
+   and restarted with the rest.
 5. **Wifi down — fast**: `ip link set <iface> down` + kill
-   wpa_supplicant + the iface's dhcpcd. The CONSYS chip itself stays
-   powered (radio firmware idles): the WMT `echo off` teardown stalls
-   ~29 s with the chip associated (observed 2026-09-08), far too slow
-   for a button — and stopping the RemainAfterExit wifi units alone
-   does NOT stop wifi (no ExecStop; wpa_supplicant survives). Wake
-   re-associates by RESTARTING gemini-wifi-auto (`wifi auto` — its
-   clean-slate wpa_ensure restarts the daemon from scratch).
+   wpa_supplicant + the iface's dhcpcd (legacy stack). The CONSYS chip
+   itself stays powered (radio firmware idles): the WMT `echo off`
+   teardown stalls ~29 s with the chip associated (observed
+   2026-09-08), far too slow for a button — and stopping the
+   RemainAfterExit wifi units alone does NOT stop wifi (no ExecStop;
+   wpa_supplicant survives). Wake re-associates by RESTARTING
+   gemini-wifi-auto (`wifi auto` — its clean-slate wpa_ensure restarts
+   the daemon from scratch). **[changed 2026-09-10]** With the default
+   NetworkManager stack (`services.geminiWifi.useNetworkManager`,
+   docs/desktop-plumbing.md) sleep no longer kills wpa_supplicant (NM
+   owns it; killing it just makes NM respawn it) or restarts the
+   non-existent `gemini-wifi-auto` unit: it only parks the link and
+   raises it on wake, letting NM autoconnect the saved profile
+   (`gemcli sleep` detects NM via `systemctl is-active
+   NetworkManager`).
 6. **State recorded** in `/run/gemcli-sleep.state` (tmpfs — a reboot
    clears it and boots awake): services stopped, cpus offlined,
    backlight %, wifi was on.

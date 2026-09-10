@@ -1,7 +1,9 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight access
 
-Last updated: 2026-09-10. Status: 🟡 implemented + eval-green (kernel
-build in progress); ON-GLASS VERIFICATION OWED (see §end). This is the
+Last updated: 2026-09-10. Status: 🟡 implemented; **gen62 deployed
+2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
+checklist); the battery icon is the one item left: it needs the new
+boot.img (kernel battery supply), not just the rootfs generation.
 "make every desktop environment just work" layer: the system services
 that Phosh (default desktop), LXQt (alternative), GNOME or KDE would
 all consume through the standard D-Bus APIs, with zero gemini-specific
@@ -118,11 +120,16 @@ CLI (gemini-pda-utils) remains the devmem fallback / console path.
 
 Caveat: a backlight class device only appears once the disp-pwm
 backlight node actually registers (DTS has `backlight_lcd`, led_mode=5,
-PWM at 0x1100f000). If `/sys/class/backlight` is empty on glass, the
-LCD boost is still driven by LK only and the desktop sliders no-op —
-verify and, if needed, finish the pwm/backlight driver wiring (the
-`backlight` CLI still works either way — it drives the same PWM by
-devmem).
+PWM at 0x1100f000). **On glass it does register**: gen62 shows
+`/sys/class/backlight/backlight/` (type `raw`, max_brightness 255) and
+the LCD boost is on that PWM; the desktop sliders/`brightnessctl` now
+drive it. The udev RUN rule fires on device *add* — after a live deploy
+of the rule the device must be re-added, either a reboot or
+`udevadm trigger --action=add /sys/devices/platform/backlight/backlight/backlight`
+(the class-glob form `--subsystem-match=backlight` does NOT match;
+receipt 2026-09-10). Verified: an unprivileged `su cjdell -c
+'brightnessctl -c backlight set 9%'` writes 23/255. Root's `backlight`
+CLI (gemini-pda-utils, devmem PWM) remains the console fallback.
 
 ### Volume
 
@@ -153,18 +160,37 @@ BlueZ, its battery icon UPower, brightness its sysfs backend. LXQt
 (standard LXQt) and a wifi applet (nm-tray/nm-applet) — nothing
 gemini-specific.
 
+### Sleep integration (silver button)
+
+`gemcli sleep`/`gemini-sleepd` is NM-aware as of the same session
+(`pkgs/gemcli/src/sleep.rs`):
+
+- `phosh-nested.service` added to the stop/start list — it was missing,
+  so a sleep left phoc + the phosh session running against a stopped
+  gemwl (the observed "phosh not usable" after the silver button).
+- Wifi: NM mode parks the link only and lets NM autoconnect on wake;
+  the legacy kill-wpa_supplicant + restart-`gemini-wifi-auto` path is
+  used only when NM is not active (detected via
+  `systemctl is-active NetworkManager`). docs/power-sleep.md §4/§5.
+
 ## Verification checklist (owed, 🟡 → ✅)
 
-1. Rebuild + deploy; `systemctl status upower NetworkManager` on glass.
-2. `ls /sys/class/power_supply/` shows `bq25890-battery-0`; `upower -d`
-   shows it with sane % tracking AC plug/unplug; phosh top bar shows
-   battery + charging bolt; unplug → %/bolt update live.
-3. `nmcli dev` shows wlan0 managed; phosh quick-settings wifi page lists
-   + connects to "The Lab"; g_ether link (usb0) unaffected; resolv.conf
-   gains DHCP nameservers when on wifi.
-4. `ls -l /sys/class/backlight/*/brightness` = `-rw-rw-rw-`; phosh
-   brightness slider moves the LCD (eyes!), `brightnessctl s 50%`.
-   (If no backlight dir: see §backlight caveat.)
-5. Bluetooth quick toggle unaffected (bluetoothd already up).
-6. Record the version line in docs/session-log.md (rule 0): kernel rev
-   c8f0787d, gens flashed.
+On-glass results from gen62 (2026-09-10, over g_ether):
+
+- ✅ `nmcli dev` → wlan0 managed and **connected to "The Lab"**
+  without any manual step; usb0 `unmanaged`; both home profiles seeded.
+- ✅ `upower -d` → running (D-Bus activated), line_power device
+  present; DisplayDevice shows `battery-missing-symbolic` (no battery
+  supply yet — the kernel flash below fixes that).
+- ✅ Backlight: `/sys/class/backlight/backlight/{brightness,bl_power}`
+  become `rw-rw-rw-`; unprivileged `brightnessctl set` works.
+- ✅ gemwl + phosh-nested active after the deploy.
+- ⬜ Battery % / charging bolt in the phosh top bar — **needs the new
+  boot.img** (`bash bin/flash-nixos.sh boot`; the battery driver is
+  built into the kernel, so a rootfs-only generation switch cannot
+  deliver it). Then `upower -d` should show a battery device with a
+  percentage, and phosh the icon.
+- ⬜ Sleep/wake round trip on the new gemcli (silver button): desktop
+  and wifi must both come back.
+- ⬜ After a reboot, re-check the udev backlight perms (the rule fires
+  on device add; the live-deploy path needed the manual trigger above).

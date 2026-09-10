@@ -16,8 +16,12 @@
 //! `echo off` teardown stalls ~29 s with the chip fully associated —
 //! observed on glass — and stopping the RemainAfterExit wifi units does
 //! not even kill wpa_supplicant); sleep instead takes the wifi interface
-//! down + kills the daemons (fast), leaving the chip powered but idle,
-//! and wake re-associates via `wifi auto` (clean-slate by design). The
+//! down (and, in the legacy stack, kills its daemons) — fast, leaving the
+//! chip powered but idle — and wake re-associates (legacy: `wifi auto`,
+//! clean-slate; **NetworkManager mode, services/wifi.nix default since
+//! 2026-09-10: raise the link and NM's autoconnect re-activates the saved
+//! profile** — sleep must not kill NM's wpa_supplicant or restart the
+//! non-existent wifi-auto unit, see wifi_down/wifi_up). The
 //! `key` daemon additionally debounces presses (1 s) and drains events
 //! queued while a toggle was running, so mashing the button can never
 //! cascade into rapid sleep/wake flicker.
@@ -36,8 +40,9 @@
 //!   4. stop the heavyweight services that were running: gemwl +
 //!      lxqt-nested (the GPU desktop), pipewire/wireplumber/pipewire-pulse
 //!      (audio). sshd + gemini-battery-guard + gemini-sleepd STAY.
-//!   5. wifi down: `ip link set <iface> down` + kill wpa_supplicant +
-//!      dhcpcd (the CONSYS chip itself stays powered — see above).
+//!   5. wifi down: `ip link set <iface> down`; legacy additionally kills
+//!      wpa_supplicant + dhcpcd; NM mode leaves NM's supplicant alone
+//!      (the CONSYS chip itself stays powered — see above).
 //!   6. record everything in /run/gemcli-sleep.state so `off` restores
 //!      exactly (services that were running, cores offlined, backlight%,
 //!      wifi was on).
@@ -74,6 +79,7 @@ const DEBOUNCE_MS: u64 = 1000;
 /// the interface + daemons (§wifi).
 const SERVICES: &[&str] = &[
     "gemwl.service",
+    "phosh-nested.service", // default desktop since 2026-09-10 (was missing: a sleep left phoc/session running against a stopped gemwl)
     "lxqt-nested.service",
     "pipewire.service",
     "wireplumber.service",
@@ -183,6 +189,18 @@ fn start_units(units: &[&str]) {
 
 // --- wifi (fast path — chip stays powered, §header) -------------------------
 
+/// Is NetworkManager the connectivity manager? (services/wifi.nix default
+/// since 2026-09-10: NM owns wpa_supplicant + the connection profile and
+/// the legacy `gemini-wifi-auto` unit does not exist.) With NM, sleep
+/// only parks the radio (link down) — NM re-activates on wake.
+fn nm_active() -> bool {
+    Command::new(systemctl())
+        .args(["is-active", "--quiet", "NetworkManager.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// The wifi interface name, if one exists (any netdev with a wireless
 /// dir). No external tools needed.
 fn wifi_iface() -> Option<String> {
@@ -198,28 +216,42 @@ fn wifi_iface() -> Option<String> {
 /// Take wifi down FAST (no CONSYS chip power-cycle — that `echo off`
 /// teardown stalls ~29 s with the chip associated): interface down +
 /// kill wpa_supplicant + the iface's dhcpcd. The radio firmware idles;
-/// wake re-associates with `wifi auto` (its clean-slate wpa_ensure
-/// restarts the daemon from scratch).
+/// wake re-associates (`wifi auto` in the legacy stack; NetworkManager
+/// autoconnect in NM mode).
 fn wifi_down() -> bool {
     let Some(iface) = wifi_iface() else {
         return false;
     };
     let _ = Command::new(swbin("ip")).args(["link", "set", &iface, "down"]).status();
-    let _ = Command::new(swbin("pkill")).args(["-f", "wpa_supplicant -B"]).status();
-    let _ = Command::new(swbin("pkill"))
-        .args(["-f", &format!("dhcpcd.*{iface}")])
-        .status();
-    println!("gemcli sleep: wifi {iface} down (chip powered, daemons stopped)");
+    if nm_active() {
+        // NM owns wpa_supplicant (killing it just makes NM respawn it)
+        // and has no dhcpcd lease of ours — parking the link is enough;
+        // on `ip link set up` NM re-activates the saved profile.
+        println!("gemcli sleep: wifi {iface} down (NetworkManager manages; chip powered)");
+    } else {
+        let _ = Command::new(swbin("pkill")).args(["-f", "wpa_supplicant -B"]).status();
+        let _ = Command::new(swbin("pkill"))
+            .args(["-f", &format!("dhcpcd.*{iface}")])
+            .status();
+        println!("gemcli sleep: wifi {iface} down (chip powered, daemons stopped)");
+    }
     true
 }
 
-/// Re-associate: restart the wifi-auto unit (its ExecStart = `wifi auto`;
-/// the unit Wants gemini-wifi-internal, whose `start` tolerates the
-/// already-powered chip). RESTART, not start: the unit is a
-/// RemainAfterExit oneshot that stayed "active" through sleep (we never
-/// stop it — the sleep wifi-down kills the daemons directly), so a
-/// plain `start` would be a no-op. Async.
+/// Re-associate. Legacy: restart the wifi-auto unit (its ExecStart =
+/// `wifi auto`; RESTART not start — it is a RemainAfterExit oneshot that
+/// stayed active through sleep). NM mode: raise the link and let NM's
+/// autoconnect re-activate the saved profile (no unit to restart).
+/// Async/cheap either way.
 fn wifi_up() {
+    let Some(iface) = wifi_iface() else {
+        return;
+    };
+    let _ = Command::new(swbin("ip")).args(["link", "set", &iface, "up"]).status();
+    if nm_active() {
+        println!("gemcli sleep: wifi {iface} up (NetworkManager will re-associate)");
+        return;
+    }
     println!("gemcli sleep: wifi auto (re-associate)");
     let _ = Command::new(systemctl()).args(["reset-failed", "gemini-wifi-auto.service"]).status();
     let ok = Command::new(systemctl())
