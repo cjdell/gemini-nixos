@@ -664,9 +664,14 @@ struct gemwl_server {
 	struct wl_listener cursor_axis;
 	struct wl_listener cursor_frame;
 
-	/* touchscreen -> absolute-pointer emulation (see touch_* below) */
-	bool touch_emulating;
+	/* touchscreen handling (see the touch section below): by default
+	 * every finger is forwarded to the seat as a real wl_touch device
+	 * (no cursor); GEMWL_TOUCH_POINTER_EMU=1 restores the legacy
+	 * first-finger-as-pointer emulation. */
+	bool touch_pointer_emu;  /* legacy pointer emulation (env opt-in) */
+	bool touch_emulating;    /* emu mode: a finger is driving the pointer */
 	int32_t touch_emulated_id; /* touch_id of the finger being emulated */
+	bool has_touch;          /* a touch device is attached (seat caps) */
 	struct wl_listener touch_down;
 	struct wl_listener touch_motion;
 	struct wl_listener touch_up;
@@ -851,14 +856,34 @@ static void server_new_pointer(struct gemwl_server *server,
 }
 
 /* ------------------------------------------------------------------
- * Touchscreen -> absolute-pointer emulation.
+ * Touchscreen -> real multitouch (wl_touch protocol, NO cursor).
  *
- * The Novatek NT36772 kernel driver already maps the sensor into the
- * landscape output space (ABS 2160x1080), and wlroots normalizes touch
- * to 0..1. Nothing in the nested LXQt stack consumes wl_touch, so a
- * finger acts as a mouse: down = warp + BTN_LEFT press, motion = warp,
- * up = release. Only the first finger is emulated; extra fingers are
- * ignored (no gestures yet).
+ * The Novatek NT36772 kernel driver (delta
+ * drivers/input/touchscreen/novatek-nt36xxx.c) exposes a 10-point
+ * Protocol-B device and already maps the sensor into the landscape
+ * output space; wlroots normalizes each finger to 0..1. gemwl
+ * forwards EVERY finger to the seat via wlr_seat_touch_notify_*, so
+ * the nested session's wlroots wayland backend (phoc 0.54 /
+ * wlroots 0.19.3 and labwc 0.8.3 / wlroots 0.18.2 both carry the
+ * touch path) synthesizes its own wlr_touch device and the phosh
+ * apps get a REAL wl_touch: taps, one-finger drags and multi-finger
+ * gestures (pinch/zoom in GTK4/WebKit apps) — with no on-screen
+ * cursor, because touch never touches the pointer.
+ *
+ * Coordinates: normalized (0..1) output space -> output layout box ->
+ * scene hit-test -> surface-local, the same transform the pointer
+ * path uses. The nested toplevel is full-screen at scale 1, so the
+ * wl_touch protocol's "coordinates relative to the surface from the
+ * down event" contract holds for the whole gesture.
+ *
+ * [changed 2026-09-10: previously the first finger was emulated as
+ * an absolute pointer (warp + synthetic BTN_LEFT) because "nothing
+ * in the nested LXQt stack consumes wl_touch". That was true for the
+ * LXQt-only era; the phosh stack's phoc consumes wl_touch natively
+ * (seat_add_touch -> phoc cursor -> wlr_seat_touch_notify_* + its own
+ * zoom/swipe gesture recognizers), and userspace wanted the real
+ * device for GNOME app gestures. The old behaviour is kept as the
+ * GEMWL_TOUCH_POINTER_EMU=1 fallback for A/B on glass.]
  * ------------------------------------------------------------------ */
 static void pointer_focus_and_send(struct gemwl_server *server, uint32_t time);
 
@@ -870,6 +895,47 @@ static struct wlr_output *gemwl_first_output(struct gemwl_server *server) {
 	}
 	return NULL;
 }
+
+/* Map a normalized (0..1) output-space point to the surface under it;
+ * *sx/*sy receive the surface-local coordinates. NULL if there is
+ * nothing there to touch. */
+static struct wlr_surface *touch_surface_at(struct gemwl_server *server,
+		double nx, double ny, double *sx, double *sy) {
+	struct wlr_output *output = gemwl_first_output(server);
+	if (output == NULL)
+		return NULL;
+	struct wlr_box box;
+	wlr_output_layout_get_box(server->output_layout, output, &box);
+	if (box.width <= 0 || box.height <= 0)
+		return NULL;
+	double lx = box.x + nx * box.width;
+	double ly = box.y + ny * box.height;
+	struct wlr_scene_node *node =
+		wlr_scene_node_at(&server->scene->tree.node, lx, ly, &lx, &ly);
+	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER)
+		return NULL;
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node));
+	if (scene_surface == NULL)
+		return NULL;
+	*sx = lx;
+	*sy = ly;
+	return scene_surface->surface;
+}
+
+/* A touch point is only valid if the nested client has requested
+ * wl_seat.get_touch() (wlroots logs an error on every down otherwise).
+ * phoc/labwc request it as soon as they see the TOUCH seat capability,
+ * so this only matters before the session's toplevel binds the seat. */
+static bool client_has_touch(struct gemwl_server *server,
+		struct wlr_surface *surface) {
+	struct wl_client *client = wl_resource_get_client(surface->resource);
+	struct wlr_seat_client *sc =
+		wlr_seat_client_for_wl_client(server->seat, client);
+	return sc != NULL && !wl_list_empty(&sc->touches);
+}
+
+/* --- legacy pointer emulation (GEMWL_TOUCH_POINTER_EMU=1 only) --- */
 
 static void touch_emulate_motion(struct gemwl_server *server, uint32_t time,
 		double nx, double ny) {
@@ -885,10 +951,8 @@ static void touch_emulate_motion(struct gemwl_server *server, uint32_t time,
 	pointer_focus_and_send(server, time);
 }
 
-static void touch_handle_down(struct wl_listener *listener, void *data) {
-	struct gemwl_server *server =
-		wl_container_of(listener, server, touch_down);
-	struct wlr_touch_down_event *event = data;
+static void touch_emu_down(struct gemwl_server *server,
+		struct wlr_touch_down_event *event) {
 	if (server->touch_emulating)
 		return; /* only the first finger is emulated (no gestures yet) */
 	server->touch_emulating = true;
@@ -907,10 +971,8 @@ static void touch_handle_down(struct wl_listener *listener, void *data) {
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
-static void touch_handle_motion(struct wl_listener *listener, void *data) {
-	struct gemwl_server *server =
-		wl_container_of(listener, server, touch_motion);
-	struct wlr_touch_motion_event *event = data;
+static void touch_emu_motion(struct gemwl_server *server,
+		struct wlr_touch_motion_event *event) {
 	if (!server->touch_emulating ||
 	    event->touch_id != server->touch_emulated_id)
 		return; /* second+ fingers are ignored */
@@ -920,10 +982,8 @@ static void touch_handle_motion(struct wl_listener *listener, void *data) {
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
-static void touch_handle_up(struct wl_listener *listener, void *data) {
-	struct gemwl_server *server =
-		wl_container_of(listener, server, touch_up);
-	struct wlr_touch_up_event *event = data;
+static void touch_emu_up(struct gemwl_server *server,
+		struct wlr_touch_up_event *event) {
 	if (!server->touch_emulating ||
 	    event->touch_id != server->touch_emulated_id)
 		return; /* a non-emulated finger lifted: nothing to release */
@@ -936,6 +996,69 @@ static void touch_handle_up(struct wl_listener *listener, void *data) {
 	wlr_seat_pointer_notify_frame(server->seat);
 }
 
+/* --- real wl_touch forwarding (default) --- */
+
+static void touch_handle_down(struct wl_listener *listener, void *data) {
+	struct gemwl_server *server =
+		wl_container_of(listener, server, touch_down);
+	struct wlr_touch_down_event *event = data;
+	if (server->touch_pointer_emu) {
+		touch_emu_down(server, event);
+		return;
+	}
+	double sx, sy;
+	struct wlr_surface *surface =
+		touch_surface_at(server, event->x, event->y, &sx, &sy);
+	if (surface == NULL) {
+		wlr_log(WLR_INFO, "gemwl input: touch DOWN id=%d (%.2f,%.2f) - no surface",
+			event->touch_id, event->x, event->y);
+		return;
+	}
+	if (!client_has_touch(server, surface)) {
+		wlr_log(WLR_DEBUG, "gemwl input: touch DOWN id=%d - client has no wl_touch yet, dropped",
+			event->touch_id);
+		return;
+	}
+	wlr_log(WLR_INFO, "gemwl input: touch DOWN id=%d (%.2f,%.2f) -> surface-local (%.0f,%.0f)",
+		event->touch_id, event->x, event->y, sx, sy);
+	wlr_seat_touch_notify_down(server->seat, surface, event->time_msec,
+		event->touch_id, sx, sy);
+	wlr_seat_touch_notify_frame(server->seat);
+}
+
+static void touch_handle_motion(struct wl_listener *listener, void *data) {
+	struct gemwl_server *server =
+		wl_container_of(listener, server, touch_motion);
+	struct wlr_touch_motion_event *event = data;
+	if (server->touch_pointer_emu) {
+		touch_emu_motion(server, event);
+		return;
+	}
+	if (!wlr_seat_touch_get_point(server->seat, event->touch_id))
+		return; /* no point for this finger (its down was dropped) */
+	double sx, sy;
+	struct wlr_surface *surface =
+		touch_surface_at(server, event->x, event->y, &sx, &sy);
+	if (surface != NULL) {
+		wlr_seat_touch_notify_motion(server->seat, event->time_msec,
+			event->touch_id, sx, sy);
+		wlr_seat_touch_notify_frame(server->seat);
+	}
+}
+
+static void touch_handle_up(struct wl_listener *listener, void *data) {
+	struct gemwl_server *server =
+		wl_container_of(listener, server, touch_up);
+	struct wlr_touch_up_event *event = data;
+	if (server->touch_pointer_emu) {
+		touch_emu_up(server, event);
+		return;
+	}
+	wlr_log(WLR_INFO, "gemwl input: touch UP id=%d", event->touch_id);
+	wlr_seat_touch_notify_up(server->seat, event->time_msec, event->touch_id);
+	wlr_seat_touch_notify_frame(server->seat);
+}
+
 static void server_new_touch(struct gemwl_server *server,
 		struct wlr_input_device *device) {
 	struct wlr_touch *touch = wlr_touch_from_input_device(device);
@@ -945,7 +1068,10 @@ static void server_new_touch(struct gemwl_server *server,
 	wl_signal_add(&touch->events.motion, &server->touch_motion);
 	server->touch_up.notify = touch_handle_up;
 	wl_signal_add(&touch->events.up, &server->touch_up);
-	wlr_log(WLR_INFO, "gemwl input: touchscreen attached (pointer emulation)");
+	server->has_touch = true;
+	wlr_log(WLR_INFO, "gemwl input: touchscreen attached (%s): %s",
+		server->touch_pointer_emu ? "pointer emulation" : "wl_touch forwarding",
+		device->name);
 }
 
 static void server_new_input(struct wl_listener *listener, void *data) {
@@ -968,6 +1094,11 @@ static void server_new_input(struct wl_listener *listener, void *data) {
 	uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
 	if (!wl_list_empty(&server->keyboards)) {
 		caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+	}
+	/* Advertise touch only when we forward it: in emu mode the fingers
+	 * drive the pointer, and a dead touch device would confuse clients. */
+	if (server->has_touch && !server->touch_pointer_emu) {
+		caps |= WL_SEAT_CAPABILITY_TOUCH;
 	}
 	wlr_seat_set_capabilities(server->seat, caps);
 }
@@ -1557,6 +1688,10 @@ int main(int argc, char *argv[]) {
 
 	wl_list_init(&server.keyboards);
 	server.touch_emulated_id = -1;
+	server.touch_pointer_emu = getenv("GEMWL_TOUCH_POINTER_EMU") != NULL;
+	if (server.touch_pointer_emu) {
+		wlr_log(WLR_INFO, "gemwl input: GEMWL_TOUCH_POINTER_EMU=1 - touch drives the pointer (legacy behaviour)");
+	}
 	server.new_input.notify = server_new_input;
 	wl_signal_add(&server.backend->events.new_input, &server.new_input);
 	server.seat = wlr_seat_create(server.wl_display, "seat0");

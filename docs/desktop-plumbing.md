@@ -1,9 +1,12 @@
-# Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight access
+# Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
 Last updated: 2026-09-10. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
 boot.img (kernel battery supply), not just the rootfs generation.
+Touch is now a **real multi-touch wl_touch device** (2026-09-10, §Touch —
+protocol chain verified source-level + on the journals; on-glass finger
+test pending).
 "make every desktop environment just work" layer: the system services
 that Phosh (default desktop), LXQt (alternative), GNOME or KDE would
 all consume through the standard D-Bus APIs, with zero gemini-specific
@@ -26,6 +29,7 @@ battery display.
 | **Bluetooth** | bluez `org.bluez` (persistent service + auto-power) | already done 2026-09-09 — `services/bluetooth.nix`, `docs/bluetooth-bringup.md`; blueman UI present |
 | **Backlight** | `/sys/class/backlight/*/brightness` (sysfs) + `brightnessctl` | udev chmod 0666 rule (`services/plumbing.nix`) — see §brightness |
 | **Volume** | PipeWire/WirePlumber session (`services/audio.nix`) | already done; control via `wpctl` / any DE's volume widget (audio.nix runs its own PW session with the S16 ALSA sink config) |
+| **Touch** | `wl_touch` (Wayland core protocol) — a real 10-point multi-touch device | gemwl forwards the NT36772's fingers to its seat as wl_touch (no cursor); the nested compositor's wlroots wayland backend re-emits it to the shell — see §Touch |
 
 ### Battery: no fuel gauge ⇒ voltage-derived capacity in the kernel
 
@@ -143,6 +147,63 @@ up with actkbd-style daemons). Follow-up if needed: a tiny
 `wevdaemon`/actkbd-style key daemon bound to the Fn-volume combos →
 `wpctl set-volume`. Not part of this plumbing layer.
 
+### Touch: a real multi-touch device (no cursor) [2026-09-10]
+
+**Problem.** The NT36772 TDDI kernel driver
+(`devices/planet-geminipda/kernel/delta/drivers/input/touchscreen/
+novatek-nt36xxx.c`) was already a correct 10-point Protocol-B
+multi-touch device — the problem was the COMPOSITOR: gemwl consumed
+`wl_touch` and **emulated the first finger as an absolute pointer**
+(warp the cursor + synthetic `BTN_LEFT` press/release). Every app
+therefore saw a mouse: a visible on-screen cursor that followed the
+finger, no second finger, no gestures — so GNOME apps (WebKit pinch
+zoom, GTK4 multi-touch) could never benefit from the hardware.
+
+**The chain (verified at source level, 2026-09-10).** The nested
+architecture is gemwl (wlroots 0.18.2, owns the LK fb) → phoc 0.54
+(wlroots 0.19.3, `WLR_BACKENDS=wayland`) → phosh apps. wlroots' wayland
+backend (both 0.19.3 `backend/wayland/seat.c` for phoc and 0.18.2 for
+labwc) synthesizes a `wlr_touch` input device ("wayland-touch-seat0")
+from the OUTER compositor's `wl_seat` when the seat advertises
+`WL_SEAT_CAPABILITY_TOUCH`, and forwards `wl_touch.down/motion/up/frame`
+into it (normalized 0..1 per-output coords). phoc's own touch stack
+(`src/seat.c seat_add_touch` → `src/cursor.c phoc_cursor_handle_touch_*`
+→ `wlr_seat_touch_notify_*`) then delivers a real `wl_touch` to the
+phosh apps — plus phoc's own compositor-side gesture recognizers
+(`gesture-zoom.c` pinch, `gesture-swipe.c`, `gesture-drag.c`) and
+compositor-drawn touch-point feedback (`touch-point.c`).
+
+**The fix (`pkgs/gemwl/gemwl.c`):**
+
+- `server_new_input` now adds `WL_SEAT_CAPABILITY_TOUCH` to the seat
+  when a touch device is attached (so phoc/labwc create their
+  synthesized `wlr_touch`).
+- The touch handlers forward **every** finger:
+  `touch_handle_down` hit-tests the scene (normalized → output box →
+  `wlr_scene_node_at` → surface-local; the nested toplevel is
+  full-screen at scale 1, so the wl_touch "relative to the down
+  surface" contract holds) and calls
+  `wlr_seat_touch_notify_down + _frame`; motion/up are the same
+  (`notify_motion`/`notify_up` + frame). No pointer events are
+  synthesized anymore — the cursor is untouched by touch.
+- A `client_has_touch()` guard skips a down until the nested client
+  has actually called `wl_seat.get_touch()` (wlroots would otherwise
+  log an error per down; phoc requests it as soon as it sees the
+  capability, so this only bites pre-session).
+- **Fallback:** `GEMWL_TOUCH_POINTER_EMU=1` on the gemwl unit restores
+  the legacy first-finger-as-pointer behaviour (A/B on glass; in emu
+  mode the TOUCH capability is NOT advertised, so clients see exactly
+  the pre-change seat).
+
+**Consequences.** Phosh: taps/one-finger drags are native touch now
+(same feel, no cursor); multi-finger works — pinch/zoom in GTK4/WebKit
+apps, and phoc's own desktop zoom/swipe gestures activate. LXQt
+(labwc, wlroots 0.18.2 wayland backend has the identical touch path):
+Qt Widgets apps receive `wl_touch` and Qt's own touch→mouse
+compatibility synthesizes clicks inside the app (no compositor
+anymore); Qt Quick content gets real multi-touch. A USB mouse, when
+plugged in, still gets the pointer as before.
+
 ## Where it lives
 
 - `services/plumbing.nix` — UPower + thresholds + udev backlight rule +
@@ -152,6 +213,9 @@ up with actkbd-style daemons). Follow-up if needed: a tiny
   `services.geminiWifi.useNetworkManager`).
 - kernel delta `drivers/power/supply/bq25890_charger.c` (fork commit
   c8f0787d, synced + byte-verified 2026-09-10) — the Battery supply.
+- `pkgs/gemwl/gemwl.c` — the touch → wl_touch forwarding (see §Touch);
+  the NT36772 kernel driver itself was already correct (Protocol B,
+  10 points, output-space ABS).
 - `config/gemini.nix` — imports + the existing NM polkit/group wiring.
 
 Phosh itself needed no changes: its wifi page speaks NM, its BT page
@@ -197,6 +261,12 @@ On-glass results (2026-09-10; gen62/gen63 + the new boot.img):
 - ⬜ Physical eyeball items: the phosh brightness slider moves the LCD
   (rule 5 — judge on glass), and the silver-button sleep/wake round
   trip returns both desktop and wifi.
+- Touch (2026-09-10): ✅ gemwl logs `touchscreen attached (wl_touch
+  forwarding)`; ✅ phoc logs `Adding touch device: wayland-touch-seat0`
+  (the synthesized device exists end-to-end) — see the session log
+  2026-09-10c for the journal receipts. ⬜ on glass with fingers: no
+  visible cursor on touch, tap/one-finger-drag work in phosh, and a
+  two-finger pinch zooms in a GTK4/WebKit app (e.g. a web page).
 
 ### Follow-up fixed in the same session
 
