@@ -5,9 +5,16 @@
 # 11.0 stack (~700 MB closure) is deliberately OUTSIDE the flake system
 # — bin/wine-x86-deploy.sh ships it to the device as a standalone GC
 # root (/nix/var/nix/gcroots/wine-x86/wine-wow64) with launcher
-# /root/wine-x86/wine-wow. Baking the full stack into systemPackages
+# /var/lib/wine-x86/wine-wow. Baking the full stack into systemPackages
 # would bloat every system deploy (docs/wine-d3d.md §5). This pkg only
 # provides the PATH convenience: `wine foo.exe` / `wine64 foo.exe`.
+#
+# The launcher lives under /var/lib, NOT /root (moved 2026-09-11): the
+# first version exec'd /root/wine-x86/wine-wow, which the unprivileged
+# desktop user cjdell cannot reach (/root is 0700) — running `wine` in
+# the GNOME session failed with "Permission denied". /var/lib/wine-x86
+# is world-readable/executable and holds the per-user prefix at
+# $HOME/.wine-x86.
 #
 # The wrapper execs the device-state launcher by absolute path — if the
 # wine stack was never deployed (fresh rootfs before wine-x86-deploy.sh
@@ -23,7 +30,7 @@
 { writeShellScriptBin }:
 
 let
-  launcher = "/root/wine-x86/wine-wow";
+  launcher = "/var/lib/wine-x86/wine-wow";
 in
 {
   wine = writeShellScriptBin "wine" ''

@@ -1,7 +1,9 @@
 # Wine on the Gemini PDA — x86-64 Windows apps via box64 + wine64
 
-Last updated: 2026-09-09 (32-bit guests via wine-wow64; glprobe32;
-panfrost-not-llvmpipe correction)
+Last updated: 2026-09-11 (**wine-wow64 is now the deployed/scripted stack;
+runtime moved to `/var/lib/wine-x86` so the desktop user can run it**).
+Previous: 2026-09-09 (32-bit guests via wine-wow64; glprobe32;
+panfrost-not-llvmpipe correction).
 
 Run the **first real Windows Direct3D 9 program on the PDA**: a
 self-written `d3d9test` (rotating vertex-coloured cube + GDI FPS
@@ -82,10 +84,15 @@ wine64 →  winewayland.drv → wayland-0 (gemwl, /run/gemwl)
 wined3d→  EGL/GBM (x86-64 mesa from the wine closure) → panfrost T880
 ```
 
-- Launcher: `/root/wine-x86/wine-x86` (installed by `deploy`): sets
-  `WINEPREFIX=/root/.wine-x86`, `WINEDEBUG=warn-all` (override), and the
-  gemwl wayland env (`XDG_RUNTIME_DIR=/run/gemwl`,
-  `WAYLAND_DISPLAY=wayland-0`) if not already set.
+- Launcher: `/var/lib/wine-x86/wine-wow` (installed by `deploy`; the
+  system `wine`/`wine64` wrappers exec the same path). It sets
+  `WINEPREFIX=$HOME/.wine-x86` (per-user), `WINEDEBUG=warn-all`
+  (override), and the guest-mesa EGL vendor manifest. It does NOT force
+  a display: under GNOME it inherits the session's
+  `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` (the old gemwl-era hardcode to
+  `/run/gemwl` is gone). [moved 2026-09-11: the old
+  `/root/wine-x86/wine-x86` launcher was unreachable from the `cjdell`
+  session — `/root` is 0700, `wine` died with "Permission denied"]
 - **gemwl needed viewporter** (2026-09-09): winewayland refuses to
   init without `wp_viewporter` (`waylanddrv:wayland_process_init Wayland
   compositor doesn't support wp_viewporter` → `nodrv_CreateWindow`).
@@ -138,9 +145,14 @@ runs its 32-bit x86 code in most cases (experimental per box64 README;
 the known-broken case is wined3d/D3D — GL is fine). A wineboot -u in a
 fresh prefix installs syswow64; 64-bit apps run unchanged.
 
-Deployment is ad-hoc today (launcher /root/wine-x86/wine-wow, GC root
-wine-wow64, prefix /root/.wine-wow) — extending bin/wine-x86-deploy.sh
-with the wow64 path is a suggested next action (session-log handover).
+**Now scripted (2026-09-11):** `bin/wine-x86-deploy.sh deploy` ships
+`wineWow64Packages.full` (706 MB closure) + box64 + mesa + grim, installs
+`/var/lib/wine-x86/wine-wow` (0755, world-readable) and GC-roots
+`wine-wow64`; `pkgs/wine-cli.nix` wraps it as `wine`/`wine64` in
+`systemPackages`; the prefix is per-user `$HOME/.wine-x86`
+(`… init [user]` runs `wineboot`). The legacy 64-bit-only `wine64`
+(1.8 GB) is still an attribute in `pkgs/wine-x86.nix` but is no longer
+deployed by default.
 
 **glprobe32** (pkgs/glprobe32) is the 32-bit GL present probe: two shared
 contexts + display list built on B executed on A + colored clears +

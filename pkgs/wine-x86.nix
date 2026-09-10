@@ -2,13 +2,20 @@
 # SAME nixpkgs channel rev the flake pins (dc5d91f84032, 26.11pre1068949,
 # verified cache-healthy per AGENTS.md rule 9). See docs/wine-d3d.md.
 #
-# Attributes (all hydra-cached — verified 2026-09-09):
-#   wine64   x86_64-linux wine 11.0 (the Windows emulator; runs under
-#            box64 on the PDA). 1.8 GB closure. NOTE: the wine64 closure
+# Attributes (all hydra-cached — verified 2026-09-09 unless noted):
+#   wineWow64 x86_64-linux wine-wow64 11.0 (the new-WoW64 single loader;
+#            runs under box64 on the PDA and carries the i386-windows
+#            syswow64 payload, so BOTH 32- and 64-bit PEs run). ~706 MB
+#            closure. This is what pkgs/wine-cli.nix + bin/wine-x86-deploy.sh
+#            deploy and the system `wine`/`wine64` wrappers exec
+#            [added 2026-09-11].
+#   wine64   x86_64-linux wine 11.0 (legacy 64-bit-only emulator; runs
+#            under box64). 1.8 GB closure; kept for reference/fallback
+#            but no longer deployed by default. NOTE: the wine64 closure
 #            carries glvnd (libEGL dispatch) but NO GL implementation —
 #            on a normal box glvnd finds the distro's ICD; on the PDA
 #            we ship `mesa` (below) and point the guest at its glvnd
-#            manifest via __EGL_VENDOR_LIBRARY_FILE (docs/wine-d3d.md).
+#            manifest via __EGL_VENDOR_LIBRARY_FILENAMES (docs/wine-d3d.md).
 #   box64    aarch64-linux box64 0.4.4 (x86-64 binary translator).
 #   d3d9test x86_64-windows PE (mingw-w64 cross; ./d3d9test.nix).
 #   mesa     x86_64-linux mesa 26.2.2 (gallium: panfrost_dri + swrast;
@@ -33,6 +40,7 @@ let
   a64 = import np { system = "aarch64-linux"; };
 in
 {
+  wineWow64 = x64.wineWow64Packages.full;
   wine64 = x64.wine64;
   box64 = a64.box64;
   d3d9test = x64.pkgsCross.mingwW64.callPackage ./d3d9test.nix { };
