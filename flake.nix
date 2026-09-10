@@ -14,7 +14,7 @@
 # (0bb7ec54c848) those compiled outputs were 404 for x86_64 AND aarch64
 # (base closure only — glibc 200, qtbase 404), so Qt6/LXQt compiled
 # from source every time. The only remaining local compiles are the
-# custom drvs: mesa-geminipda fork, wlroots/labwc/gemwl pins, the
+# custom drvs: patched mesa (nixpkgs 26.2.2 + T880 delta), wlroots/labwc/gemwl pins, the
 # kernel, gemini-firmware. The CROSS toplevel model (x86_64 host,
 # buildSystem=x86_64-linux) is ABANDONED — it hit the nixpkgs cross
 # walls (Qt6CoreTools missing for the lxqt scope, etc.; see
@@ -123,8 +123,9 @@
         inherit (eval) pkgs;
       };
 
-      # Mesa 25.0.7 + geminipda panfrost fork (also in the system closure
-      # via config/gemini.nix; standalone here for size/iteration checks).
+      # Mesa 26.2.2 + the T880 polygon-list delta (thin override of the
+      # pinned nixpkgs mesa; also in the system closure via
+      # config/gemini.nix; standalone here for size/iteration checks).
       mesa = eval.pkgs.callPackage ./pkgs/mesa-geminipda.nix { };
 
       # Phase 4 desktop stack (wlroots 0.18.2 + gemwl + tinytest clients;

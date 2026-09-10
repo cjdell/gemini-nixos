@@ -55,6 +55,35 @@ yet** — the device is left exactly as the user just saw it.
 > sluggishness.
 > Issue 2 (touch rotation) is unchanged.
 
+> **2026-09-10p update — dual-mesa RESOLVED; the Mesa rebase (1a) is done.**
+> Chasing COSMIC (new desktop, s"session selector\" that day) surfaced the
+> real defect, exactly the version-mix this handover flagged: the device
+> had **two** mesa ICDs at once — the system `hardware.graphics` vendor
+> (nixpkgs mesa 26.2.2) *and* the fork's `/etc/glvnd/egl_vendor.d/50_mesa.json`
+> (25.0.7, `hardware.graphics` was on despite the config saying off).
+> `cosmic-comp` had `libgallium-25.0.7` **and** `libgallium-26.2.2`
+> loaded in one process and could not import buffers between them
+> (`Failed to render texture … import for wrong devices`), so it fell
+> back to a CPU composition path (~17–23 fps; GNOME, on one ICD, was
+> 73–77 fps). Fixed by **retiring the fork**: `pkgs/mesa-geminipda.nix`
+> is now a thin `.override` of the pinned nixpkgs mesa **26.2.2** carrying
+> only the still-needed T880 polygon-list memset
+> (`patches/mesa-panfrost-polygon-list-26.2.2.patch`); the dma-buf caps
+> hunk is obsolete because 26.x derives `caps->dmabuf` from
+> `DRM_CAP_PRIME` in the generic caps helper. `hardware.graphics.package`
+> points at it and the `/etc` fork manifest is gone → one version, one
+> ICD. **Verified on glass (gen10):** cosmic-comp and gnome-shell each load
+> only `3pfldrz9…-mesa-26.2.2` (no `libgallium-25.0.7`); the
+> wrong-device/import errors are **0** this boot; GNOME gemdemo 73–77 fps
+> (no regression), COSMIC 17–23 fps. So the mesa mix was a **real bug,
+> now fixed** — but it was not GNOME's sluggishness cause (that was the
+> kworker loop, above); COSMIC's remaining ~20 fps tracks to
+> smithay-vs-`geminipda-drm` (the plane deliberately strips alpha via
+> `drm_fb_build_fourcc_list`, so COSMIC's preferred AB24/AR30 formats are
+> unavailable) and is a follow-up, not an acceleration failure. Details:
+> `docs/library-deltas.md` (Mesa instance update), `docs/session-log.md`
+> 2026-09-10p.
+
 ---
 
 ## Issue 1 — Sluggishness (looks/feels like software rendering)

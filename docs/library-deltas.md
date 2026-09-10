@@ -111,6 +111,11 @@ Concretely, for a forked library the recipe is:
    Revisit (b) for mesa if the delta is ever rebased onto a mesa major
    that the consumed nixpkgs ships.
 
+   **DONE 2026-09-10 — see the update below the mesa facts table.** Mesa
+   now uses exactly this: a thin `.override` of the pinned nixpkgs
+   `pkgs.mesa` (26.2.2) carrying the one still-needed delta hunk. The
+   paragraphs above are kept as the 2026-09-07 rationale/receipts.
+
 4. **Verification checklist** (each new library):
    - base provenance recorded: upstream tag/commit + published-archive
      URL + hash (the derivation comment);
@@ -131,6 +136,27 @@ Concretely, for a forked library the recipe is:
 | Delta content | panfrost: dma-buf IMPORT\|EXPORT caps (`pan_screen.c`), per-batch polygon-list whole-BO memset + dump hooks (`pan_cmdstream.c`), heap pre-map debug (`pan_device.c`), TILERDBG census (`pan_desc.c`), tiler-mask oracle hook (`pan_tiler.c`); env hooks silent by default |
 | Published base | canonical `/-/archive/` tarball of `mesa-25.0.7`, sha256 `a0c8a2dbf99bf639bd9d42a0f4a749906b76df8371e11fdbc2858918a3e8cf93` (re-verified byte-stable 2026-09-07) |
 | Nixpkgs that shipped the same base | `nixos-25.05` @ `ac62194c3917d5f474c1a844b6fd6da2db95077d` (`pkgs.mesa` = 25.0.7); `nixos-25.11` = 25.2.6 (same major, delta would need re-checking); system pin (npins unstable) = 26.1.4 (different major) |
+
+### Update 2026-09-10p — mesa delta rebased to the system nixpkgs (26.2.2); fork retired
+
+**Status: on glass (gen10), GNOME + COSMIC verified.** The 25.0.7
+standalone build above is retired. Why it had to change: with
+`hardware.graphics` on (nixpkgs default; the config *said* off) glvnd
+also saw the fork's `/etc/glvnd` ICD, so **two mesas loaded in one
+process** — cosmic-comp had `libgallium-25.0.7` *and*
+`libgallium-26.2.2` and could not import buffers between them
+("import for wrong devices"), falling back to a CPU composition path.
+One version, one ICD is the fix *and* the platform improvement.
+
+| | |
+|---|---|
+| Base | pinned nixpkgs `pkgs.mesa` **26.2.2** (`dc5d91f84032`), via `.override { galliumDrivers=["panfrost"]; vulkanDrivers=[]; … }` |
+| Delta file | `patches/mesa-panfrost-polygon-list-26.2.2.patch` (38 lines, sha256 `b2cc4dbd05ce548bc5bcea73813a4a8012a6eba71edaae68ae1f157818693668`) |
+| Delta content | `pan_cmdstream.c` — force the polygon-list BO CPU-visible and zero the whole list every batch (upstream clears only the first word via WRITE_VALUE when there are draws; stale empty-bin headers on a reused BO drop far bins on the Mali-T880 tiler) |
+| Dropped from the old delta | the panfrost dma-buf IMPORT\|EXPORT caps hunk — **obsolete**: 26.x's generic `u_init_pipe_screen_caps()` derives `caps->dmabuf` from the kernel's `DRM_CAP_PRIME` (`src/gallium/auxiliary/util/u_screen.c`); and all the bring-up debug hooks (PAN_TILERDBG, tiler census, tiler-mask oracle) |
+| Derivation | `pkgs/mesa-geminipda.nix` is now a thin override (no bespoke build): drops the empty `spirv2dxil` output (no Vulkan), sets `mesonAutoFeatures = "auto"` + disables gallium-va/teflon/intel-rt/vulkan-layers (nixpkgs forces `auto_features=enabled`, which fails with a panfrost-only driver set), and bundles libgbm (`libgbm-external=false`) so the nested stack keeps its single-mesa contract |
+| Wiring | `hardware.graphics.package = mesaGeminipda`; no `/etc/glvnd` manifest; the single ICD is `/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json` |
+| Verify | `patch -p1 --dry-run` clean; aarch64 build green; system closure has **one** mesa (`3pfldrz9…`) + the separate `mesa-libgbm-26.1.3` (thin, no gallium), no 25.0.7; cosmic-comp and gnome-shell each load only the 26.2.2 ICD |
 
 ## Kernel — DONE 2026-09-08 (delta TREE instead of patch series)
 

@@ -5,6 +5,73 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10v — ONE MESA: 25.0.7 fork retired, delta rebased to nixpkgs 26.2.2 (dual-vendor fix, on glass gen10)
+
+User asked whether COSMIC was really hardware-accelerated (it felt slow).
+It is (Panfrost, `Mesa / Mali-T880 MC4`, gemdemo GLES 3.1), but the
+investigation found a **real platform defect** and fixed it.
+
+**Root cause (measured).** With `hardware.graphics` on (nixpkgs default —
+the config comment claimed off) glvnd got TWO mesa ICDs: the system
+vendor (`/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json` →
+mesa 26.2.2) and the fork's `/etc/glvnd/egl_vendor.d/50_mesa.json` →
+mesa-geminipda 25.0.7. `/proc/<cosmic-comp>/maps` had **both**
+`libgallium-25.0.7.so` and `libgallium-26.2.2.so`; the journal showed
+`Failed to render texture … import for wrong devices DrmNode { ty: Render }`
+→ CPU composition. GNOME reached 73–77 fps on one ICD; COSMIC ~17–23.
+
+**Fix (platform improvement, not a COSMIC bodge):**
+- Rebased the delta to the pinned nixpkgs mesa **26.2.2**. The fork's
+dma-buf caps hunk is **obsolete**: 26.x's generic
+`u_init_pipe_screen_caps()` derives `caps->dmabuf` from the kernel's
+`DRM_CAP_PRIME` (receipt: `src/gallium/auxiliary/util/u_screen.c`). The
+only surviving functional hunk is the T880 polygon-list whole-BO memset.
+- New `patches/mesa-panfrost-polygon-list-26.2.2.patch` (38 lines,
+sha256 `b2cc4dbd…`), `patch -p1 --dry-run` clean.
+- `pkgs/mesa-geminipda.nix` rewritten as a **thin `.override`** of
+`pkgs.mesa` (no bespoke build): lean panfrost, no vulkan, empty
+`spirv2dxil` output dropped, `mesonAutoFeatures="auto"` +
+disable gallium-va/teflon/intel-rt/vulkan-layers (nixpkgs forces
+`auto_features=enabled`, which fails for a panfrost-only driver set),
+and `libgbm-external=false` so libgbm is bundled (nested stack keeps its
+single-mesa contract).
+- `config/gemini.nix`: `hardware.graphics.package = mesaGeminipda`; the
+`/etc/glvnd` fork manifest removed; stale "stays off" comment corrected;
+`mesaGeminipda` dropped from systemPackages.
+- Comments updated in `services/{lxqt,phosh}.nix`, `pkgs/gemwl.nix`.
+
+**Build receipts (rule 0).** Patched mesa drv built on the aarch64
+builder (three iterations: gallium-va auto-feature failure → removed;
+rusticl-disable broke the `opencl` output fixup → kept enabled;
+`spirv2dxil` empty output → filtered from `outputs`). System closure now
+has ONE mesa `3pfldrz9n0vwb9kn7ps32w9lv4k4109d-mesa-26.2.2` +
+the separate `xv6s7zkv…-mesa-libgbm-26.1.3` (thin, no gallium) — **no
+25.0.7**. Feature commit `7a10ad9`; toplevel
+`i3zgpzsiym5v6ibzylqnafka610lks6m-nixos-system-gemini-26.11pre-git`;
+deployed as **gen10** `vc23yky1n472xb1hm78c3clp1srjqnfp-nixos-system-gemini-26.11pre-git`.
+
+**On-glass verification (gen10).**
+- `gemcli session set cosmic --reboot` → cosmic-comp[1514] loads only
+`3pfldrz9…-mesa-26.2.2` (`libEGL_mesa` + `libgallium-26.2.2`) +
+`mesa-libgbm-26.1.3`; **0** occurrences of "import for wrong devices" /
+"Failed to render texture" in the boot journal (previously recurring).
+- `gemcli session set gnome --reboot` → gnome-shell loads only the same
+26.2.2; gemdemo **77 / 73 / 53 fps** (matches the documented ~74);
+0 failed units → **no GNOME regression**.
+- Device left on `cosmic` (marker), GNOME/KMS boot.img unchanged.
+
+**Remaining (COSMIC perf, nice-to-have, follow-up).** COSMIC is still
+~17–23 fps. Not an acceleration/Mesa-version problem: the compositor logs
+`Preferred format AB30/AR30/AB24 not available: NoSupportedPlaneFormat`
+because `geminipda-drm` deliberately strips alpha
+(`drm_fb_build_fourcc_list`; driver comment lines ~47/~234), and it is a
+single-plane shadow framebuffer. Next lead: smithay's format/render-selection
+path (and possibly advertising ARGB8888) — investigate separately without
+regressing the verified GNOME path.
+
+Also committed this session: docs/library-deltas.md mesa update,
+handover-2026-09-10-gnome-perf-touch.md Issue-1 update.
+
 ## 2026-09-10u — desktop/session selector DEPLOYED to glass (device gen9; GNOME session preserved)
 
 Deployed the selector from `2026-09-10t` (`bash bin/deploy.sh deploy`;
