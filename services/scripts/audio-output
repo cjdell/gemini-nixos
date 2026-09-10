@@ -14,6 +14,17 @@
 # The choice persists in /etc/gemini/audio-output-mode and is re-applied
 # at every boot by gemini-audio-defaults.service.
 #
+# It ALSO sets the PipeWire default sink so the GNOME Sound menu / Quick
+# Settings output picker agrees with the amp state (2026-09-10):
+#     speaker   -> default sink gemini_speakers (the L/R-correcting
+#                  virtual sink, services/pipewire/60-gemini-speakers.conf)
+#     headphone -> default sink alsa_output.platform-sound.stereo-fallback
+#                  (the hardware sink; only its description is renamed)
+# gemini-speakerd follows the default sink and keeps the amp in sync, so
+# changing the output in GNOME is enough. `sync-default` is the
+# retryable boot-time half (PipeWire may still be starting when
+# gemini-audio-defaults runs).
+#
 # Used by: the gemini-pda-utils CLI, LXQt desktop launchers, the LXQt
 # panel CustomCommand output widget (display+click-toggle).
 #
@@ -25,12 +36,42 @@ set -u
 STATE=/etc/gemini/audio-output-mode
 SPEAKER="${SPEAKER_BIN:-__GEMINI_UTILS__/speaker}"
 
+# PipeWire sink names (services/pipewire/*.conf). The hardware sink keeps
+# its ALSA/ACP name (only its description is renamed); gemini_speakers is
+# the L/R-correcting virtual sink.
+SINK_SPEAKERS=gemini_speakers
+SINK_HEADPHONES=alsa_output.platform-sound.stereo-fallback
+
+# The one PipeWire system session (services/audio.nix).
+AUDIO_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/gemwl-audio}}"
+
 die() { echo "audio-output: $*" >&2; exit 1; }
 
-apply() { # mode  -> flip the amp pads + persist the choice
+# Write PipeWire's *configured* default sink (the key GNOME/pactl write;
+# WirePlumber resolves it to default.audio.sink). Non-zero when PipeWire
+# is not reachable yet (early boot) — `apply` only warns, `sync-default`
+# lets the caller retry.
+set_default_sink() { # name
+  command -v pw-metadata >/dev/null 2>&1 || return 1
+  PIPEWIRE_RUNTIME_DIR="$AUDIO_RUNTIME_DIR" XDG_RUNTIME_DIR="$AUDIO_RUNTIME_DIR" \
+    pw-metadata -n default 0 default.configured.audio.sink \
+      "{\"name\":\"$1\"}" Spa:String:JSON >/dev/null 2>&1
+}
+
+apply() { # mode  -> flip the amp pads + default sink + persist the choice
   case "$1" in
-    speaker)   "$SPEAKER" on  || die "speaker on failed"; echo "$1" > "$STATE" ;;
-    headphone) "$SPEAKER" off || die "speaker off failed"; echo "$1" > "$STATE" ;;
+    speaker)
+      "$SPEAKER" on || die "speaker on failed"
+      set_default_sink "$SINK_SPEAKERS" \
+        || echo "audio-output: PipeWire not reachable; will sync the default sink later" >&2
+      echo "$1" > "$STATE"
+      ;;
+    headphone)
+      "$SPEAKER" off || die "speaker off failed"
+      set_default_sink "$SINK_HEADPHONES" \
+        || echo "audio-output: PipeWire not reachable; will sync the default sink later" >&2
+      echo "$1" > "$STATE"
+      ;;
     *) die "unknown mode '$1' (want speaker|headphone)" ;;
   esac
 }
@@ -40,6 +81,13 @@ case "${1:-status}" in
   speaker|headphone) apply "$1" ;;
   toggle)
     [ "$mode" = speaker ] && apply headphone || apply speaker
+    ;;
+  sync-default) # set the PipeWire default sink to match the stored mode
+    case "$mode" in
+      speaker)   set_default_sink "$SINK_SPEAKERS" ;;
+      headphone) set_default_sink "$SINK_HEADPHONES" ;;
+      *) die "unknown stored mode '$mode'" ;;
+    esac
     ;;
   status)
     # live pad state (authoritative) vs stored intent — dout= field of pad
@@ -56,5 +104,5 @@ case "${1:-status}" in
       echo "headphone jack plays too when mode=speaker and something is plugged (parallel net, no jack detect yet)"
     fi
     ;;
-  *) echo "usage: $0 status|speaker|headphone|toggle"; exit 2 ;;
+  *) echo "usage: $0 status|speaker|headphone|toggle|sync-default"; exit 2 ;;
 esac

@@ -27,6 +27,12 @@
 //! cascade into rapid sleep/wake flicker.
 //!
 //! `sleep on` sequence (visible first):
+//!   0. write `state=sleeping` to /run/gemcli-sleep.state FIRST — before
+//!      any teardown. This makes the profile watcher (gemini-power-profile)
+//!      stand down immediately: it must not race the A72 teardown by
+//!      trying to bring the cluster back up (that concurrent secure
+//!      up/down hung the device on glass, 2026-09-10q). The A72 lock
+//!      closes the remaining poll-window race.
 //!   1. backlight off (bl_power=4 / PWM EN=0 — brightness is retained,
 //!      so `on` restores it). INSTANT — this is the press feedback.
 //!   2. unbind the clamshell input drivers: the gpio-matrix-keypad
@@ -35,21 +41,28 @@
 //!      matrix/touch — unbound, they generate no input and no wakeups.
 //!      The mt6351-keys side-button driver is deliberately NOT unbound —
 //!      it is the wake button.
-//!   3. offline A53 cpus 1..7 (cpu0 must run the kernel; the A72 cluster
-//!      is already down in the default cold-boot state).
+//!   3a. power the A72 cluster down (cpu8/cpu9) IF it was up — the secure
+//!      cl2-down teardown is WDT-guarded and drops the DA9214 rail, so it
+//!      is only run when the performance power mode (or a manual
+//!      `a72 up`) left the cluster online. It runs WHILE the A53s are
+//!      still online (the verified watcher path); doing it after the A53
+//!      offlines hung the device (2026-09-10q). The recorded state
+//!      restores it on wake. [A72 handling added 2026-09-10]
+//!   3b. offline A53 cpus 1..7 (cpu0 must run the kernel).
 //!   4. stop the heavyweight services that were running: gemwl +
 //!      lxqt-nested (the GPU desktop), pipewire/wireplumber/pipewire-pulse
 //!      (audio). sshd + gemini-battery-guard + gemini-sleepd STAY.
 //!   5. wifi down: `ip link set <iface> down`; legacy additionally kills
 //!      wpa_supplicant + dhcpcd; NM mode leaves NM's supplicant alone
 //!      (the CONSYS chip itself stays powered — see above).
-//!   6. record everything in /run/gemcli-sleep.state so `off` restores
-//!      exactly (services that were running, cores offlined, backlight%,
-//!      wifi was on).
+//!   6. the final state write (state=sleeping was set in step 0) so `off`
+//!      restores exactly (services that were running, cores offlined,
+//!      backlight%, wifi was on).
 //!
 //! `sleep off` reverses, again visible first: backlight on, rebind the
-//! inputs, online the recorded cpus, then start the recorded services +
-//! re-associate wifi (async).
+//! inputs, online the recorded A53 cpus, bring the A72 cluster back up if
+//! it was up, then start the recorded services + re-associate wifi
+//! (async).
 //!
 //! `sleep key` is the daemon entry (gemini-sleepd.service): it watches
 //! /dev/input/eventN for mt6351-keys KEY_SLEEP presses and toggles.
@@ -89,12 +102,7 @@ const SERVICES: &[&str] = &[
 /// Resolve a host binary: the stable /run/current-system/sw path on
 /// NixOS (systemd-unit PATH is minimal), bare name as the fallback.
 fn swbin(name: &str) -> String {
-    let p = format!("/run/current-system/sw/bin/{name}");
-    if util::exists(&p) {
-        p
-    } else {
-        name.into()
-    }
+    util::swbin(name)
 }
 
 fn systemctl() -> String {
@@ -131,6 +139,14 @@ fn clear_state() {
 
 fn is_sleeping() -> bool {
     read_state().get("state").map(|s| s == "sleeping").unwrap_or(false)
+}
+
+/// Public read of the sleep state for sibling daemons: the power-profile
+/// watcher (`profile.rs`) must NOT touch the A72 cluster while the
+/// silver-button light sleep owns it, and it re-applies the active
+/// power profile once the device is awake again.
+pub fn sleeping() -> bool {
+    is_sleeping()
 }
 
 // --- service orchestration (systemctl) -------------------------------------
@@ -357,6 +373,20 @@ pub fn on() -> i32 {
     let mut rc = 0;
     let mut state = std::collections::HashMap::new();
 
+    // 0. Mark the sleep IMMEDIATELY, before touching the A72 cluster or
+    //    the cpus. The profile watcher (gemini-power-profile) reads this
+    //    state file: it must stand down before we power the A72 rail
+    //    down, or it can race us straight back up — two concurrent secure
+    //    A72 ops hung the device on glass (2026-09-10q). Writing the
+    //    state first also means a crash mid-transition still leaves the
+    //    device "asleep" (wakeable) rather than half-torn-down and awake.
+    state.insert("state".into(), "sleeping".into());
+    state.insert("stamp".into(), util::stamp());
+    if let Err(e) = write_state(&state) {
+        println!("gemcli sleep: ERROR writing early state: {}", e.msg);
+        return 1;
+    }
+
     // 1. backlight — INSTANT visible acknowledgement (bl_power=4 keeps
     //    the brightness value; on() restores it)
     let pct = backlight::get().unwrap_or(0);
@@ -380,9 +410,37 @@ pub fn on() -> i32 {
         }
     }
 
-    // 3. cores (cpu0 stays; offline_workers logs per-cpu warnings)
+    // 3a. A72 cluster first, WHILE the A53s are still online. The secure
+    //     power_off_cl3 (CCI/snoop/SPM) is what the verified watcher path
+    //     runs with all little cores up; doing it AFTER offlining the
+    //     A53s is what hung the device (2026-09-10q). Only when the
+    //     cluster is actually up (performance power mode / manual
+    //     `a72 up`) — the default cold-boot state leaves it down.
+    let a72_was_up = crate::sysfs::cpu_is_online(8) || crate::sysfs::cpu_is_online(9);
+    if a72_was_up {
+        println!("gemcli sleep: A72 cluster up — powering down (cl2-down, WDT-guarded)");
+        // Hold the A72 lock across the whole secure teardown so the
+        // watcher/CLI cannot drive the rail concurrently. The state file
+        // above already made the watcher stand down; the lock closes the
+        // poll-window race.
+        let guard = crate::a72::lock();
+        let a72_rc = crate::a72::down_locked("both");
+        drop(guard);
+        if a72_rc != 0 {
+            println!("gemcli sleep: WARNING A72 power-down returned {a72_rc}");
+            rc = 1;
+        }
+        state.insert("a72".into(), "1".into());
+    } else {
+        println!("gemcli sleep: A72 cluster already down");
+    }
+
+    // 3b. A53 cpus 1..7 offline (cpu0 must run the kernel)
     let off = offline_workers();
     state.insert("cpus_offline".into(), off.clone());
+    // Persist what we have so far: if the remainder is interrupted, the
+    // wake path still restores the backlight/inputs/cpus/A72.
+    let _ = write_state(&state);
 
     // 4. heavyweight services (record, then stop async)
     let running = services_running();
@@ -394,9 +452,7 @@ pub fn on() -> i32 {
         state.insert("wifi".into(), "1".into());
     }
 
-    // 6. state — a second press now means WAKE
-    state.insert("state".into(), "sleeping".into());
-    state.insert("stamp".into(), util::stamp());
+    // 6. state — the final write (state=sleeping was set early in step 0)
     if let Err(e) = write_state(&state) {
         println!("gemcli sleep: ERROR writing state: {}", e.msg);
         return 1;
@@ -439,9 +495,20 @@ pub fn off() -> i32 {
         }
     }
 
-    // 3. cores
-    if let Some(list) = state.get("cpus_offline") {
-        online_cpus(list);
+    // 3. cores (the A72 cluster is restored AFTER the A53s, so the warm
+    //    cpu9 hotplug has an online cpu8 to land next to). Default to the
+    //    full A53 set if the state was truncated by an interrupted sleep.
+    let default_off = "1,2,3,4,5,6,7".to_string();
+    online_cpus(state.get("cpus_offline").unwrap_or(&default_off));
+    if state.get("a72").map(|v| v == "1").unwrap_or(false) {
+        println!("gemcli sleep: restoring A72 cluster (cl2-up, WDT-guarded)");
+        let guard = crate::a72::lock();
+        let a72_rc = crate::a72::up_locked("both");
+        drop(guard);
+        if a72_rc != 0 {
+            println!("gemcli sleep: WARNING A72 bring-up returned {a72_rc}");
+            rc = 1;
+        }
     }
 
     // 4. services + wifi (async — the visible wake is backlight+cores)
@@ -473,6 +540,9 @@ pub fn status() -> i32 {
         if let Some(v) = s.get("cpus_offline") {
             println!("cpus offline: {}", if v.is_empty() { "(none)" } else { v });
         }
+        if let Some(v) = s.get("a72") {
+            println!("A72 cluster: {}", if v == "1" { "was up (will be restored)" } else { "was down" });
+        }
         if let Some(v) = s.get("backlight_pct") {
             println!("backlight was: {v}%");
         }
@@ -484,6 +554,8 @@ pub fn status() -> i32 {
     println!("state: AWAKE");
     let on = crate::sysfs::cpu_online().unwrap_or_default();
     println!("cpu online: {}", on.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","));
+    println!("A72 cluster: {}",
+        if on.contains(&8) || on.contains(&9) { "up" } else { "down" });
     println!("services running: {}", services_running().join(" "));
     println!("inputs: kbd={} touch={}",
         if driver_has(KBD_DRV, KBD_DEV) { "bound" } else { "unbound" },

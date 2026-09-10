@@ -1,12 +1,16 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
-Last updated: 2026-09-10p. Status: 🟡 implemented; **gen62 deployed
+Last updated: 2026-09-10q. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
 boot.img (kernel battery supply), not just the rootfs generation.
-Touch is now a **real multi-touch wl_touch device** (2026-09-10, §Touch —
-protocol chain verified source-level + on the journals; on-glass finger
-test pending).
+**2026-09-10q:** internal-speaker L/R swap fixed by a virtual sink +
+`gemini-speakerd` couples the speaker amp to the selected output device
+(§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
+⇒ `dout=0`, speakers ⇒ `dout=1`; the L/R correction itself still needs an
+ear test). Touch is now a **real multi-touch
+wl_touch device** (2026-09-10, §Touch — protocol chain verified
+source-level + on the journals; on-glass finger test pending).
 **2026-09-10p:** GNOME audio wired (session → the one system PipeWire
 session: Settings→Sound device list + gsd volume keys) and the Fn
 volume/brightness keys bound in mutter — see §Volume.
@@ -32,6 +36,7 @@ battery display.
 | **Bluetooth** | bluez `org.bluez` (persistent service + auto-power) | already done 2026-09-09 — `services/bluetooth.nix`, `docs/bluetooth-bringup.md`; blueman UI present |
 | **Backlight** | `/sys/class/backlight/*/brightness` (sysfs) + `brightnessctl` | udev chmod 0666 rule (`services/plumbing.nix`) — see §brightness |
 | **Volume** | PipeWire/WirePlumber session (`services/audio.nix`) | one system session at `XDG_RUNTIME_DIR=/run/gemwl-audio`; GNOME clients redirected via `PULSE_SERVER`/`PIPEWIRE_RUNTIME_DIR`, Fn keys bound by xkb keycode — see §Volume |
+| **Speakers vs headphones** | PipeWire sink list (GNOME Settings → Sound / Quick Settings output picker) | a virtual L/R-correcting "Built-in Speakers" sink + `gemini-speakerd` drives the speaker-amp pads to match the default sink — see §Speakers |
 | **Touch** | `wl_touch` (Wayland core protocol) — a real 10-point multi-touch device | gemwl forwards the NT36772's fingers to its seat as wl_touch (no cursor); the nested compositor's wlroots wayland backend re-emits it to the shell — see §Touch |
 
 ### Battery: no fuel gauge ⇒ voltage-derived capacity in the kernel
@@ -205,6 +210,67 @@ GNOME Shell). With GNOME as the default desktop the standard
 shell+gsd path exists; the keycode bindings are the only
 gemini-specific part.
 
+### Speakers: L/R swap + amp/headphone toggle (2026-09-10)
+
+Two reported problems, one mechanism each:
+
+1. **The built-in left/right speakers are swapped.** The flanking
+   speakers are wired LEFT↔RIGHT (the right-hand speaker plays the left
+   channel); the 3.5 mm jack is wired correctly. Both ride the same
+   codec HPL/HPR drivers — the speakers through external amps enabled by
+   SoC pads 243/244 — so the swap is in the speaker PCB, not a codec
+   register (`devices/planet-geminipda/kernel/delta/sound/soc/codecs/
+   mt6351.c`: `HPL Select`/`HPR Select` are 1:1 with DACL/DACR).
+2. **There was no way to switch the internal speaker amp off** (for
+   headphone-only listening the jack plays the speakers too — they are
+   electrically in parallel; there is no jack detection on this mainline
+   stack yet).
+
+Fix: a **virtual sink** that crosses the channel pair, and a **watcher
+that couples the amp to the default sink**:
+
+- `services/pipewire/60-gemini-speakers.conf` — a
+  `libpipewire-module-filter-chain` node named **`gemini_speakers`**
+  ("Built-in Speakers"): two `copy` nodes with the inputs/outputs arrays
+  swapped (`inputs=[toL:In toR:In]`, `outputs=[toR:Out toL:Out]`), so
+  FL→right and FR→left. Its playback stream is pinned to the hardware
+  sink with `target.object` and flagged `node.passive` +
+  `node.dont-fallback` (a loopback whose output reached the default sink
+  would feed back into itself; `node.link-group` prevents a self-link).
+  The hardware sink otherwise keeps its ALSA/ACP name
+  (`alsa_output.platform-sound.stereo-fallback`);
+  `services/pipewire/50-gemini-alsa-s16.conf` only renames its
+  *description* to "Headphones / Jack".
+- `gemini-speakerd.service` (`gemcli speaker watch`) polls the PipeWire
+  default sink (`wpctl inspect @DEFAULT_SINK@`, via
+  `PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio`) and drives the amp pads:
+  default sink == `gemini_speakers` ⇒ amps **ON**; anything else ⇒
+  **OFF** (jack only). Reading the pad state is side-effect-free
+  (pinctrl DOUT via /dev/mem — the gpio chardev v1 API can only read by
+  requesting the pad as *input*, which would release the amp drive).
+
+So the GNOME way to choose output is just the normal one: pick
+**Built-in Speakers** or **Headphones / Jack** in Settings → Sound (or
+the Quick Settings output picker); the amp follows within ~1 s. The
+choice persists (WirePlumber's configured default sink), and
+`gemini-audio-defaults` re-syncs it at boot.
+
+CLI / console equivalent: `audio-output speaker|headphone|toggle|status`
+now also sets the PipeWire default sink (and `sync-default`, the
+retryable boot-time half), so the CLI and GNOME agree. `speaker
+on|off|status` drives the pads directly.
+
+**Files:** `services/pipewire/60-gemini-speakers.conf`,
+`services/pipewire/50-gemini-alsa-s16.conf`,
+`services/scripts/audio-output`, `services/audio.nix`
+(`gemini-speakerd`), `pkgs/gemcli/src/speaker.rs`.
+
+**On-glass check (pending):** play a left/right test tone to the
+Built-in Speakers sink and confirm it is no longer reversed; select
+Headphones and confirm the speakers go silent while the jack still
+plays; `gemcli speaker status` shows `dout=1` for speakers and `dout=0`
+for headphones; unplug/replug and reboot to confirm persistence.
+
 ### Touch: a real multi-touch device (no cursor) [2026-09-10]
 
 **Problem.** The NT36772 TDDI kernel driver
@@ -274,6 +340,11 @@ plugged in, still gets the pointer as before.
 - `pkgs/gemwl/gemwl.c` — the touch → wl_touch forwarding (see §Touch);
   the NT36772 kernel driver itself was already correct (Protocol B,
   10 points, output-space ABS).
+- `services/audio.nix` — the one PipeWire system session, the S16
+  WirePlumber rule, the L/R-correcting virtual sink (`60-gemini-
+  speakers.conf`) and `gemini-speakerd` (default-sink → amp pads).
+- `services/scripts/audio-output` — the CLI half of the output mode
+  (amp pads + the matching PipeWire default sink).
 - `config/gemini.nix` — imports + the existing NM polkit/group wiring.
 
 Phosh itself needed no changes: its wifi page speaks NM, its BT page

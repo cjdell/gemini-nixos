@@ -41,6 +41,9 @@
 let
   utils = pkgs.callPackage ./gemini-utils.nix { };
 
+  # gemcli — used for the speaker-amp follow daemon (speaker watch).
+  gemcli = pkgs.callPackage ../pkgs/gemcli.nix { };
+
   # Shared unit env: one session, its own runtime dir, the desktop
   # user's home (User=cjdell below — systemd also sets HOME from the
   # account; keep it explicit so wireplumber's state lands under
@@ -70,6 +73,11 @@ in
   # WirePlumber rule opening the card through pcm.gemini16.
   environment.etc."wireplumber/wireplumber.conf.d/50-gemini-alsa-s16.conf"
     .source = ./pipewire/50-gemini-alsa-s16.conf;
+
+  # The L/R-correcting virtual "Built-in Speakers" sink (filter-chain
+  # module — see the file header for the wiring and the amp coupling).
+  environment.etc."pipewire/pipewire.conf.d/60-gemini-speakers.conf"
+    .source = ./pipewire/60-gemini-speakers.conf;
 
   systemd.services.pipewire = {
     description = "PipeWire Multimedia Service (Gemini system session)";
@@ -129,11 +137,37 @@ in
     };
   };
 
+  # gemini-speakerd — follows the PipeWire default sink and drives the
+  # speaker-amp pads (243/244): gemini_speakers -> amps ON, any other sink
+  # (the hardware Headphones/Jack sink, or a USB output) -> OFF. This is
+  # what makes selecting "Built-in Speakers" vs "Headphones" in GNOME's
+  # Sound menu also switch the hardware amp. Root because the pads are the
+  # kernel gpio chardev; it reaches the cjdell-owned PipeWire session
+  # through PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio (set inside gemcli —
+  # pkgs/gemcli/src/speaker.rs). It leaves the amp alone when PipeWire is
+  # down (early boot, sleep), so the boot-time amp state stays whatever
+  # gemini-audio-defaults applied. [added 2026-09-10]
+  systemd.services.gemini-speakerd = {
+    description = "Gemini PDA speaker-amp follows the PipeWire default sink";
+    after = [ "pipewire.service" "wireplumber.service" ];
+    wants = [ "pipewire.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${gemcli}/bin/gemcli speaker watch";
+      Restart = "on-failure";
+      RestartSec = "5";
+    };
+  };
+
   systemd.services.gemini-audio-defaults = {
     description = "Gemini audio playback route + output mode defaults";
     # After alsa-restore (which owns 'Headphone Volume' from
     # /var/lib/alsa/asound.state) and before any desktop/audio client.
-    after = [ "alsa-restore.service" "sound.target" ];
+    # Also after PipeWire/WirePlumber so the persisted output mode can be
+    # written as the PipeWire default sink (audio-output sync-default) —
+    # the script retries until the metadata object exists.
+    after = [ "alsa-restore.service" "sound.target" "pipewire.service" "wireplumber.service" ];
     wants = [ "alsa-restore.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
@@ -146,6 +180,7 @@ in
     path = [
       pkgs.bash
       pkgs.alsa-utils # amixer
+      pkgs.pipewire # pw-metadata (default-sink sync)
       pkgs.util-linux # logger
       pkgs.coreutils
       utils # audio-output (-> speaker -> gpioout)

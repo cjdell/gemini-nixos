@@ -39,10 +39,14 @@ use crate::i2c;
 use crate::sysfs;
 use crate::util;
 use crate::wdt;
+use std::os::unix::io::AsRawFd;
 
 const DA9214_ADDR: u8 = 0x68;
 const DA9214_CTRL_BASE: &str = "1100e000";
 const BUCKB_REG: u8 = 0x5e;
+
+/// Exclusive flock every A72 power operation takes (see `lock`).
+const A72_LOCK: &str = "/run/gemini-a72.lock";
 
 const SPM_PWR_CON: u64 = 0x10006218; // MP2_CPUSYS_PWR_CON (bit0 = cluster on)
 const SWSYSRST: u64 = 0x10007018; // SWSYSRST latch
@@ -54,6 +58,46 @@ fn log(prefix: &str, msg: &str) {
 
 fn cpu_online_list() -> String {
     sysfs::cpu_online().map(|v| v.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",")).unwrap_or_default()
+}
+
+// --- A72 operation lock ---------------------------------------------------
+// The secure A72 bring-up/teardown must never run concurrently: a second
+// op mid-sequence drives the DA9214 rail and the secure SMC while the
+// first is still stepping → device hang (observed 2026-09-10q, when a
+// `gemcli sleep on` teardown raced the profile watcher). The watcher
+// (profile.rs), the sleep path (sleep.rs) and the CLI all take this
+// exclusive flock; the watcher re-checks the sleep state *after*
+// acquiring it, so a sleep that starts mid-poll always wins.
+//
+// Not a Rust Mutex: the contenders are separate processes. flock is
+// advisory, held for the guard's lifetime and auto-released if the
+// process dies (so a crashed sleep cannot wedge the A72 forever).
+
+pub struct Lock {
+    _file: std::fs::File,
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // SAFETY: fd was opened in lock() and lives as long as the guard.
+        unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// Blocking exclusive lock for A72 power operations. Returns None if the
+/// lock file cannot be opened — the caller should treat None as "busy"
+/// and SKIP the operation rather than risk running it concurrently.
+pub fn lock() -> Option<Lock> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(A72_LOCK)
+        .ok()?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+        Some(Lock { _file: file })
+    } else {
+        None
+    }
 }
 
 // WDT arm/disarm live in wdt.rs (the MODE register is key-protected — a
@@ -134,6 +178,12 @@ fn up_warm(cpu: u32) -> bool {
 /// `a72 up [cpu8|cpu9|both]` (default both). Exit code = the real
 /// outcome, not the bash trailing-echo quirk (see header).
 pub fn up(target: &str) -> i32 {
+    let _guard = lock();
+    up_locked(target)
+}
+
+/// The bring-up body; the caller MUST already hold `lock()`.
+pub fn up_locked(target: &str) -> i32 {
     log("cl2-up", &format!("== target={target} online={}", cpu_online_list()));
     let (ok8, ok9) = match target {
         "cpu8" => (up_cold(8), true),
@@ -228,6 +278,12 @@ fn down_cpu8() -> bool {
 /// `a72 down [cpu9|cpu8|both]` (default both). Exit code parity with
 /// cl2-down.sh (0 ok / 1 failed / 2 usage).
 pub fn down(target: &str) -> i32 {
+    let _guard = lock();
+    down_locked(target)
+}
+
+/// The teardown body; the caller MUST already hold `lock()`.
+pub fn down_locked(target: &str) -> i32 {
     log("cl2-down", &format!("== cl2-down: target={target} online={}", cpu_online_list()));
     let rc = match target {
         "cpu9" => i32::from(!down_cpu9()),

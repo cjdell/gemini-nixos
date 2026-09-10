@@ -31,6 +31,26 @@ amixer -c "$CARD" sset 'HPL Mux' 'Audio Playback' >/dev/null
 amixer -c "$CARD" sset 'HPR Mux' 'Audio Playback' >/dev/null
 
 mode="$(cat /etc/gemini/audio-output-mode 2>/dev/null || echo speaker)"
+# Flip the amp pads + persist (best effort; the pads are the important bit)
 __GEMINI_UTILS__/audio-output "$mode" >/dev/null 2>&1 || true
 
-logger -t audio-defaults "playback route set; output mode: $mode"
+# Make PipeWire's default sink agree with the mode, so GNOME's Sound menu
+# shows the matching output. PipeWire/WirePlumber are ordered before us,
+# but the "default" metadata object can take a moment to appear; retry
+# briefly (the unit path has coreutils for sleep/seq-free loop).
+synced=0
+i=0
+while [ "$i" -lt 20 ]; do
+  if __GEMINI_UTILS__/audio-output sync-default >/dev/null 2>&1; then
+    synced=1
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+if [ "$synced" = 1 ]; then
+  logger -t audio-defaults "playback route set; output mode: $mode; PipeWire default sink synced"
+else
+  logger -t audio-defaults "playback route set; output mode: $mode; WARNING PipeWire default sink not synced"
+fi

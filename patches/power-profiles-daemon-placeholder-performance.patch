@@ -1,0 +1,22 @@
+diff --git a/src/ppd-driver-placeholder.c b/src/ppd-driver-placeholder.c
+index e0f8021..9d00e0c 100644
+--- a/src/ppd-driver-placeholder.c
++++ b/src/ppd-driver-placeholder.c
+@@ -28,9 +28,16 @@ ppd_driver_placeholder_constructor (GType                  type,
+   object = G_OBJECT_CLASS (ppd_driver_placeholder_parent_class)->constructor (type,
+                                                                               n_construct_params,
+                                                                               construct_params);
++  /* gemini-nixos: the generic placeholder driver powers no hardware, but
++   * without this it advertises only two profiles, so GNOME's Power Mode
++   * selector never offers "Performance". On the Gemini PDA the
++   * performance profile is mapped onto the big A72 cluster by the
++   * gemini-power-profile daemon (services/power-profiles.nix), so expose
++   * the full three-way set. This only changes what the daemon
++   * advertises: the placeholder driver still drives nothing itself. */
+   g_object_set (object,
+                 "driver-name", "placeholder",
+-                "profiles", PPD_PROFILE_POWER_SAVER | PPD_PROFILE_BALANCED,
++                "profiles", PPD_PROFILE_POWER_SAVER | PPD_PROFILE_BALANCED | PPD_PROFILE_PERFORMANCE,
+                 NULL);
+ 
+   return object;

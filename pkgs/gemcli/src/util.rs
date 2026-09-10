@@ -71,6 +71,19 @@ pub fn exists(p: &str) -> bool {
     Path::new(p).exists()
 }
 
+/// Resolve a host/system binary: the stable /run/current-system/sw path
+/// on NixOS (systemd-unit PATH is minimal, and sudo strips the
+/// session PATH), bare name as the fallback. Shared by sleep.rs,
+/// profile.rs and speaker.rs.
+pub fn swbin(name: &str) -> String {
+    let p = format!("/run/current-system/sw/bin/{name}");
+    if exists(&p) {
+        p
+    } else {
+        name.into()
+    }
+}
+
 /// Best-effort `sync()` (the WDT-reboot script syncs before arming).
 pub fn sync_all() {
     unsafe { libc::sync() };

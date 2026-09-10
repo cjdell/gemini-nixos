@@ -21,7 +21,10 @@ the desktop.
   (`pkgs/gemcli/src/sleep.rs`) + the `gemini-sleepd.service` daemon
   (services/gemini-pda.nix) that owns the button. It powers down every
   controllable load while the kernel stays up; the same button wakes it.
-  No kernel change, no flash — a normal package/system deploy.
+  No kernel change, no flash — a normal package/system deploy. Since
+  2026-09-10 it also powers the **A72 cluster** down when it was up (the
+  GNOME performance power mode can leave it online) and restores it on
+  wake — `docs/power-modes.md`.
 - **Responsiveness (v2, same day — the button must feel instant):**
   `sleep on` turns the backlight off FIRST (the visible acknowledgement
   that the press registered) and the whole transition is ~1-2 s.
@@ -58,11 +61,15 @@ worst case total, nothing blocks on the wifi chip):
    novatek-nt36xxx touch i2c client (`4-0062`) are unbound, so the keys
    the lid presses generate no events and no wakeups. `mt6351-keys`
    (silver) is deliberately NOT unbound — it is the wake button.
-3. **A53 cpus 1..7 offlined** (cpu0 must run the kernel). The A72
-   cluster (cpu8/9) is already off in the default cold-boot state — the
-   sleep never touches it. Per-core offline is the safe PSCI path (the
-   cl2-down receipts); the A53 *cluster* power-down (below) is not
-   wired.
+3. **A53 cpus 1..7 offlined** (cpu0 must run the kernel), then the
+   **A72 cluster (cpu8/9) powered down** IF it was up — the secure
+   `cl2-down` teardown (WDT-guarded, DA9214 rail drop). The default
+   cold-boot state leaves the cluster down, so this is usually a no-op;
+   it matters when the GNOME **performance** power mode (or a manual
+   `gemcli a72 up`) brought it online. The recorded state restores it on
+   wake. **[A72 handling added 2026-09-10 — docs/power-modes.md]**
+   Per-core A53 offline is the safe PSCI path (the cl2-down receipts);
+   the A53 *cluster* power-down (below) is not wired.
 4. **Heavyweight services stopped** (only those actually running, the
    list is recorded): `gemwl.service` + `phosh-nested.service` (the
    default desktop since 2026-09-10) + `lxqt-nested.service` (the GPU
@@ -94,8 +101,9 @@ worst case total, nothing blocks on the wifi chip):
    backlight %, wifi was on.
 
 `gemcli sleep off` reverses, again visible first: backlight on →
-rebind inputs → online the recorded cpus → start the recorded services
-+ `wifi auto` (async — the visible wake is backlight + cores; the
+rebind inputs → online the recorded A53 cpus → bring the A72 cluster
+back up if it was up at sleep time → start the recorded services +
+`wifi auto` (async — the visible wake is backlight + cores; the
 desktop comes back in the background).
 
 `gemcli sleep key` is the daemon entry (`gemini-sleepd.service`, enabled

@@ -28,6 +28,7 @@ mod gpu;
 mod guard;
 mod i2c;
 mod power;
+mod profile;
 mod sleep;
 mod speaker;
 mod status;
@@ -113,12 +114,20 @@ enum Cmd {
         cmd: SpkCmd,
     },
     /// Clamshell sleep / wake — the silver side-button mechanism
-    /// (backlight off, A53 cpus 1-7 offline, keyboard+touch inputs
-    /// disabled, heavyweight services stopped; fully reversible). No
-    /// kernel suspend is involved — see pkgs/gemcli/src/sleep.rs.
+    /// (backlight off, A53 cpus 1-7 offline, A72 cluster down when up,
+    /// keyboard+touch inputs disabled, heavyweight services stopped;
+    /// fully reversible). No kernel suspend is involved — see
+    /// pkgs/gemcli/src/sleep.rs.
     Sleep {
         #[command(subcommand)]
         cmd: SleepCmd,
+    },
+    /// Power mode → A72 cluster bridge (power-profiles-daemon).
+    /// `watch` is the gemini-power-profile daemon: performance onlines
+    /// the A72s, balanced/power-saver powers them down.
+    Profile {
+        #[command(subcommand)]
+        cmd: ProfileCmd,
     },
     /// One-shot aggregate device status (best-effort)
     Status,
@@ -253,6 +262,21 @@ enum SleepCmd {
 }
 
 #[derive(Subcommand)]
+enum ProfileCmd {
+    /// Watch power-profiles-daemon and drive the A72 cluster (the
+    /// gemini-power-profile daemon entry; foreground)
+    Watch,
+    /// Active power profile + A72 cluster state
+    Status,
+    /// Set the profile (performance|balanced|power-saver) and apply the
+    /// A72 state now
+    Set {
+        #[arg(value_parser = ["performance", "balanced", "power-saver"])]
+        profile: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum SpkCmd {
     /// Enable the built-in speaker amps (pads 243/244 high)
     On,
@@ -260,6 +284,11 @@ enum SpkCmd {
     Off,
     /// Live pad levels
     Status,
+    /// Follow the PipeWire default sink and drive the amps (the
+    /// gemini-speakerd daemon entry; foreground)
+    Watch,
+    /// One reconciliation pass (amps = f(default sink))
+    Sync,
 }
 
 fn main() {
@@ -286,6 +315,11 @@ fn main() {
             SleepCmd::Off => sleep::off(),
             SleepCmd::Status => sleep::status(),
             SleepCmd::Key => sleep::key(),
+        },
+        Cmd::Profile { cmd } => match cmd {
+            ProfileCmd::Watch => profile::watch(),
+            ProfileCmd::Status => profile::status(),
+            ProfileCmd::Set { profile } => run(|| profile::set(&profile)),
         },
         Cmd::Status => {
             status::status_cmd();
@@ -459,5 +493,16 @@ fn speaker_cmd(cmd: SpkCmd) -> i32 {
             println!("{}", speaker::status()?);
             Ok(())
         }),
+        SpkCmd::Watch => speaker::watch(),
+        SpkCmd::Sync => match speaker::sync_amp() {
+            Some(sink) => {
+                println!("default sink: {sink}");
+                0
+            }
+            None => {
+                println!("default sink: (PipeWire/WirePlumber not reachable)");
+                0
+            }
+        },
     }
 }

@@ -167,14 +167,18 @@ pub fn selfcheck() -> i32 {
         for (path, name, label, ngpio) in &chips {
             println!("      chip {path}: name={name} label={label} ngpio={ngpio}");
         }
-        check(&mut ok, "/dev/gpiochip + pads 243/244", {
+        check(&mut ok, "/dev/gpiochip + pads 243/244 (dout via pinctrl)", {
             match crate::gpio::chip_for_line(243) {
-                Some(c) => match crate::gpio::read_levels(&c, &[243, 244]) {
-                    Ok(v) => {
-                        println!("      243={} 244={} (on {c})", v[0], v[1]);
+                Some(c) => match (crate::speaker::pad_dout(243), crate::speaker::pad_dout(244)) {
+                    (Ok(a), Ok(b)) => {
+                        // NB read via the pinctrl DOUT register, NOT the gpio
+                        // chardev input request: the v1 linehandle API can only
+                        // read a level by requesting the pad as input, which
+                        // would release the amp's output drive (2026-09-10).
+                        println!("      243={a} 244={b} (dout; gpiochip for pads = {c}, not used to read)");
                         Ok(())
                     }
-                    Err(e) => Err(e.msg),
+                    (Err(e), _) | (_, Err(e)) => Err(e.msg),
                 },
                 None => Err("no gpiochip covers pad 243".into()),
             }

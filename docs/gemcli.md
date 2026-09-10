@@ -30,6 +30,8 @@ local --option builders @/etc/nix/machines --fallback --print-out-paths
 .#packages.aarch64-linux.gemcli` (86 s first build). In the rootfs
 closure via `services/gemini-pda.nix` → `environment.systemPackages`;
 also exposed as the flake package `.#packages.aarch64-linux.gemcli`.
+(The compiled test suite is now **11 tests** — the original 8 plus an
+A72-list and a PPD state.ini parser test — 2026-09-10.)
 
 Local typecheck/test loop (host, x86_64 cargo): `cd pkgs/gemcli &&
 cargo check && cargo test` (hardware-free unit tests only; keep
@@ -46,10 +48,11 @@ cargo check && cargo test` (hardware-free unit tests only; keep
 | `guard run\|status` | `battery-guard.sh` | `gemini-battery-guard` |
 | `a72 up [cpu8\|cpu9\|both]`, `a72 down […], a72 status` | `cl2-up.sh`, `cl2-down.sh` | `gemini-a72-up` |
 | `sleep on\|off\|status\|key` | — (new; the light clamshell sleep — see docs/power-sleep.md) | **`gemini-sleepd`** (2026-09-08) |
+| `profile watch\|status\|set <performance\|balanced\|power-saver>` | — (new; power-profiles-daemon → A72 — see docs/power-modes.md) | **`gemini-power-profile`** (2026-09-10) |
 | `gpu poweron\|status` | `gemini-gpu-poweron.sh` | `gemini-gpu-poweron` |
 | `wdt-reboot [SECS]` | `gemini-wdt-reboot` | `gemini-wdt-reboot` |
 | `boot status\|recovery\|debian\|nixos [--no-reboot]` | `gemini-boot-recovery`, `gemini-boot-debian` | those units |
-| `speaker on\|off\|status` | `speaker` (gpioout/spkamp C helpers) | — |
+| `speaker on\|off\|status`, `speaker watch\|sync` | `speaker` (gpioout/spkamp C helpers) | gemini-speakerd (2026-09-10) |
 | `status` | aggregate (battstat + charger raw + backlight + cpu/a72 + gpu + boot + guard) | — |
 | `selfcheck` | read-only on-glass parity harness | — |
 | `version` / `-V` | — | rule-0 identity banner |
@@ -73,7 +76,9 @@ teardown. `on`: backlight off (`bl_power=4`; brightness retained),
 unbind the clamshell input drivers — the gpio-matrix-keypad platform
 device `keyboard` and the novatek-nt36xxx i2c client `4-0062` — so the
 closed lid's key presses produce no input, offline A53 cpus 1..7
-(cpu0 stays), stop the heavyweight services that were running
+(cpu0 stays), power the A72 cluster down if it was up (the performance
+power mode can leave it online — docs/power-modes.md), stop the
+heavyweight services that were running
 (gemwl/LXQt, pipewire/wireplumber/pipewire-pulse), and take wifi down
 fast (`ip link set <iface> down` + kill wpa_supplicant/dhcpcd — the
 CONSYS chip STAYS powered; the WMT `echo off` teardown stalls ~29 s
@@ -102,8 +107,14 @@ Same runtime access as the scripts — no new kernel features:
   rule for the DA9214 bus. Module `i2c.rs`.
 - **Charger**: BQ25896 raw conversion-trigger + register decode
   (`charger.rs`, i2c-0 @0x6b).
-- **GPIO**: kernel gpio chardev v1 linehandle API for pads 243/244
-  (gpioout.c equivalent, no /dev/mem pinctrl writes). Module `gpio.rs`.
+- **GPIO**: kernel gpio chardev v1 linehandle API for driving pads
+  243/244 (gpioout.c equivalent — request as output, set, close; no
+  /dev/mem pinctrl writes). Reading a pad level is DIFFERENT: the v1
+  API can only read by requesting the pad as *input*, which would
+  release the amp's output drive, so `speaker status` / `selfcheck`
+  read the pinctrl DOUT register via /dev/mem (spkamp's side-effect-
+  free method) **[changed 2026-09-10]**. Module `gpio.rs` (drive) +
+  `speaker.rs` (pinctrl read).
 - **sysfs**: power supplies, backlight, cpu hotplug + online maps.
 - **Time**: UTC civil time computed in-house (the device runs UTC) —
   no chrono in the closure.

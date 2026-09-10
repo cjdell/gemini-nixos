@@ -5,6 +5,141 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10q — Power modes (GNOME performance → A72) + sleep turns the A72 off + speaker L/R fix & amp toggle
+
+Four user asks this session: (1) silver-button sleep must also power
+down the A72 cores, (2) a **performance** power mode visible in GNOME
+that activates the A72s, (3) the built-in speakers are **L/R swapped**
+(jack is fine), (4) a way to toggle the internal speaker amp from GNOME
+for headphone-only use. All four are implemented at build level; the
+system closure builds green and gemcli's 11 unit tests pass.
+**[updated same session] It WAS then flashed (deployed via
+`bin/deploy.sh`, gens 4→6) and verified on glass — see "On glass"
+below; two bugs found on the device were fixed and redeployed.**
+
+**Receipts (build-only):** `nix build
+.#nixosConfigurations.gemini.config.system.build.toplevel` →
+`/nix/store/7chz6w54s5szba798g28a8vcglwclkx0-nixos-system-gemini-26.11pre-git`
+(rc=0, patched PPD built with `doCheck=false -Dtests=false`); gemcli
+built + test suite `ok. 11 passed; 0 failed` (added the A72-list and the
+PPD state.ini parser tests). No boot.img/kernel change — rootfs only.
+
+### 1+2. Power modes: PPD placeholder patch + `gemini-power-profile` → A72
+
+Design + receipts: **new `docs/power-modes.md`**. Summary:
+- power-profiles-daemon's generic **placeholder** driver advertises only
+  power-saver + balanced (GNOME hides performance). New one-line patch
+  `patches/power-profiles-daemon-placeholder-performance.patch` adds
+  `PPD_PROFILE_PERFORMANCE`. PPD's own test suite asserts the unpatched
+  placeholder (e.g. `test_amd_pstate_error`), so the patched package
+  builds with checks off (`-Dtests=false`); the daemon is exercised on
+  glass.
+- New `services/power-profiles.nix`: PPD (patched) +
+  `gemini-power-profile.service` = `gemcli profile watch`. New
+  `pkgs/gemcli/src/profile.rs`: reads PPD's `state.ini` on the poll
+  path (never spawns the Python `powerprofilesctl` in the loop) and maps
+  **performance ⇒ `a72 up both`**, balanced/power-saver ⇒ `a72 down`.
+  Sleep-aware (does nothing while `sleep::sleeping()`), with a one-time
+  20 s per-boot settle (`/run` flag) so a persisted performance profile
+  cannot bring the cluster up during boot (P2 rule).
+- `config/gemini.nix` imports the new module; `gemcli profile
+  watch|status|set` added to the clap tree.
+
+### 1. Sleep now powers the A72 cluster down (and restores it)
+
+`pkgs/gemcli/src/sleep.rs`: `sleep on` records whether the A72 was up
+and runs `a72::down("both")` (the WDT-guarded secure cl2-down, DA9214
+rail drop) after the A53 offlines; `sleep off` brings it back after the
+A53s. Default cold-boot state leaves it down, so this is a no-op unless
+performance (or a manual `a72 up`) is active. `docs/power-sleep.md`
+updated (§What the light sleep does, item 3).
+
+### 3+4. Speakers: L/R-correcting virtual sink + amp follows the output
+
+Details: `docs/desktop-plumbing.md` §Speakers. Summary:
+- New `services/pipewire/60-gemini-speakers.conf` — a filter-chain
+  `Audio/Sink` **`gemini_speakers`** ("Built-in Speakers") that crosses
+  the channel pair (two `copy` nodes, swapped input/output arrays); its
+  playback stream is pinned to the hardware sink (`target.object`,
+  `node.passive`, `node.dont-fallback`, `node.link-group`) so it cannot
+  loop back into itself.
+- `services/pipewire/50-gemini-alsa-s16.conf` now also renames the
+  hardware sink **description** to "Headphones / Jack"; its `node.name`
+  stays the ALSA/ACP-generated `alsa_output.platform-sound.stereo-fallback`
+  (WirePlumber monitor rules only document `node.description`).
+- New `gemini-speakerd.service` (`gemcli speaker watch`, `speaker.rs`):
+  follows the PipeWire default sink (`wpctl inspect @DEFAULT_SINK@`) and
+  drives the amp pads 243/244 — default `gemini_speakers` ⇒ amps ON,
+  anything else ⇒ OFF. Selecting an output in GNOME's Sound menu / Quick
+  Settings is therefore the amp toggle.
+- `services/scripts/audio-output` now also sets the PipeWire default
+  sink (new `sync-default` verb, retried at boot by
+  `gemini-audio-defaults`), so the CLI and GNOME agree; persists in
+  WirePlumber state.
+- **Pad reads are now side-effect-free**: the gpio chardev v1 API can
+  only read by requesting a pad as *input*, which releases the amp's
+  output drive — so `speaker status`/`selfcheck`/`amps_on` read the
+  pinctrl DOUT register via /dev/mem (spkamp's method). `gpio.rs` lost
+  the unsafe `read_levels`/`get_values` path.
+
+### On glass (deployed gens 4–6, 2026-09-10q) — with the bugs it found
+
+Flashed via `bin/deploy.sh deploy <toplevel>` (no boot.img needed).
+Verification and the three device bugs it exposed:
+
+- ✅ **PPD advertises performance** — `powerprofilesctl list` shows it;
+  the GNOME Power Mode selector has all three; profile persists in
+  `state.ini`.
+- ✅ **performance ⇒ A72 up, balanced ⇒ A72 down**, driven through PPD
+  exactly as GNOME does: balanced→0-7 in ~2.5 s; performance→0-9 in
+  ~2–4 s (single `cl2-up` attempt).
+- ✅ **Speaker amp follows the default sink**: `audio-output headphone` →
+  `dout=0`; `audio-output speaker` → `dout=1`. Virtual sink
+  `gemini_speakers` + "Headphones / Jack" present in `wpctl status`.
+- ✅ **Sleep round-trips the A72**: `sleep on` powered the cluster down
+  (while the A53s were still online) and `sleep off` restored it — full
+  log in `/tmp/sleeptest.log`, device stayed reachable, 0 failed units.
+- ✅ **Settle change-bypass**: with no settle flag, picking balanced
+  applied in 3 s (not 20 s).
+- ✅ Final state: profile=performance, cpu 0-9, all five gemini units
+  active, 0 failed, running gen6 `489anpkzw2z7bpf50yyrc9qnnb6xhqlc`.
+
+**Bugs found on glass and fixed this session (all redeployed):**
+1. **Ordering cycle → unit skipped at boot.** `gemini-power-profile`
+   was `after power-profiles-daemon.service`, but upstream PPD is
+   `After=multi-user.target` + `WantedBy=graphical.target`, so systemd
+   deleted the job ("Job gemini-power-profile.service/start deleted to
+   break ordering cycle"). Fixed: `wants` only, no ordering
+   (`services/power-profiles.nix`).
+2. **90 s settle = GNOME says performance, cores off.** Shortened to
+   20 s and a profile change during the settle now applies immediately
+   (`pkgs/gemcli/src/profile.rs`).
+3. **`sleep on` hung the device** (first test): the A72 teardown ran
+   *after* the A53 offlines, and the watcher could race the bring-up.
+   Fixed: `state=sleeping` is written FIRST (watcher stands down before
+   any teardown), the A72 is powered down **before** the A53 offlines
+   (the verified watcher order), and all A72 ops take an flock
+   (`/run/gemini-a72.lock`) so two secure ops can never overlap
+   (`pkgs/gemcli/src/sleep.rs`, `a72.rs`, `profile.rs`). The device
+   needed a manual reboot after this one; the redeployed round-trip
+   then passed (above).
+
+### On-glass work still owed
+
+1. Confirm the L/R correction by ear: play a left/right test tone to
+   the **Built-in Speakers** sink; select **Headphones / Jack** and
+   confirm the speakers go silent while the jack still plays.
+2. Reboot with performance selected and confirm the 20 s settle + a
+   clean boot (the settle path was only exercised by removing the /run
+   flag, not by a real reboot).
+3. Use the silver button (not the CLI) for one sleep/wake with the A72
+   up.
+4. Log a version line per flash (rule 0) — the gen4–6 toplevels are
+   pinned by `bin/gc-pin.sh` (roots `gemini-nixos-toplevel-20260910-*`).
+
+Device left: **performance, cpu 0-9, gen6, 0 failed units, reachable
+over g_ether.**
+
 ## 2026-09-10p — GNOME: Settings→Sound device list + Fn volume/brightness keys wired
 
 User report: GNOME Settings' Sound section showed **no devices**, and

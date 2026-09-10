@@ -33,7 +33,6 @@ const GPIO_TYPE: u32 = 0xB4;
 // the exact _IOC literals.
 const GPIO_GET_CHIPINFO_IOCTL_NR: u32 = 0x01;
 const GPIO_GET_LINEHANDLE_IOCTL_NR: u32 = 0x03;
-const GPIOHANDLE_GET_LINE_VALUES_IOCTL_NR: u32 = 0x08;
 const GPIOHANDLE_SET_LINE_VALUES_IOCTL_NR: u32 = 0x09;
 
 const GPIOHANDLE_REQUEST_INPUT: u32 = 1;
@@ -85,10 +84,6 @@ mod tests {
             0xC16CB403
         );
         assert_eq!(super::ioc(2, super::GPIO_GET_CHIPINFO_IOCTL_NR, 68), 0x8044B401);
-        assert_eq!(
-            super::ioc(3, super::GPIOHANDLE_GET_LINE_VALUES_IOCTL_NR, 64),
-            0xC040B408
-        );
         assert_eq!(
             super::ioc(3, super::GPIOHANDLE_SET_LINE_VALUES_IOCTL_NR, 64),
             0xC040B409
@@ -204,33 +199,11 @@ fn set_values(fd: libc::c_int, vals: &[u8]) -> Res<()> {
     Ok(())
 }
 
-fn get_values(fd: libc::c_int, n: usize) -> Res<Vec<u8>> {
-    let mut data: GpioHandleData = unsafe { std::mem::zeroed() };
-    let nr = ioc(3, GPIOHANDLE_GET_LINE_VALUES_IOCTL_NR, std::mem::size_of::<GpioHandleData>());
-    // SAFETY: see above.
-    let r = unsafe { libc::ioctl(fd, nr, &mut data as *mut GpioHandleData) };
-    if r < 0 {
-        return Err(cmsg(format!("GPIOHANDLE_GET_LINE_VALUES: {}", std::io::Error::last_os_error())));
-    }
-    Ok(data.values[..n.min(MAX_LINES)].to_vec())
-}
-
 /// Drive `lines` to `vals` on `chip` (one request + one set; lines stay
 /// at their last value after the handle closes).
 pub fn drive(chip: &str, lines: &[u32], vals: &[u8]) -> Res<()> {
     let fd = request_lines(chip, lines, true, vals)?;
     let r = set_values(fd, vals);
-    // SAFETY: close an fd we own.
-    unsafe { libc::close(fd) };
-    r
-}
-
-/// Read the current level of `lines` on `chip` (requested as inputs —
-/// the gpioout -g mode; gpiolib direction config is the cost of the v1
-/// API here).
-pub fn read_levels(chip: &str, lines: &[u32]) -> Res<Vec<u8>> {
-    let fd = request_lines(chip, lines, false, &[])?;
-    let r = get_values(fd, lines.len());
     // SAFETY: close an fd we own.
     unsafe { libc::close(fd) };
     r

@@ -66,6 +66,12 @@ in
     # layer so ANY desktop's own controls work (phosh today, LXQt/
     # gemwl later). docs/desktop-plumbing.md.
     ../services/plumbing.nix
+    # Power modes (2026-09-10): power-profiles-daemon + the GNOME Power
+    # Mode selector, bridged to the A72 cluster — "performance" onlines
+    # the A72s, balanced/power-saver powers them down. Patches
+    # PPD's placeholder driver to advertise performance (GNOME hides it
+    # otherwise). docs/power-modes.md.
+    ../services/power-profiles.nix
     # GNOME application suite (2026-09-10): calculator/calendar/maps/
     # clocks/weather/contacts + viewer/etc. as Wayland clients on the
     # system profile, so they show up in the app grid of whichever
