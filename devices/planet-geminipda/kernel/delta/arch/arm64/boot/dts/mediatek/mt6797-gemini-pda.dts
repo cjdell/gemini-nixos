@@ -1440,6 +1440,31 @@
 		};
 	};
 
+	/*
+	 * MT6797 power/reset (drivers/power/reset/mt6797-power.c).
+	 *
+	 * Mainline's mtk_wdt restart handler writes only WDT_SWRST; on this
+	 * unit that stops the CPUs without power-cycling the PMIC, leaving
+	 * a dead black-screen "limbo" (observed on glass 2026-09-10). This
+	 * driver instead replays LK's full mtk_wdt_reset(1) sequence
+	 * (watchdog reload + keyed hw-reboot mode + SWRST), which the PMIC
+	 * turns into an external reset that LK re-boots from.
+	 *
+	 * It also registers the MT6351 RTC BBPU poweroff write (the vendor
+	 * rtc_bbpu_power_down()) over the pwrap regmap, making
+	 * systemctl poweroff a real powerdown.
+	 *
+	 * The WDT block itself (reg 0x10007000) is also bound by the
+	 * mainline mtk-wdt driver through the reserved watchdog@10007000
+	 * node in mt6797.dtsi; that is harmless (its restart handler just
+	 * loses to this one at priority 200).
+	 */
+	mt6797_power: power@10007000 {
+		compatible = "mediatek,mt6797-power";
+		reg = <0 0x10007000 0 0x100>;
+		mediatek,pmic = <&pwrap>;
+	};
+
 	consys: consys@18070000 {
 		compatible = "mediatek,mt6797-consys";
 		reg = <0 0x18070000 0 0x200>;

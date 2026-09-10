@@ -72,6 +72,12 @@ echo "==> dropping $(wc -l < /tmp/prune-platforms.txt) foreign ARCH_ platforms"
 disable_from_list /tmp/prune-platforms.txt "$OUT.tmp"
 
 # ---- 2. Buses/devices that can physically never exist here ------------
+# NOTE: CONFIG_BT is deliberately NOT dropped — the Gemini PDA has the
+# MT6630 Bluetooth half of CONSYS (hci_stp driver, on glass 2026-09-09).
+# It is kept from config.full-329 (CONFIG_BT=m + BT_BREDR/BT_LE + the
+# MTK_WCN_BT_HCI transport). [corrected 2026-09-10: prune used to drop
+# it, which clobbered the hand-added BT fix on every regeneration]
+
 cat > /tmp/prune-masters.txt <<'EOF'
 CONFIG_ACPI
 CONFIG_EFI
@@ -84,7 +90,6 @@ CONFIG_SATA_AHCI
 CONFIG_BLK_DEV_NVME
 CONFIG_SCSI_UFSHCD
 CONFIG_CAN
-CONFIG_BT
 CONFIG_NFC
 CONFIG_IEEE802154
 CONFIG_MEDIA_SUPPORT
