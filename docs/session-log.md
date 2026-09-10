@@ -5,6 +5,95 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10p — GNOME: Settings→Sound device list + Fn volume/brightness keys wired
+
+User report: GNOME Settings' Sound section showed **no devices**, and
+the Fn+C/V (volume down/up) and Fn+B/N (brightness down/up) keys did
+nothing. Both were config gaps, not driver work; fixed in
+`services/gnome.nix` and verified **on glass** the same session.
+
+### 1. Audio — one system PipeWire session, redirected into the GNOME session
+
+`services/audio.nix` runs the ONE PipeWire/WirePlumber/pipewire-pulse
+session system-wide with `XDG_RUNTIME_DIR=/run/gemwl-audio` (the
+gemwl/phosh/LXQt-era design — the desktop was a system service with no
+logind session). GNOME under GDM is a real logind session with
+`XDG_RUNTIME_DIR=/run/user/1000`, so every GNOME audio client
+(Settings→Sound, gsd-media-keys' Gvc for the volume keys, gnome-shell's
+OSD) looked in `/run/user/1000/pulse/native` → empty device list.
+
+Fix: `services/gnome.nix` `environment.sessionVariables` point the
+session at the existing system session (no second PipeWire — the MT6351
+S16 path is solved once):
+
+- `PULSE_SERVER=unix:/run/gemwl-audio/pulse/native`
+- `PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio`
+
+Verified: pulse socket `srwxrwxrwx`; `pw-cli ls Client` shows "GNOME
+Shell Volume Control", "GNOME Volume Control Media Keys"
+(gsd-media-keys) and Blueman; the gsd volume keys drive the sink.
+
+### 2. Fn media keys — mutter resolves a keysym at LEVEL 0, so bind keycodes
+
+The Fn layer is xkb level 3 (`ISO_Level3_Shift` on RALT = Mod5):
+Fn+C/V/T = XF86AudioLower/Raise/Mute, Fn+B/N =
+XF86MonBrightnessDown/Up (`config/xkb/symbols/gemini`). mutter matches
+on (keycode, mask) and does **not** mask Mod5, so a naive
+`<Mod5>XF86AudioLowerVolume` *looked* right — but mutter resolves a
+**keysym** accelerator to the **lowest** level that yields it
+(`add_keysym_keycodes_from_layout()` stops at the first match), and the
+compiled keymap carries those XF86 keysyms at level 0 on the standard
+evdev consumer keycodes (`<VOL->`=0x7a, `<MUTE>`=0x79, `<I232/233>`).
+So it bound to (0x7a, Mod5) and never matched Fn+C (0x36, Mod5).
+On-glass A/B: `gsettings set … "['<Mod5>0x39']"` + injected Fn+N raised
+the backlight; the keysym form did nothing.
+
+Fix: bind the Fn layer's xkb keycodes (evdev code + 8) as schema
+DEFAULTS via `services.desktopManager.gnome.extraGSettingsOverrides`,
+with `extraGSettingsOverridePackages = [ pkgs.gnome-settings-daemon ]`
+so gsd's media-keys schema is in the override set:
+
+- brightness up/down = `<Mod5>0x39` / `<Mod5>0x38` (N/B)
+- volume up/down     = `<Mod5>0x37` / `<Mod5>0x36` (V/C)
+- mute (Fn+T)        = `<Mod5>0x1c`
+
+Deployed + cold-booted; verified on glass: sink 0.39→0.33 (Fn+C),
+→0.44 (Fn+V), `[MUTED]` toggle (Fn+T), backlight 25↔37 (Fn+B/N).
+Full rationale + mutter/kernel receipts: `docs/desktop-plumbing.md`
+§Volume.
+
+### New test tool
+
+`bin/kb-inject.c` — writes raw EV_KEY chords (`fn+c`, `fn+v`, …) to the
+keyboard's evdev node so the bindings can be exercised over ssh with no
+human at the matrix. Build aarch64 on the remote builder and `nix copy`
+it to the device (recipe in the file header). Worth recording: in v6.6
+`input_inject_event()` calls `input_handle_event()` and dispatches to
+all handles, so writing to the evdev node *does* reach
+libinput/mutter (older-kernel lore says otherwise); the first Fn test
+failure was purely the wrong (keysym) binding, not injection.
+
+### Also
+
+- `bin/deploy.sh` / `bin/wine-x86-deploy.sh`: `nix copy` now runs with
+  `NIX_SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"`.
+  The 2026-09-10n repartition gave the device a new SSH host key and
+  `nix copy` (unlike `device-ssh.sh`) does not override known_hosts, so
+  every deploy aborted with "REMOTE HOST IDENTIFICATION HAS CHANGED".
+- `docs/desktop-plumbing.md` §Volume/backlight/checklist updated; the
+  old "physical volume keys are NOT wired (phoc+phosh)" text is gone.
+
+### Version line / device state
+
+- toplevel `qng3px7fjq5mbrxm8j979a2iiqyq9xwj-nixos-system-gemini-26.11pre-git`
+  (gen built from the keysym → keycode correction; the first deploy this
+  session `h068b11d…-gnome-gsettings-overrides` was the keysym form).
+- No kernel/boot.img flash: rootfs-only generation; boot.img stays the
+  2026-09-10 `geminipda-drm` build.
+- Device left on the new generation, `systemctl --failed` empty, para
+  cleared (normal NixOS boot); the temporary dconf overrides used for
+  the A/B were reset.
+
 ## 2026-09-10o — fresh rootfs had NO WiFi: image embedded uid 1000 (make_ext4fs shim fixed)
 
 Follow-up to 2026-09-10n (clean install). After the fresh image booted,

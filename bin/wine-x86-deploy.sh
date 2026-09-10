@@ -85,7 +85,10 @@ deploy)
     echo "copying to device (ssh://10.15.19.82) — ~2.2 GB, use run-job..."
     # nix copy ships each path's closure; already-present paths are
     # skipped by the device store.
-    nix copy --to ssh://10.15.19.82 "$WINE64" "$BOX64" "$D3D9" "$MESA" "$GRIM"
+    # NIX_SSHOPTS: same known_hosts independence as bin/deploy.sh (fresh
+    # rootfs = new host key; 2026-09-10). [added 2026-09-10p]
+    NIX_SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+        nix copy --to ssh://10.15.19.82 "$WINE64" "$BOX64" "$D3D9" "$MESA" "$GRIM"
     echo "installing launcher + app + GC root on device..."
     dev "
 set -e

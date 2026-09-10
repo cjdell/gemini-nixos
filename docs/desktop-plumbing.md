@@ -1,12 +1,15 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
-Last updated: 2026-09-10. Status: 🟡 implemented; **gen62 deployed
+Last updated: 2026-09-10p. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
 boot.img (kernel battery supply), not just the rootfs generation.
 Touch is now a **real multi-touch wl_touch device** (2026-09-10, §Touch —
 protocol chain verified source-level + on the journals; on-glass finger
 test pending).
+**2026-09-10p:** GNOME audio wired (session → the one system PipeWire
+session: Settings→Sound device list + gsd volume keys) and the Fn
+volume/brightness keys bound in mutter — see §Volume.
 "make every desktop environment just work" layer: the system services
 that Phosh (default desktop), LXQt (alternative), GNOME or KDE would
 all consume through the standard D-Bus APIs, with zero gemini-specific
@@ -28,7 +31,7 @@ battery display.
 | **Wi-Fi** | NetworkManager (`networking.networkmanager`) | CONSYS bring-up units unchanged (wifi.nix); NM manages wlan0/wlan1; home networks as NM profiles; usb0 unmanaged |
 | **Bluetooth** | bluez `org.bluez` (persistent service + auto-power) | already done 2026-09-09 — `services/bluetooth.nix`, `docs/bluetooth-bringup.md`; blueman UI present |
 | **Backlight** | `/sys/class/backlight/*/brightness` (sysfs) + `brightnessctl` | udev chmod 0666 rule (`services/plumbing.nix`) — see §brightness |
-| **Volume** | PipeWire/WirePlumber session (`services/audio.nix`) | already done; control via `wpctl` / any DE's volume widget (audio.nix runs its own PW session with the S16 ALSA sink config) |
+| **Volume** | PipeWire/WirePlumber session (`services/audio.nix`) | one system session at `XDG_RUNTIME_DIR=/run/gemwl-audio`; GNOME clients redirected via `PULSE_SERVER`/`PIPEWIRE_RUNTIME_DIR`, Fn keys bound by xkb keycode — see §Volume |
 | **Touch** | `wl_touch` (Wayland core protocol) — a real 10-point multi-touch device | gemwl forwards the NT36772's fingers to its seat as wl_touch (no cursor); the nested compositor's wlroots wayland backend re-emits it to the shell — see §Touch |
 
 ### Battery: no fuel gauge ⇒ voltage-derived capacity in the kernel
@@ -127,7 +130,11 @@ backlight node actually registers (DTS has `backlight_lcd`, led_mode=5,
 PWM at 0x1100f000). **On glass it does register**: gen62 shows
 `/sys/class/backlight/backlight/` (type `raw`, max_brightness 255) and
 the LCD boost is on that PWM; the desktop sliders/`brightnessctl` now
-drive it. The udev RUN rule fires on device *add* — after a live deploy
+drive it. The Fn+B/N keys are also wired to gnome-shell's
+`screen-brightness-*` bindings (see §Volume); GNOME 50 moved screen
+backlight handling into mutter/gnome-shell, so under GNOME it is a
+CSD/`Meta.Backlight` path, not phosh's sysfs backend. The udev RUN rule
+fires on device *add* — after a live deploy
 of the rule the device must be re-added, either a reboot or
 `udevadm trigger --action=add /sys/devices/platform/backlight/backlight/backlight`
 (the class-glob form `--subsystem-match=backlight` does NOT match;
@@ -135,17 +142,68 @@ receipt 2026-09-10). Verified: an unprivileged `su cjdell -c
 'brightnessctl -c backlight set 9%'` writes 23/255. Root's `backlight`
 CLI (gemini-pda-utils, devmem PWM) remains the console fallback.
 
-### Volume
+### Volume + Fn media keys (GNOME; 2026-09-10p)
 
-Volume control is already PipeWire + WirePlumber (`services/audio.nix`,
-S16 sink config); any DE's mixer talks to it through pulse-compat /
-wpctl. Physical volume keys (Fn combos on the Gemini keyboard) are NOT
-wired by any standard path under phoc+phosh: phosh has no media-key
-code and gsd's media-keys plugin cannot global-grab keys on Wayland
-without gnome-shell (same story as PinePhone — postmarketOS users ended
-up with actkbd-style daemons). Follow-up if needed: a tiny
-`wevdaemon`/actkbd-style key daemon bound to the Fn-volume combos →
-`wpctl set-volume`. Not part of this plumbing layer.
+Volume is PipeWire + WirePlumber (`services/audio.nix`, S16 sink
+config) — **one system-wide session** whose `XDG_RUNTIME_DIR` is
+`/run/gemwl-audio` (the gemwl/phosh/LXQt-era design: the desktop was a
+system service with no logind session). GNOME is now a real logind
+session under GDM, so its clients looked in
+`/run/user/1000/pulse/native` and found nothing — **GNOME Settings →
+Sound listed no devices** even though the system session was healthy.
+Fix (`services/gnome.nix`, `environment.sessionVariables`): point the
+GNOME session at the existing system session instead of starting a
+second PipeWire (which would re-solve the MT6351 S16 path twice):
+
+- `PULSE_SERVER=unix:/run/gemwl-audio/pulse/native` — libpulse clients:
+  gnome-control-center's Sound panel, gsd-media-keys' Gvc (the volume
+  keys / OSD), gnome-shell.
+- `PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio` — native PipeWire clients
+  (`wpctl`, `pavucontrol`, …).
+
+Verified 2026-09-10p: the pulse socket is `srwxrwxrwx`;
+gnome-shell/gsd-media-keys/blueman appear in `pw-cli ls Client`; the
+gsd volume keys drive the sink.
+
+**Fn volume/brightness keys.** The Fn layer is XKB level 3, selected by
+`ISO_Level3_Shift` on RALT (Mod5): Fn+C=XF86AudioLowerVolume,
+Fn+V=XF86AudioRaiseVolume, Fn+T=XF86AudioMute,
+Fn+B=XF86MonBrightnessDown, Fn+N=XF86MonBrightnessUp
+(`config/xkb/symbols/gemini`). mutter matches global keybindings on
+(keycode, modifier-mask); it does **not** mask Mod5, but it resolves a
+*keysym* accelerator to the **lowest** xkb level that produces that
+keysym (`add_keysym_keycodes_from_layout()` stops at the first level
+with a match) — and the compiled keymap carries those XF86 keysyms at
+level 0 on the standard evdev consumer keycodes (`<VOL->`=0x7a,
+`<MUTE>`=0x79, `<I232/233>`). So `<Mod5>XF86AudioLowerVolume` resolves
+to (0x7a, Mod5) and can never match the Fn event (keycode 0x36 = C,
+Mod5). Verified on glass: the keysym form did nothing.
+
+Fix: bind the Fn layer's **xkb keycodes** directly as schema DEFAULTS
+(still user-remappable) via
+`services.desktopManager.gnome.extraGSettingsOverrides`, with
+`…extraGSettingsOverridePackages = [ pkgs.gnome-settings-daemon ]` so
+the media-keys schema is in the override set:
+
+    [org.gnome.shell.keybindings]
+    screen-brightness-up=['XF86MonBrightnessUp', '<Mod5>0x39']      # N
+    screen-brightness-down=['XF86MonBrightnessDown', '<Mod5>0x38']  # B
+    [org.gnome.settings-daemon.plugins.media-keys]
+    volume-up-static=[…, '<Mod5>0x37']    # V
+    volume-down-static=[…, '<Mod5>0x36']  # C
+    volume-mute-static=['XF86AudioMute', '<Mod5>0x1c']  # T
+
+xkb keycode = evdev code + 8; the built-in matrix is fixed, so the
+keycodes are the layout contract. Verified on glass 2026-09-10p: sink
+0.39→0.33 (Fn+C), →0.44 (Fn+V), `[MUTED]` toggle (Fn+T), backlight
+25↔37 (Fn+B/N). Test tool: `bin/kb-inject.c` (writes raw key events to
+the keyboard evdev node; `kb-inject fn+c fn+v fn+b fn+n`).
+
+Under the old phoc+phosh default this was unsolved (phosh has no
+media-key code; gsd cannot global-grab keys on Wayland without
+GNOME Shell). With GNOME as the default desktop the standard
+shell+gsd path exists; the keycode bindings are the only
+gemini-specific part.
 
 ### Touch: a real multi-touch device (no cursor) [2026-09-10]
 
@@ -261,6 +319,15 @@ On-glass results (2026-09-10; gen62/gen63 + the new boot.img):
 - ⬜ Physical eyeball items: the phosh brightness slider moves the LCD
   (rule 5 — judge on glass), and the silver-button sleep/wake round
   trip returns both desktop and wifi.
+- ✅ GNOME audio (2026-09-10p): `PULSE_SERVER=unix:/run/gemwl-audio/
+  pulse/native` + `PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio` in the
+  session → Settings→Sound sees the device, gsd volume keys drive the
+  sink (`pw-cli ls Client` shows GNOME Shell Volume Control / GNOME
+  Volume Control Media Keys).
+- ✅ Fn media keys (2026-09-10p): Fn+C/V/T volume down/up/mute
+  (0.39→0.33→0.44, `[MUTED]`) and Fn+B/N brightness (25↔37) via the
+  `<Mod5>` keycode bindings; `bin/kb-inject.c fn+c …` is the
+  reproducible test.
 - Touch (2026-09-10): ✅ gemwl logs `touchscreen attached (wl_touch
   forwarding)`; ✅ phoc logs `Adding touch device: wayland-touch-seat0`
   (the synthesized device exists end-to-end) — see the session log

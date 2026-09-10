@@ -165,6 +165,27 @@ in
       XKB_CONFIG_ROOT = "${geminiXkeyboardConfig}/etc/X11/xkb";
       XKB_DEFAULT_LAYOUT = "gemini";
       XKB_DEFAULT_MODEL = "pc105";
+
+      # ---- Audio socket redirection (2026-09-10p) ------------------
+      # services/audio.nix runs the ONE PipeWire/WirePlumber/pipewire-pulse
+      # session for the whole device as a system service with
+      # XDG_RUNTIME_DIR=/run/gemwl-audio (the design from the gemwl/phosh/
+      # LXQt era, where the desktop was a system service with no logind
+      # session).  GNOME, however, is a REAL logind session via GDM:
+      # cjdell's XDG_RUNTIME_DIR is /run/user/1000, so every GNOME audio
+      # client (gnome-control-center's Sound panel, gsd-media-keys' Gvc
+      # mixer for the volume keys, gnome-shell's OSD) looked in
+      # /run/user/1000/pulse/native and found nothing — the panel showed
+      # no devices and the volume keys never touched the sink.
+      #
+      # Rather than run a second PipeWire for the session (and re-solve the
+      # MT6351 S16 path twice), point the session's clients at the existing
+      # system session.  PULSE_SERVER covers libpulse (gnome-control-center
+      # / gsd / gnome-shell); PIPEWIRE_RUNTIME_DIR covers native PipeWire
+      # clients (wpctl, pavucontrol, …).  The session runs as cjdell, which
+      # owns /run/gemwl-audio — no privilege involved.
+      PULSE_SERVER = "unix:/run/gemwl-audio/pulse/native";
+      PIPEWIRE_RUNTIME_DIR = "/run/gemwl-audio";
     } // lib.optionalAttrs cfg.softwareRendering {
       LIBGL_ALWAYS_SOFTWARE = "1";
     };
@@ -193,6 +214,55 @@ in
         };
         locks = [ "/org/gnome/desktop/input-sources/sources" ];
       }
+    ];
+
+    # ---- Keyboard: make the Fn media keys reach GNOME (2026-09-10p) --
+    # The Fn layer is XKB level 3, selected by ISO_Level3_Shift on RALT
+    # ("gemini" symbols; xkbcli confirms RALT -> ISO_Level3_Shift ->
+    # Mod5, and Fn+C/V/B/N -> XF86AudioLower/RaiseVolume and
+    # XF86MonBrightnessDown/Up at level 3).  mutter matches global
+    # keybindings on (keycode, modifier-mask) and only masks out
+    # scroll-lock/Mod2/Lock (src/core/keybindings.c
+    # mask_from_event_params()); Mod5 is NOT masked.
+    #
+    # Why the bindings are raw KEYCODES, not the XF86 keysym names:
+    # mutter's accelerator parser supports <Mod5> (meta-accel-parse.c
+    # -> CLUTTER_MOD5_MASK), but when an accelerator is a *keysym* mutter
+    # resolves it to the LOWEST xkb level that produces that keysym
+    # (add_keysym_keycodes_from_layout() stops at the first level with a
+    # match).  The compiled gemini keymap has XF86AudioLowerVolume/etc at
+    # level 0 on the standard evdev consumer keycodes (<VOL->=0x7a,
+    # <MUTE>=0x79, <I232/233>), so `<Mod5>XF86AudioLowerVolume` binds to
+    # (0x7a, Mod5) and never matches the Fn event (keycode 0x36 = C,
+    # Mod5).  Verified on glass 2026-09-10p: `<Mod5>0x39` (N) raised the
+    # backlight, the keysym form did nothing.  So bind the Fn layer's
+    # xkb keycodes directly — Fn+C=0x36, Fn+V=0x37, Fn+B=0x38, Fn+N=0x39,
+    # Fn+T=0x1c (xkb keycode = evdev code + 8; see config/xkb/symbols/
+    # gemini for the level-3 keysym assignments).  A device with a fixed
+    # built-in keyboard only: the keycodes *are* the layout contract.
+    #
+    # Brightness lives in gnome-shell's keybinding schema (GNOME 50 moved
+    # the screen backlight into mutter/gnome-shell:
+    # js/misc/brightnessManager.js); volume lives in gsd-media-keys'
+    # "-static" arrays (gsd-media-keys-manager.c get_bindings() merges the
+    # empty dynamic array with the static one).  Setting these as schema
+    # DEFAULTS (not a locked dconf value) leaves them user-remappable.
+    services.desktopManager.gnome.extraGSettingsOverrides = ''
+      [org.gnome.shell.keybindings]
+      screen-brightness-up=['XF86MonBrightnessUp', '<Mod5>0x39']
+      screen-brightness-down=['XF86MonBrightnessDown', '<Mod5>0x38']
+
+      [org.gnome.settings-daemon.plugins.media-keys]
+      volume-up-static=['XF86AudioRaiseVolume', '<Ctrl>XF86AudioRaiseVolume', '<Mod5>0x37']
+      volume-down-static=['XF86AudioLowerVolume', '<Ctrl>XF86AudioLowerVolume', '<Mod5>0x36']
+      volume-mute-static=['XF86AudioMute', '<Mod5>0x1c']
+    '';
+    # gsd's media-keys schema is not in the default gnome override set
+    # (which only carries gsettings-desktop-schemas + gnome-shell), so it
+    # must be listed explicitly for the [org.gnome.settings-daemon...]
+    # block above to be compiled.
+    services.desktopManager.gnome.extraGSettingsOverridePackages = [
+      pkgs.gnome-settings-daemon
     ];
   };
 }

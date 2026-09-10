@@ -72,7 +72,13 @@ pin() {
 ship_and_switch() {
     local tl=$1
     echo "deploy: shipping closure delta to $dev (nix copy)..."
-    nix copy --to "ssh://$dev" "$tl"
+    # known_hosts independence: device-ssh.sh pins UserKnownHostsFile=/dev/null
+    # (the freshly reinstalled rootfs has a new host key; 2026-09-10
+    # repartition).  nix copy does not, so set NIX_SSHOPTS for the same
+    # behaviour — otherwise a new rootfs host key aborts the deploy.
+    # [added 2026-09-10p]
+    NIX_SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+        nix copy --to "ssh://$dev" "$tl"
     echo "deploy: switching device profile -> ${tl##*/}"
     device_ssh "nix-env -p $profile --set '$tl'"
     device_ssh "'$tl/bin/switch-to-configuration' switch" \
