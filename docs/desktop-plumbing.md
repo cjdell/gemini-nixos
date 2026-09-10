@@ -173,24 +173,38 @@ gemini-specific.
   used only when NM is not active (detected via
   `systemctl is-active NetworkManager`). docs/power-sleep.md §4/§5.
 
-## Verification checklist (owed, 🟡 → ✅)
+## Verification checklist
 
-On-glass results from gen62 (2026-09-10, over g_ether):
+On-glass results (2026-09-10; gen62/gen63 + the new boot.img):
 
 - ✅ `nmcli dev` → wlan0 managed and **connected to "The Lab"**
-  without any manual step; usb0 `unmanaged`; both home profiles seeded.
-- ✅ `upower -d` → running (D-Bus activated), line_power device
-  present; DisplayDevice shows `battery-missing-symbolic` (no battery
-  supply yet — the kernel flash below fixes that).
+  without any manual step (also after every reboot since); usb0
+  `unmanaged`; both home profiles seeded.
+- ✅ `upower -d` → battery device present after the kernel flash:
+  `battery_bq25890_battery_0`, model "gemini-battery (voltage-derived)",
+  `state=charging percentage=90%`,
+  `icon-name=battery-full-charging-symbolic`; DisplayDevice mirrors it
+  (→ the phosh top-bar icon). `line_power` for the AC side.
 - ✅ Backlight: `/sys/class/backlight/backlight/{brightness,bl_power}`
-  become `rw-rw-rw-`; unprivileged `brightnessctl set` works.
-- ✅ gemwl + phosh-nested active after the deploy.
-- ⬜ Battery % / charging bolt in the phosh top bar — **needs the new
-  boot.img** (`bash bin/flash-nixos.sh boot`; the battery driver is
-  built into the kernel, so a rootfs-only generation switch cannot
-  deliver it). Then `upower -d` should show a battery device with a
-  percentage, and phosh the icon.
-- ⬜ Sleep/wake round trip on the new gemcli (silver button): desktop
-  and wifi must both come back.
-- ⬜ After a reboot, re-check the udev backlight perms (the rule fires
-  on device add; the live-deploy path needed the manual trigger above).
+  are `rw-rw-rw-` after a normal boot (the udev rule fires on device
+  add); unprivileged `brightnessctl -c backlight set 9%` → 23/255.
+- ✅ gemwl + phosh-nested + bluetooth active; NM reconnects wifi on
+  every boot.
+- ✅ WDT EXRST reboot: `bin/device-reboot.sh` → gadget drops ~12 s →
+  device back with a new boot_id (~47 s round trip). `systemctl
+  reboot` is broken on this unit (open P1, docs/phase-2-on-glass.md
+  §4) — use the WDT path.
+- ⬜ Physical eyeball items: the phosh brightness slider moves the LCD
+  (rule 5 — judge on glass), and the silver-button sleep/wake round
+  trip returns both desktop and wifi.
+
+### Follow-up fixed in the same session
+
+- The WDT EXRST arm no-ops unless `MODE` is restored first — the A72
+  bring-up disarms it (docs/phase-2-on-glass.md §2b). Fixed in
+  `bin/device-reboot.sh`, `bin/flash-nixos.sh` and `gemcli`'s
+  `wdt.rs arm()`.
+- `bin/device-reboot.sh` used to report success before the reset had
+  fired (it pinged the USB gadget that is still up during the 2 s WDT
+  window). It now waits for the gadget to drop and requires a changed
+  boot_id.

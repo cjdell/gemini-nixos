@@ -74,6 +74,22 @@ fine. **Recovery when mid-boot disarm blocks a reboot:**
 the mode, then `devmem 0x10007004 32 0x48` arms — EXRST fires ~2 s later.
 Receipts: legacy `GeminiPDA/docs/session-log.md` 2026-09-07 (1st/2nd).
 
+**[re-confirmed + fixed in the tools 2026-09-10]** The trap re-hit
+exactly as documented while flashing the new boot.img: `bin/flash-nixos.sh
+boot` wrote + verified para=boot-recovery, then the WDT arm no-opped and
+the device stayed up 2h+ (uptime climbing; a follow-up `systemctl
+reboot` then powered the unit off, the other known behaviour — nothing
+was flashed, boot partition untouched). Register read on glass:
+`0x10007000 = 0x00000000` (disarmed), `0x10007004 = 0x00000040`. NOTE:
+`CONFIG_MEDIATEK_WATCHDOG=y` is NOT the cause — it is present in
+`config.full-329` too, and the kernel watchdog core does not stop the
+EXRST path. The fix is now in every arming site: `bin/device-reboot.sh`,
+`bin/flash-nixos.sh` (both Linux→reboot hops) and `gemcli`'s `wdt.rs`
+`arm()` (used by `gemini-wdt-reboot`) restore `MODE = 0x2200005D` before
+writing `LENGTH`. `cl2-up.sh`/`cl2-down.sh` deliberately keep their own
+arm/disarm semantics (A72-sequence safety) — do not have them leave MODE
+armed permanently without a glass test.
+
 ### 2c. The boot loop escape hatch (proven repeatedly this session)
 
 A boot-looping device (para cleared, image hangs, LCD logo-frozen) is
@@ -138,6 +154,19 @@ the destructive dd (TWRP's busybox `stat` has no `-c`). [bin/flash-nixos.sh]
 
 Priorities P0 (blocking full use) → P3. Each gets a dated line when
 worked.
+
+- **[P1, OPEN 2026-09-10] `systemctl reboot` freezes at a black
+  screen** — not a power-off and not a reboot: the unit becomes
+  unresponsive (USB gadget gone, LCD black) and needs a hard power-off
+  (long-press power) to recover. Long-standing on this unit (the user
+  has it on the project TODO; it re-hit during the 2026-09-10 battery
+  boot-img flash attempt — see session-log 2026-09-10b). The only
+  WORKING reboot is the **WDT EXRST path** (`bin/device-reboot.sh`,
+  the Linux→reboot hops in `bin/flash-nixos.sh`, `gemini-wdt-reboot`),
+  which depends on the A72 WDT re-arm fix in §2b. Proper fix = the
+  kernel/PSCI restart handler (likely the same A72 cluster/SPM teardown
+  the A72 bring-up needs — cl2-down receipts); until then **do not use
+  `systemctl reboot`/`reboot` on glass — use the WDT path**.
 
 - ~~[P0] growfs: `/` is 3.1 GiB, not 27.3 GiB~~ **[done 2026-09-07]** —
   two stacked causes, both fixed: (1) the udev by-label coldplug race

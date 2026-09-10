@@ -6,7 +6,7 @@
 # TWRP from WHATEVER state the device is in:
 #
 #   running Linux (g_ether ssh — no adbd):  para=boot-recovery over ssh,
-#     then WDT EXRST self-boot (busybox devmem 0x10007004 0x48) → LK boots
+#     then WDT EXRST self-boot (MODE=0x2200005D restore + 0x10007004=0x48) → LK boots
 #     TWRP.  (Works from the current GeminiPDA Debian rootfs AND from the
 #     future NixOS rootfs — both ship busybox.)
 #   Android: adb reboot recovery hop (bin/boot-switch.sh twrp)
@@ -105,6 +105,16 @@ adb_sh() { timeout 300 adb shell "$@"; }
 adb_push() { timeout 900 adb "$@"; }
 devssh() { bash "$ROOT/bin/device-ssh.sh" "$@"; }
 
+# Arm the LK watchdog for an EXRST self-boot (Linux → TWRP/Debian hop).
+# The A72 bring-up (services/scripts/cl2-up.sh, run by gemini-a72-up at
+# every boot) leaves WDT MODE disarmed (0x10007000 = 0), so the LENGTH
+# arm write alone silently no-ops — the documented "reboot trap",
+# docs/phase-2-on-glass.md §2b. Restore LK's mode value (key | 0x5D)
+# first, then arm. [added 2026-09-10]
+wdt_exrst() {
+  devssh "busybox devmem 0x10007000 32 0x2200005D; busybox devmem 0x10007004 32 0x48" 2>/dev/null || true
+}
+
 say() { printf '>> %s\n' "$*"; }
 die() { echo "!! $*" >&2; exit 1; }
 
@@ -160,8 +170,8 @@ converge_twrp() {
       # regular file instead of writing the eMMC; detect by size always).
       devssh 'best=""; bs=0; for D in $(lsblk -dn -o NAME | grep -E "^mmcblk[0-9]+$"); do S=$(blockdev --getsize64 /dev/$D 2>/dev/null || echo 0); if [ "$S" -gt "$bs" ]; then bs=$S; best=$D; fi; done; [ -b /dev/${best}p2 ] || { echo "no para partition (largest mmcblk=$best)"; exit 1; }; { printf "boot-recovery\0"; head -c 18 /dev/zero; } > /tmp/bootcmd.bin; dd if=/tmp/bootcmd.bin of=/dev/${best}p2 bs=32 count=1 conv=fsync 2>/dev/null && dd if=/dev/${best}p2 bs=32 count=1 2>/dev/null | grep -qa "boot-recovery" && echo "PARA-WRITTEN+VERIFIED ($best)" || { echo "!! para write/verify FAILED"; exit 1; }' \
         || die "para write over ssh failed"
-      say "arming WDT for EXRST self-boot (busybox devmem 0x10007004 32 0x48)"
-      devssh "busybox devmem 0x10007004 32 0x48" 2>/dev/null || true
+      say "arming WDT for EXRST self-boot (MODE=0x2200005D restore + 0x10007004=0x48)"
+      wdt_exrst
       say "device resetting — waiting for TWRP (USB 18d1:4ee2)..."
       local i
       for ((i=1; i<=36; i++)); do
@@ -343,8 +353,8 @@ cmd_debian() {
       # largest-mmcblk rule + read-back verify (same as converge_twrp)
       devssh 'best=""; bs=0; for D in $(lsblk -dn -o NAME | grep -E "^mmcblk[0-9]+$"); do S=$(blockdev --getsize64 /dev/$D 2>/dev/null || echo 0); if [ "$S" -gt "$bs" ]; then bs=$S; best=$D; fi; done; [ -b /dev/${best}p2 ] || { echo "no para partition (largest mmcblk=$best)"; exit 1; }; { printf "boot-debian\0"; head -c 20 /dev/zero; } > /tmp/bootcmd.bin; dd if=/tmp/bootcmd.bin of=/dev/${best}p2 bs=32 count=1 conv=fsync 2>/dev/null && dd if=/dev/${best}p2 bs=32 count=1 2>/dev/null | grep -qa "boot-debian" && echo "PARA=debian (verified on $best)" || { echo "!! para write/verify FAILED"; exit 1; }' \
         || die "para write over ssh failed"
-      say "arming WDT for EXRST self-boot (busybox devmem 0x10007004 32 0x48)"
-      devssh "busybox devmem 0x10007004 32 0x48" 2>/dev/null || true
+      say "arming WDT for EXRST self-boot (MODE=0x2200005D restore + 0x10007004=0x48)"
+      wdt_exrst
       say "device resetting — Debian should come up on g_ether ($DEV) in ~40-90 s;"
       say "then: bash bin/device-ssh.sh 'uname -a' to confirm (or bin/net-up.sh first)"
       ;;

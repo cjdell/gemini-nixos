@@ -88,12 +88,54 @@ unprivileged `su cjdell -c 'brightnessctl -c backlight set 9%'` writes
 (`--subsystem-match=backlight`) does NOT fire the rule; syspath does
 (and a reboot will).
 
-Remaining: the battery supply is built into the KERNEL — a rootfs
-generation switch cannot deliver it, so the phosh battery icon stays
-absent until the new boot.img is flashed (`bash bin/flash-nixos.sh
-boot`; deferred — needs the user's go-ahead, it reboots the device).
-Then: `upower -d` battery % + bolt in phosh, sleep/wake round trip,
-and post-reboot backlight perms. Full checklist: docs/desktop-plumbing.md.
+**boot.img flashed + battery verified on glass.** `nix build
+.#packages.aarch64-linux.bootimg` → `result-boot` (bootopt
+`64S3,32N2,64N2` preserved, checked with
+`bin/dump-bootimg-header.sh`), flashed from TWRP (`bin/flash-nixos.sh
+boot result-boot`; previous image backed up to
+`stock-dump/boot-20260910-021726.img`), then `boot-nixos`. Device on
+the new kernel now shows:
+
+    bq25890-battery-0 type=Battery status=Charging capacity=90
+                      vbat=4044000 temp=380 health=Good
+    upower: battery_bq25890_battery_0 "gemini-battery (voltage-derived)"
+            state=charging percentage=90% icon=battery-full-charging
+    DisplayDevice: 90% charging  (→ phosh top-bar battery icon)
+
+90% is the intended charging clamp (VBAT 4.044 V maps to ~93%, capped
+at 90 while pre/fast-charging). Backlight attrs came up `rw-rw-rw-` on
+the fresh boot (the udev rule fires naturally on device add).
+NetworkManager reconnected wlan0 to "The Lab" unattended; upower, NM,
+gemwl, phosh-nested, bluetooth all active. **gen63** deployed
+(g53pxmax… — adds the NM-aware sleep + WDT fixes below).
+
+**The boot flash first FAILED and seeded two real fixes.** The WDT
+EXRST arm no-opped (documented "reboot trap") and the unit stayed up
+2h+; a `systemctl reboot` then froze it at a black screen (that
+behaviour is now recorded as an open P1 in docs/phase-2-on-glass.md
+§4 — the user confirms it is long-standing). Register read:
+`0x10007000 = 0x00000000` (MODE disarmed), `0x10007004 = 0x00000040`
+— the A72 bring-up (`cl2-up.sh` → `wdt_disarm`) case of §2b, NOT the
+kernel watchdog driver (CONFIG_MEDIATEK_WATCHDOG is also in
+config.full-329). Fixes:
+
+- `bin/device-reboot.sh`, the two Linux→reboot hops in
+  `bin/flash-nixos.sh` and `gemcli`'s `wdt.rs arm()` now restore
+  `MODE = 0x2200005D` before writing `LENGTH`; docs/phase-2-on-glass.md
+  §2b §4 updated.
+- `bin/device-reboot.sh` success detection was unsound (it pinged the
+gadget that was still up during the 2 s WDT window → false "rebooted
+✓"); it now waits for the USB gadget to DROP first and requires a
+changed `/proc/sys/kernel/random/boot_id`. Verified twice:
+"gadget gone after ~12s" → "device back (new boot_id) OK", ~47 s.
+- Recovery this time was a manual power-on into TWRP (the user did it);
+the A72-cluster-is-up case leaves no software path to TWRP if the para
+write is needed — the MODE restore above fixes the reboot half.
+
+Remaining (manual, physical): sleep/wake round trip via the silver
+button on the new gemcli (desktop + wifi must both return), and the
+phosh on-screen controls (brightness slider, wifi/BT pages, battery
+icon) confirmed by eye. Full checklist: docs/desktop-plumbing.md.
 
 Also touched: docs/phosh.md (closed the stale "no upower / no NM"
 Known-gaps bullet, marked [corrected 2026-09-10]), README services
