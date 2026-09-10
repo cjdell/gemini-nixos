@@ -5,6 +5,37 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10u — desktop/session selector DEPLOYED to glass (device gen9; GNOME session preserved)
+
+Deployed the selector from `2026-09-10t` (`bash bin/deploy.sh deploy`;
+profile switch, **no flash**, no boot.img change).
+
+- **Pre-flight blocker resolved:** the first attempt failed at the GC-pin
+  step with `No space left on device` — the host root fs
+  (`/dev/nvme0n1p3`, 246 G) was 100 % full (`/nix/store` 220 G, 69
+  `gemini-nixos-toplevel-*` GC pins). `nix store gc` (dry-run: 7664
+  dead paths) freed **78.3 GiB**; the pins (deployed gens) were left
+  intact. Deploy then succeeded.
+- **Version line (rule 0):** device generation `system-9-link` =
+  `/nix/store/zqkz1vh274mbwjg6rsd86bja1wlg9sij-nixos-system-gemini-26.11pre-git`
+  (was `system-8-link`). Deploy log: `logs/jobs/deploy-desktop/`.
+- **On-device verification (over g_ether):** `gemcli session status` →
+  marker `(unset — compile-time default applies)`, console sentinel
+  `absent`, **AccountsService session `gnome (wayland)`** (the new
+  `gemini-desktop-apply.service` ran), modes `gnome, cosmic, console`;
+  `gemini-desktop-apply.service` + `display-manager.service` both
+  `active`. `display-manager` was **not restarted** by the switch, so
+  the live GNOME session was preserved. `/run/current-system/sw/share/
+  wayland-sessions/` carries `cosmic.desktop` (GNOME's session is
+  registered through GDM's own data dirs).
+- **Not yet done:** the actual COSMIC boot (`gemcli session set cosmic
+  --reboot`) — needs eyes-on-glass (rule 5); return command is
+  `gemcli session set gnome --reboot`. The `console` mode is likewise
+  one marker change away.
+
+Next: run the COSMIC on-glass checklist in `docs/desktop-selection.md`
+(steps 3–7), then log the outcome here.
+
 ## 2026-09-10t — DESKTOP/SESSION SELECTOR: COSMIC co-installed with GNOME + console mode; `gemcli session` (build-level; nothing flashed)
 
 User ask: try the COSMIC desktop without breaking GNOME — can they

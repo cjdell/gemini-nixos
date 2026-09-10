@@ -2,10 +2,10 @@
 
 Last updated: 2026-09-10
 
-**Status: build-level (eval + toplevel build green). On-glass COSMIC
-verification pending; GNOME + console paths follow the already-verified
-GNOME/KMS stack.** Nothing here is on glass yet as a *selector*
-(2026-09-10).
+**Status (2026-09-10): DEPLOYED to glass as device generation 9
+(`zqkz1vh…`); the selector + GNOME path are verified live (AccountsService
+session set, sentinel logic in place, GNOME session preserved). The
+COSMIC session itself is still UNVERIFIED on glass.**
 
 ## The ask
 
