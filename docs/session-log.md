@@ -5,6 +5,102 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — Fn transport keys (Q/W/E) + British/UK regional settings (config-only)
+
+User request: Fn+Q = play/pause, Fn+W = previous track, Fn+E = next
+track, and the OS fully British English/UK.
+
+- **Fn transport keys.** The Fn layer symbols already existed in
+  `config/xkb/symbols/gemini`: `<AD01>q`/`<AD02>w`/`<AD03>e` carry
+  XF86AudioPlay / XF86AudioPrev / XF86AudioNext at level 3. As with the
+  2026-09-10p volume keys, a mutter *keysym* accelerator would resolve
+  to the standard consumer keycodes at level 0 and never match the Fn
+  event, so `services/gnome.nix` now binds the raw xkb keycodes as
+  gsd-media-keys schema defaults (still user-remappable):
+  `play-static += '<Mod5>0x18'` (Q), `previous-static += '<Mod5>0x19'`
+  (W), `next-static += '<Mod5>0x1a'` (E). Q/W/E are evdev 16/17/18 →
+  xkb keycode = evdev + 8. `play-static` (not `pause-static`) is the
+  MPRIS play/pause toggle.
+- **UK regional settings.** `config/gemini.nix` gained
+  `time.timeZone = "Europe/London"`, `i18n.defaultLocale =
+  "en_GB.UTF-8"` and all nine `LC_*` categories pinned to en_GB via
+  `i18n.extraLocaleSettings`. `services/gnome.nix` additionally sets
+  and locks `org.gnome.system.locale region = 'en_GB.UTF-8'` (GNOME
+  Settings → Region & Language → Formats; full-locale value, upstream
+  default `en_US.UTF-8`) so apps that only read that key are UK too.
+  Timezone is not a GSettings key: timedated serves `/etc/localtime`.
+
+Verification (on glass, after deploy):
+- **Deployed gen 14 then gen 15** (`bin/deploy.sh deploy` under
+  `run-job`; rootfs-only, no boot.img/kernel touched). On the device:
+  `timedatectl` → `Time zone: Europe/London (BST, +0100)`;
+  `/etc/locale.conf` + `locale` → every category `en_GB.UTF-8`;
+  `gsettings get org.gnome.system.locale region` → `'en_GB.UTF-8'`
+  (`gsettings writable` → `false`, i.e. locked);
+  `gsettings get org.gnome.settings-daemon.plugins.media-keys
+  play-static` → `['XF86AudioPlay', '<Ctrl>XF86AudioPlay',
+  '<Mod5>0x18']`, previous/next likewise.
+- Pre-deploy: the media-keys override was compiled against the actual
+  gnome-settings-daemon 50.1 gschema with `glib-compile-schemas`
+  (rc 0).
+- **Gotcha found on glass (gen 14 → fixed in gen 15):** the GNOME
+  locale key was first written to dconf path
+  `org/gnome/system/locale`, but `org.gnome.system.locale` declares
+  `path="/system/locale/"`, so gsettings reads `/system/locale/region`.
+  The wrong path left the value in an orphan node (`dconf dump /`
+  showed it, `gsettings get` returned `''`). Fixed to `system/locale`
+  + lock `/system/locale/region` (services/gnome.nix).
+- Docs: `docs/desktop-plumbing.md` §Volume (transport bindings) +
+  new §Regional, now marked deployed; verification checklist updated.
+
+On-glass Fn+Q/W/E: ⬜ still owed (needs an MPRIS player) at first
+
+---
+
+**Follow-up (same day, after "the keys do nothing" was reported):**
+
+Verified with `bin/kb-inject.c` (built on device; header build recipe
+was broken and is fixed) against Chromium's MPRIS player:
+- `fn+q` → PlaybackStatus `Playing` → `Paused` → `Playing` (toggle).
+- `fn+e` / `fn+w` → track changed (title "Another Day In Paradise" →
+  "You Don't Talk the Way You Used To").
+
+**Root cause of the initial failure — session-variable re-login
+gotcha (the important finding):** `extraGSettingsOverrides` are
+delivered through `NIX_GSETTINGS_OVERRIDES_DIR`, an
+`environment.sessionVariables` value captured by the GNOME session at
+**login**. `bin/deploy.sh` (nixos-rebuild switch) rewrites
+`/etc/set-environment` but does NOT restart the running user session,
+so the live `systemd --user` / `gsd-media-keys` / `gnome-shell` kept
+the OLD overrides path (`h068b11…`, 0 transport keys) while
+`/etc/set-environment` pointed at the new `spd89psb…` (3 transport
+keys). Restarting `gsd-media-keys` alone did not help — it inherits
+the stale env from `systemd --user`. Fix applied live without reboot:
+
+    su - cjdell -c "XDG_RUNTIME_DIR=/run/user/1000 \
+      systemctl --user set-environment NIX_GSETTINGS_OVERRIDES_DIR=<new>; \
+      systemctl --user restart org.gnome.SettingsDaemon.MediaKeys.target"
+
+(`…MediaKeys.service` is `RefuseManualStart/Stop=yes` → restart the
+**.target**; a plain `--user kill` is a clean exit and will NOT
+respawn.) A logout/reboot applies `/etc/set-environment` permanently,
+so no code change was needed — but future sessions should expect any
+`environment.sessionVariables` change (and the gsd `-static` key
+overrides, volume included) to require a re-login or the set-env trick.
+
+Also fixed in passing: `bin/kb-inject.c`'s build comment (`$( )` shell
+substitution doesn't interpolate in Nix; `runCommand` needs
+`nativeBuildInputs = [ gcc ]`), and the set-env + gsd-restart sequence
+is promoted to **`bin/gnome-session-env-refresh.sh`** (rule 6) — it
+reads the expected dir from `/etc/set-environment`, updates the user
+manager, and restarts `org.gnome.SettingsDaemon.MediaKeys.target`
+(`--all` = every gsd target). Documented in
+`docs/desktop-plumbing.md` §Volume.
+
+Next: none required. Device left on **gen 15**
+(`/nix/store/fi43wgl2y866r2cxa8rp1s3wxv8m1l4r-nixos-system-gemini-26.11pre-git`),
+GNOME session auto-reactivated by the switch; boot.img/TWRP untouched.
+
 ## 2026-09-11 — wine + `nix-shell -p` restored on the device (post-repartition fallout)
 
 Two device-side breakages reported after the 2026-09-10 one-way

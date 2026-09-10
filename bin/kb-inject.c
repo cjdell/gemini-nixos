@@ -21,11 +21,18 @@
  * MOD[+MOD...]+KEY (e.g. shift+fn+t).  Unknown names are rejected, so a
  * typo never injects a random key into the running session.
  *
- * Build (device, aarch64 — same recipe as touch-inject.c):
- *   nix-build -E '(import <nixpkgs> {}).stdenv.mkDerivation {
- *     name = "kbinj"; src = builtins.toFile "kb-inject.c"
- *       (builtins.readFile /root/kb-inject.c);
- *     buildPhase = "cc -O2 -o $out $SRCDIR/kb-inject.c"; }'
+ * Build (device, aarch64 — same recipe as touch-inject.c).  The old
+ * `$(builtins.toFile ...)` form in this header was shell command
+ * substitution and never worked; use Nix interpolation, and note that
+ * `runCommand` alone has no `cc` on PATH (add gcc) — verified
+ * 2026-09-11:
+ *   cat > /root/kbinj.nix <<'EOF'
+ *   with import <nixpkgs> {};
+ *   runCommand "kbinj" { nativeBuildInputs = [ gcc ]; }
+ *     "cc -O2 -o $out ${builtins.toFile "kb-inject.c"
+ *       (builtins.readFile /root/kb-inject.c)}"
+ *   EOF
+ *   nix-build /root/kbinj.nix --no-out-link
  */
 #include <stdio.h>
 #include <stdlib.h>

@@ -93,6 +93,35 @@ in
 
   system.stateVersion = "26.11";
 
+  # ---- Regional settings: British English / UK (2026-09-11) ----------
+  # Hardware is the UK silkscreen unit (shift+3 = £, see the console
+  # keymap + config/xkb/symbols/gemini). Match the OS to it:
+  #   - time.timeZone writes /etc/localtime (Europe/London, GMT/BST with
+  #     automatic DST) and is what systemd-timedated — i.e. GNOME's
+  #     Settings -> Date & Time, which reads the same data — reports.
+  #   - i18n.defaultLocale sets LANG in /etc/locale.conf for every
+  #     session/service; en_GB.UTF-8 gives British English, £ and
+  #     dd/mm/yyyy formats.
+  #   - extraLocaleSettings pins every LC_* category to GB as well, so a
+  #     stray inherited LC_ALL/LANG cannot make one category fall back to
+  #     en_US/C.  GNOME gets the region from the session locale; the
+  #     gnome-shell side also sets org.gnome.system.locale (see
+  #     services/gnome.nix) so the Settings -> Region & Language panel
+  #     agrees even before a relogin. [added 2026-09-11]
+  time.timeZone = "Europe/London";
+  i18n.defaultLocale = "en_GB.UTF-8";
+  i18n.extraLocaleSettings = {
+    LC_ADDRESS = "en_GB.UTF-8";
+    LC_IDENTIFICATION = "en_GB.UTF-8";
+    LC_MEASUREMENT = "en_GB.UTF-8";
+    LC_MONETARY = "en_GB.UTF-8";
+    LC_NAME = "en_GB.UTF-8";
+    LC_NUMERIC = "en_GB.UTF-8";
+    LC_PAPER = "en_GB.UTF-8";
+    LC_TELEPHONE = "en_GB.UTF-8";
+    LC_TIME = "en_GB.UTF-8";
+  };
+
   # ---- Desktop: vanilla GNOME is the DEFAULT (2026-09-10) ------------
   # The geminipda-drm KMS device (/dev/dri/card0) plus Mesa kmsro make
   # the STANDARD NixOS GNOME session possible; verified on glass

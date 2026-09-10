@@ -235,6 +235,25 @@ in
           "org/gnome/desktop/a11y/applications" = {
             screen-keyboard-enabled = false;
           };
+          # Regional formats (GNOME Settings -> Region & Language ->
+          # Formats): the gsettings value is a full locale name, e.g.
+          # upstream default `en_US.UTF-8`; pin it to GB so dates/number/
+          # currency formatting is UK even in apps that only consult
+          # org.gnome.system.locale and not the session LANG/LC_*.  The
+          # system side (time.timeZone + i18n.* in config/gemini.nix) is
+          # the source of truth; this keeps GNOME's panel in agreement.
+          # [added 2026-09-11]
+          # NOTE the dconf PATH is `system/locale`, NOT the schema id:
+          # org.gnome.system.locale declares path="/system/locale/" in
+          # its .gschema.xml, so gsettings reads /system/locale/region.
+          # Using the id (org/gnome/system/locale) writes a key nothing
+          # reads — verified on glass 2026-09-11, `gsettings get` stayed
+          # '' while `dconf dump /` showed the orphan node.  Most schemas
+          # derive the path from the id (hence input-sources above); this
+          # one does not.
+          "system/locale" = {
+            region = "en_GB.UTF-8";
+          };
           # Enable the no-osk extension declaratively.  NixOS has no
           # first-class option for this (the nixpkgs GNOME doc: a GSettings
           # override "will only influence the default value"), so put it in
@@ -250,6 +269,7 @@ in
           "/org/gnome/desktop/input-sources/sources"
           "/org/gnome/desktop/a11y/applications/screen-keyboard-enabled"
           "/org/gnome/shell/enabled-extensions"
+          "/system/locale/region"
         ];
       }
     ];
@@ -275,16 +295,22 @@ in
     # Mod5).  Verified on glass 2026-09-10p: `<Mod5>0x39` (N) raised the
     # backlight, the keysym form did nothing.  So bind the Fn layer's
     # xkb keycodes directly — Fn+C=0x36, Fn+V=0x37, Fn+B=0x38, Fn+N=0x39,
-    # Fn+T=0x1c (xkb keycode = evdev code + 8; see config/xkb/symbols/
-    # gemini for the level-3 keysym assignments).  A device with a fixed
+    # Fn+T=0x1c; the transport keys Fn+Q=0x18, Fn+W=0x19, Fn+E=0x1a (xkb
+    # keycode = evdev code + 8; see config/xkb/symbols/gemini for the
+    # level-3 keysym assignments — Fn+Q=XF86AudioPlay,
+    # Fn+W=XF86AudioPrev, Fn+E=XF86AudioNext).  A device with a fixed
     # built-in keyboard only: the keycodes *are* the layout contract.
     #
     # Brightness lives in gnome-shell's keybinding schema (GNOME 50 moved
     # the screen backlight into mutter/gnome-shell:
-    # js/misc/brightnessManager.js); volume lives in gsd-media-keys'
-    # "-static" arrays (gsd-media-keys-manager.c get_bindings() merges the
-    # empty dynamic array with the static one).  Setting these as schema
-    # DEFAULTS (not a locked dconf value) leaves them user-remappable.
+    # js/misc/brightnessManager.js); volume + transport live in
+    # gsd-media-keys' "-static" arrays (gsd-media-keys-manager.c
+    # get_bindings() merges the empty dynamic array with the static one).
+    # `<Mod5>XF86AudioPlay` etc would resolve to the standard consumer
+    # keycodes at level 0 just like the volume keys, hence the raw
+    # keycodes.  'play' is the MPRIS play/pause toggle, so Fn+Q is bound
+    # to play-static (pause-static is pause-only).  Setting these as
+    # schema DEFAULTS (not a locked dconf value) leaves them user-remappable.
     services.desktopManager.gnome.extraGSettingsOverrides = ''
       [org.gnome.shell.keybindings]
       screen-brightness-up=['XF86MonBrightnessUp', '<Mod5>0x39']
@@ -294,6 +320,9 @@ in
       volume-up-static=['XF86AudioRaiseVolume', '<Ctrl>XF86AudioRaiseVolume', '<Mod5>0x37']
       volume-down-static=['XF86AudioLowerVolume', '<Ctrl>XF86AudioLowerVolume', '<Mod5>0x36']
       volume-mute-static=['XF86AudioMute', '<Mod5>0x1c']
+      play-static=['XF86AudioPlay', '<Ctrl>XF86AudioPlay', '<Mod5>0x18']
+      previous-static=['XF86AudioPrev', '<Ctrl>XF86AudioPrev', '<Mod5>0x19']
+      next-static=['XF86AudioNext', '<Ctrl>XF86AudioNext', '<Mod5>0x1a']
     '';
     # gsd's media-keys schema is not in the default gnome override set
     # (which only carries gsettings-desktop-schemas + gnome-shell), so it

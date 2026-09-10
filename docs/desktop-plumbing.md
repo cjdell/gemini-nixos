@@ -1,9 +1,15 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
-Last updated: 2026-09-10s. Status: 🟡 implemented; **gen62 deployed
+Last updated: 2026-09-11. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
 boot.img (kernel battery supply), not just the rootfs generation.
+**2026-09-11:** Fn transport keys (Q/W/E = play-pause/prev/next) and
+the UK regional settings (Europe/London + en_GB.UTF-8, §Regional) added
+and **deployed on glass (gen 15)** — timezone/locale verified, and the
+Fn transport keys verified against a live Chromium MPRIS player. On
+first deploy they appeared dead: the cause was the **session-variable
+re-login gotcha** (see §Volume).
 **2026-09-10q:** internal-speaker L/R swap fixed by a virtual sink +
 `gemini-speakerd` couples the speaker amp to the selected output device
 (§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
@@ -40,8 +46,45 @@ battery display.
 | **Bluetooth** | bluez `org.bluez` (persistent service + auto-power) | already done 2026-09-09 — `services/bluetooth.nix`, `docs/bluetooth-bringup.md`; blueman UI present |
 | **Backlight** | `/sys/class/backlight/*/brightness` (sysfs) + `brightnessctl` | udev chmod 0666 rule (`services/plumbing.nix`) — see §brightness |
 | **Volume** | PipeWire/WirePlumber session (`services/audio.nix`) | one system session at `XDG_RUNTIME_DIR=/run/gemwl-audio`; GNOME clients redirected via `PULSE_SERVER`/`PIPEWIRE_RUNTIME_DIR`, Fn keys bound by xkb keycode — see §Volume |
+| **Regional settings** | systemd `localed`/`timedated` (`time.timeZone`, `i18n.*`) | Europe/London + British English (`en_GB.UTF-8`, every `LC_*`); GNOME `org.gnome.system.locale` pinned to match — see §Regional |
 | **Speakers vs headphones** | PipeWire sink list (GNOME Settings → Sound / Quick Settings output picker) | a virtual L/R-correcting "Built-in Speakers" sink + `gemini-speakerd` drives the speaker-amp pads to match the default sink — see §Speakers |
 | **Touch** | `wl_touch` (Wayland core protocol) — a real 10-point multi-touch device | gemwl forwards the NT36772's fingers to its seat as wl_touch (no cursor); the nested compositor's wlroots wayland backend re-emits it to the shell — see §Touch |
+
+### Regional settings: Europe/London + British English [2026-09-11]
+
+The unit is the **UK silkscreen** Gemini (shift+3 = £; see
+`config/xkb/symbols/gemini` and the console `config/keymaps/
+gemini-uk.map`). The OS side
+now matches it, in `config/gemini.nix`:
+
+- `time.timeZone = "Europe/London"` — NixOS writes `/etc/localtime`
+  (GMT/BST, automatic DST). systemd-timedated serves the same data, so
+  GNOME **Settings → Date & Time** shows London and cannot drift; no
+  dconf key is involved (timezone is not a GSettings value).
+- `i18n.defaultLocale = "en_GB.UTF-8"` — sets `LANG` in
+  `/etc/locale.conf` for every session and service (British English,
+  `£`, `dd/mm/yyyy`).
+- `i18n.extraLocaleSettings` pins **every** `LC_*` category
+  (ADDRESS, IDENTIFICATION, MEASUREMENT, MONETARY, NAME, NUMERIC,
+  PAPER, TELEPHONE, TIME) to `en_GB.UTF-8`, so a stray inherited
+  `LC_ALL`/category variable cannot fall back to `en_US`/`C`.
+- `services/gnome.nix` also sets (and locks) the GNOME-side locale
+  formats key. GNOME's `org.gnome.system.locale` declares
+  `path="/system/locale/"` in its gschema, so the dconf path is
+  **`system/locale`** — *not* the schema id (`org/gnome/system/locale`),
+  which is where a naive write lands and nothing reads. Verified on
+  glass 2026-09-11: with the wrong path `gsettings get
+  org.gnome.system.locale region` stayed `''` while `dconf dump /`
+  showed the orphan node; after the fix it returns `'en_GB.UTF-8'`
+  (and `gsettings writable … region` is `false`, i.e. locked). Locked
+  for the same reason as `input-sources`: a stale per-user dconf value
+  outranks a system default.
+
+The keymap side was already correct; this closes the timezone/locale
+gap. **Deployed + verified on glass 2026-09-11 (gen 15):**
+`timedatectl` → `Time zone: Europe/London (BST, +0100)`; `/etc/locale.conf`
+and `locale` → every category `en_GB.UTF-8`; `gsettings get
+org.gnome.system.locale region` → `'en_GB.UTF-8'`.
 
 ### Battery: no fuel gauge ⇒ voltage-derived capacity in the kernel
 
@@ -177,8 +220,11 @@ gsd volume keys drive the sink.
 **Fn volume/brightness keys.** The Fn layer is XKB level 3, selected by
 `ISO_Level3_Shift` on RALT (Mod5): Fn+C=XF86AudioLowerVolume,
 Fn+V=XF86AudioRaiseVolume, Fn+T=XF86AudioMute,
-Fn+B=XF86MonBrightnessDown, Fn+N=XF86MonBrightnessUp
-(`config/xkb/symbols/gemini`). mutter matches global keybindings on
+Fn+B=XF86MonBrightnessDown, Fn+N=XF86MonBrightnessUp, and the media
+**transport** keys Fn+Q=XF86AudioPlay (play/pause toggle),
+Fn+W=XF86AudioPrev (previous track), Fn+E=XF86AudioNext (next track)
+(`config/xkb/symbols/gemini` — the Fn layer symbols were already there;
+2026-09-11 added the GNOME bindings). mutter matches global keybindings on
 (keycode, modifier-mask); it does **not** mask Mod5, but it resolves a
 *keysym* accelerator to the **lowest** xkb level that produces that
 keysym (`add_keysym_keycodes_from_layout()` stops at the first level
@@ -201,12 +247,50 @@ the media-keys schema is in the override set:
     volume-up-static=[…, '<Mod5>0x37']    # V
     volume-down-static=[…, '<Mod5>0x36']  # C
     volume-mute-static=['XF86AudioMute', '<Mod5>0x1c']  # T
+    play-static=[…, '<Mod5>0x18']         # Q  (play/pause toggle)
+    previous-static=[…, '<Mod5>0x19']     # W
+    next-static=[…, '<Mod5>0x1a']         # E
 
 xkb keycode = evdev code + 8; the built-in matrix is fixed, so the
-keycodes are the layout contract. Verified on glass 2026-09-10p: sink
+keycodes are the layout contract. Q/W/E are evdev 16/17/18 → xkb
+0x18/0x19/0x1a. `play-static` (not `pause-static`) is the play/pause
+toggle, so Fn+Q toggles. Verified on glass 2026-09-10p: sink
 0.39→0.33 (Fn+C), →0.44 (Fn+V), `[MUTED]` toggle (Fn+T), backlight
 25↔37 (Fn+B/N). Test tool: `bin/kb-inject.c` (writes raw key events to
 the keyboard evdev node; `kb-inject fn+c fn+v fn+b fn+n`).
+
+**Transport keys verified on glass 2026-09-11.** Injected `fn+q`
+(Chromium \[MPRIS] PlaybackStatus `Playing`→`Paused`→`Playing`) and
+`fn+e`/`fn+w` (track changed). The first deploy *appeared* to do
+nothing — the bindings were right, the **session environment was
+stale**:
+
+> `extraGSettingsOverrides` reach gsd via `NIX_GSETTINGS_OVERRIDES_DIR`,
+an `environment.sessionVariables` value baked into the GNOME session at
+**login**. `nixos-rebuild switch` / `bin/deploy.sh` rewrite
+`/etc/set-environment` but do **not** restart the running user session,
+so the live `systemd --user` (and every `gsd-*`, `gnome-shell`) keeps
+the OLD overrides store path. Symptom: `gsettings get …play-static`
+from a fresh `su -` login shell shows the new array, while the running
+daemon still reads the old one — and restarting `gsd-media-keys` does
+not help because it inherits the stale env from `systemd --user`.
+
+Fix for the live session (no reboot):
+
+    NEW=$(grep -o '/nix/store/[^"]*-gnome-gsettings-overrides' /etc/set-environment)/share/gsettings-schemas/nixos-gsettings-overrides/glib-2.0/schemas
+    su - cjdell -c "XDG_RUNTIME_DIR=/run/user/1000 \
+      systemctl --user set-environment NIX_GSETTINGS_OVERRIDES_DIR=$NEW; \
+      systemctl --user restart org.gnome.SettingsDaemon.MediaKeys.target"
+
+(`org.gnome.SettingsDaemon.MediaKeys.service` is `RefuseManualStart/
+Stop=yes`, so restart the **.target**.) This is packaged as
+**`bin/gnome-session-env-refresh.sh`** (`--all` restarts every
+`org.gnome.SettingsDaemon.*` target; default user `cjdell`). A
+logout/reboot applies `/etc/set-environment` permanently. The same
+applies to ANY `environment.sessionVariables` change and to the other
+gsd `-static` bindings (volume etc.). Overrides read by gnome-shell
+itself (the `org.gnome.shell.keybindings` screen-brightness bindings)
+are cached in the running shell and still need a re-login.
 
 Under the old phoc+phosh default this was unsolved (phosh has no
 media-key code; gsd cannot global-grab keys on Wayland without
@@ -477,6 +561,13 @@ On-glass results (2026-09-10; gen62/gen63 + the new boot.img):
   (0.39→0.33→0.44, `[MUTED]`) and Fn+B/N brightness (25↔37) via the
   `<Mod5>` keycode bindings; `bin/kb-inject.c fn+c …` is the
   reproducible test.
+- ✅ Fn transport keys (2026-09-11, gen 15): Fn+Q play/pause, Fn+W
+  previous, Fn+E next. **Verified on glass** with `bin/kb-inject.c`
+  against a live Chromium MPRIS player (fn+q toggled Playing↔Paused;
+  fn+e/fn+w changed track) after the session-env fix in §Volume.
+- ✅ Regional settings (2026-09-11, gen 15): `timedatectl` →
+  Europe/London (BST), `/etc/locale.conf` + `locale` all `en_GB.UTF-8`,
+  GNOME `org.gnome.system.locale region` → `'en_GB.UTF-8'` (locked).
 - Touch (2026-09-10): ✅ gemwl logs `touchscreen attached (wl_touch
   forwarding)`; ✅ phoc logs `Adding touch device: wayland-touch-seat0`
   (the synthesized device exists end-to-end) — see the session log
