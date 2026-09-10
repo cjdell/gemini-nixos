@@ -180,6 +180,16 @@ in
     services.dbus.enable = lib.mkDefault true;
     security.polkit.enable = lib.mkDefault true;
 
+    # phosh's lockscreen PAM-authenticates the session user in-process
+    # under the service name "phosh". NixOS generates no such service by
+    # default, so pam falls back to the deny-all "other" file and NO
+    # passcode ever unlocks — observed on glass gen60 (0000 rejected
+    # with pam_warn spam in the phosh-nested journal). The default unix
+    # rules verify against the cjdell shadow entry (users.users.cjdell
+    # hashedPassword) via the setuid /run/wrappers/bin/unix_chkpwd
+    # (pam_unix execs it when euid != 0 — phosh runs as cjdell).
+    security.pam.services.phosh = { };
+
     # UI fonts + icons (phosh is Adwaita/Cantarell; fontconfig defaults
     # are DejaVu).
     fonts.packages = [ pkgs.dejavu_fonts pkgs.cantarell-fonts ];
