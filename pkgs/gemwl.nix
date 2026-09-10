@@ -34,8 +34,8 @@
 #
 # EGL/GLES2 headers + client libs come from libglvnd (egl.pc/glesv2.pc,
 # libEGL.so.1/libGLESv2.so.2 — the glvnd dispatch layer; the actual
-# driver is the mesa-geminipda ICD via the /etc/glvnd manifest wired by
-# config/gemini.nix). GLES3/gl31.h (compute shaders) is also in
+# driver is the mesa-geminipda ICD from hardware.graphics
+# (/run/opengl-driver), wired by config/gemini.nix). GLES3/gl31.h (compute shaders) is also in
 # libglvnd-dev.
 #
 # Runtime contract (see services/desktop.nix for the unit):

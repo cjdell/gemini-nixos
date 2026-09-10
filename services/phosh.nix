@@ -24,7 +24,8 @@
 # The pattern that DOES work (proven with LXQt since 2026-09-07) is a
 # full wlroots compositor NESTED inside gemwl — phoc replaces labwc in
 # that slot. GPU acceleration is preserved end-to-end: GTK4 renders via
-# EGL (fork ICD, /etc/glvnd) into phoc; phoc composites with wlroots
+# EGL (mesa-geminipda ICD via hardware.graphics /run/opengl-driver)
+# into phoc; phoc composites with wlroots
 # 0.19 gles2 on the same fork (gbm dma-bufs on renderD128); gemwl
 # imports those dma-bufs and blits GPU-direct to the LK framebuffer.
 #

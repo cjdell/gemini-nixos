@@ -395,12 +395,23 @@ in
   # "static" interface; NetworkManager's DHCP nameservers merge in
   # front when a wifi network is up — wifi.nix, NM mode).
 
-  # ---- Graphics (phase 4 preview) ------------------------------------
-  # The forked Mesa provides the glvnd ICD (libEGL_mesa.so + 50_mesa.json);
-  # libglvnd provides the client libs (libEGL.so.1 / libGLESv2.so.2) that
-  # dispatch to it. hardware.graphics stays off: the stock nixpkgs mesa
-  # (26.1.x, all drivers) would be the wrong driver for the Mali-T880
-  # and a much larger closure.
+  # ---- Graphics (phase 4 preview; ONE Mesa since 2026-09-10) ---------
+  # pkgs/mesa-geminipda.nix is a thin override of the pinned nixpkgs
+  # Mesa 26.2.2 (panfrost + the T880 polygon-list delta), wired as
+  # hardware.graphics.package. hardware.graphics then supplies the single
+  # glvnd ICD (/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json,
+  # absolute library_path baked in) plus the DRI/GBM driver dirs;
+  # libglvnd supplies the client libs (libEGL.so.1 / libGLESv2.so.2) that
+  # dispatch to it. This replaced the old setup (hardware.graphics
+  # unintendedly ON *and* a fork /etc ICD), where glvnd loaded BOTH mesa
+  # 26.2.2 and the 25.0.7 fork in one process — cosmic-comp had
+  # libgallium-25.0.7 + libgallium-26.2.2 loaded at once and could not
+  # import buffers between them ("import for wrong devices"). Receipts:
+  # docs/handover-2026-09-10-gnome-perf-touch.md, docs/library-deltas.md.
+  hardware.graphics = {
+    enable = true;
+    package = mesaGeminipda;
+  };
   # ---- Browsers (2026-09-08) -------------------------------------------
   # Real Google Chrome (nixpkgs google-chrome 152.0.7977.82, native
   # aarch64 deb — arm64 Linux stable only ships since ~2026-07, and the
@@ -409,8 +420,8 @@ in
   # path the Debian rootfs verified (Firefox WebGL worked there on the
   # fork mesa): nixpkgs' firefox wrapper ships libglvnd on LD_LIBRARY_PATH
   # (withGlvnd defaults true on Linux), so its dlopen of libEGL.so.1
-  # dispatches via the /etc/glvnd/egl_vendor.d/50_mesa.json manifest
-  # below -> mesa-geminipda fork -> panfrost renderD128. Two gaps had to
+  # dispatches via the /run/opengl-driver 50_mesa.json ICD above ->
+  # mesa-geminipda (26.2.2) -> panfrost renderD128. Two gaps had to
   # close first (both 2026-09-08, on-glass failures): (1) the fork was
   # built with NO wayland EGL platform (-Dplatforms=) so browser GL had
   # no display path at all — pkgs/mesa-geminipda.nix now builds
@@ -420,7 +431,6 @@ in
   # Session-side bits (session PATH for bare-name launch, NIXOS_OZONE_WL
   # for chrome's ozone/wayland auto-flags) live in services/lxqt.nix.
   environment.systemPackages = [
-    mesaGeminipda
     pkgs.libglvnd
     # --no-sandbox (2026-09-08, comment updated 2026-09-09): chrome was
     # first needed when the desktop ran as ROOT (system service,
@@ -449,14 +459,10 @@ in
     wineCli.wine64
   ];
 
-  # ICD manifest discovery: the compiled-in libglvnd scan list is
-  # /run/opengl-driver/share/glvnd/egl_vendor.d (only exists with
-  # hardware.graphics), /etc/glvnd/egl_vendor.d, /usr/share/... (no
-  # /usr). NixOS does not merge a package's $out/etc into the system
-  # /etc, so point environment.etc at the mesa manifest explicitly.
-  environment.etc."glvnd/egl_vendor.d/50_mesa.json" = {
-    source = "${mesaGeminipda}/etc/glvnd/egl_vendor.d/50_mesa.json";
-  };
+  # The glvnd ICD now comes from hardware.graphics above (the compiled-in
+  # libglvnd scan list includes /run/opengl-driver/share/glvnd/
+  # egl_vendor.d). Do NOT add a second /etc/glvnd manifest here: a second
+  # mesa vendor is exactly the dual-gallium bug this config fixes.
 
   # The Mobile NixOS stage-1 is disabled for this device (docs R1: its
   # initrd cannot fit the 16 MiB boot partition). The boot ramdisk is a

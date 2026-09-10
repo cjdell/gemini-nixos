@@ -264,7 +264,8 @@ in
           # launch; the lxqt-nested env carries both, so session-launched
           # `google-chrome` picks Wayland. Firefox needs nothing here
           # (its wrapper sets MOZ_ENABLE_WAYLAND=1 + libglvnd by default;
-          # the fork EGL ICD is found via /etc/glvnd — config/gemini.nix).
+          # the EGL ICD is found via /run/opengl-driver — hardware.graphics
+          # in config/gemini.nix).
           "NIXOS_OZONE_WL=1"
           # Firefox/Chrome GPU identification (glxtest / ANGLE): the fork
           # libgbm has NO baked backend path (verified via strings) and
@@ -273,8 +274,10 @@ in
           # loses its GL path entirely. Port of the Debian session env
           # (start-lxqt-nested.sh, where this exact var made Firefox's
           # glxtest find the fork backend; 2026-09-04 session, hardware
-          # WebRender). Point it at THIS fork's lib/gbm (store path — the
-          # same mesa the /etc/glvnd ICD resolves to). [2026-09-08]
+          # WebRender). Point it at the bundled lib/gbm of the SAME mesa
+          # the /run/opengl-driver ICD resolves to (mesaGeminipda).
+          # [2026-09-08; updated 2026-09-10 — ICD moved to
+          # /run/opengl-driver, libgbm now bundled in that mesa]
           "GBM_BACKENDS_PATH=${mesaGeminipda}/lib/gbm"
           # Gemini keyboard layout for the labwc keymap: xkbcommon
           # include path for symbols/gemini + the layout name itself.

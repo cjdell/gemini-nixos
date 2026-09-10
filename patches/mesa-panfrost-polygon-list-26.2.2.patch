@@ -1,0 +1,38 @@
+--- a/src/gallium/drivers/panfrost/pan_cmdstream.c
++++ b/src/gallium/drivers/panfrost/pan_cmdstream.c
+@@ -4611,15 +4611,33 @@
+        * no WRITE_VALUE job in the chain
+        */
+       bool init_polygon_list = !has_draws;
++
++      /* geminipda delta (carried from the mesa-geminipda 25.0.7 fork):
++       * force the polygon-list BO CPU-visible and zero the WHOLE list
++       * every batch. Upstream keeps the BO GPU-only when there are draws
++       * and relies on a WRITE_VALUE job to clear just the first word; on
++       * the Mali-T880 tiler, stale empty-bin headers left behind across
++       * polygon-list BO-cache reuse drop far bins (deterministic clip
++       * bands). The A/B oracle in the 25.0.7 fork was
++       * PAN_NO_POLYLIST_MEMSET=1 (restores upstream semantics). The other
++       * functional hunk of that fork, the panfrost dma-buf
++       * IMPORT|EXPORT caps, is obsolete on 26.x: the generic
++       * u_init_pipe_screen_caps() now derives caps->dmabuf from the
++       * kernel's DRM_CAP_PRIME (src/gallium/auxiliary/util/u_screen.c).
++       * See docs/library-deltas.md and
++       * docs/handover-2026-09-10-gnome-perf-touch.md.
++       */
+       batch->polygon_list_bo = panfrost_batch_create_bo(
+-         batch, size, init_polygon_list ? 0 : PAN_BO_INVISIBLE,
+-         MESA_SHADER_VERTEX, "Polygon list");
++         batch, size, 0, MESA_SHADER_VERTEX, "Polygon list");
+ 
+       if (!batch->polygon_list_bo) {
+          mesa_loge("failed to allocate memory for polygon-list");
+          return 0;
+       }
+ 
++      if (batch->polygon_list_bo->ptr.cpu)
++         memset(batch->polygon_list_bo->ptr.cpu, 0, size);
++
+       batch->tiler_ctx.midgard.polygon_list = batch->polygon_list_bo->ptr.gpu;
+       panfrost_batch_add_bo(batch, batch->polygon_list_bo,
+                             MESA_SHADER_FRAGMENT);
