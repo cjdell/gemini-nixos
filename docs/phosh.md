@@ -211,7 +211,9 @@ GPU truth on glass (phoc journal): WLR_RENDERER=gles2 → "OpenGL ES 3.1
 Mesa 25.0.7, Mali-T880 (Panfrost)", EGL display extensions incl.
 EGL_EXT_image_dma_buf_import — same fork-mesa chain as LXQt/gemdemo.
 Remaining journal noise = the documented v1 gaps (no gnome-session /
-dconf / upower / NM — non-fatal).
+dconf; upower + NetworkManager are now provided — see the corrected
+Known-gaps bullet below and docs/desktop-plumbing.md [corrected
+2026-09-10]).
 
 ## On-glass verification checklist (owed — the 🟡 → ✅ step)
 
@@ -260,12 +262,16 @@ dconf / upower / NM — non-fatal).
 - **No xdg-desktop-portal-phosh** (file/share dialogs fall back to the
   GTK portal if ever added), **no stevia/ibus input method** (hardware
   keyboard first; OSK text-entry into Qt apps would need the ibus route
-  the nixpkgs module uses), **no upower** (no fuel gauge on this unit —
-  battery truth is bq25890 sysfs; phosh's battery icon is expected to
-  be absent/unknown until upower + a mapping is added), **no
-  NetworkManager/ModemManager integration** (status-bar wifi/cellular
-  icons need those system services; wifi.nix currently drives wlan0
-  outside NM).
+  the nixpkgs module uses). **[corrected 2026-09-10]** The former "no
+  upower / no NetworkManager" gap is CLOSED by the desktop-plumbing
+  layer (`services/plumbing.nix` + `services/wifi.nix`,
+  docs/desktop-plumbing.md): a kernel Battery supply makes upower show
+  real battery state (the unit has no fuel gauge — capacity is
+  voltage-derived) and NetworkManager now owns wlan0/wlan1 on the
+  standard D-Bus API, so the phosh status-bar/quick-settings battery,
+  wifi and bluetooth (bluez, already up) widgets have their services.
+  ModemManager stays off (no modem); the cellular icon remains
+  absent/unknown by design.
 - **wlroots 0.19 vs the verified 0.18.2**: phoc's compositing runs on
   nixpkgs' wlroots 0.19.3 (userspace-only here — no DRM touched), whose
   GLES2/gbm path is a sibling of the verified 0.18.2 path but has not

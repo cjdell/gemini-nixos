@@ -5,6 +5,83 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10b — DESKTOP PLUMBING: battery via UPower, Wi-Fi via NetworkManager, backlight access (eval-green + kernel built; NOT yet deployed)
+
+Task: "phosh is not usable at the moment — need backlight/volume
+controls, wifi/bluetooth, battery status; do it the most standard way
+so all desktop environments just work." Design + receipts:
+**docs/desktop-plumbing.md**.
+
+What landed (all DE-agnostic system services, no shell-specific glue):
+
+- **Battery → upower**: the unit has NO fuel-gauge IC, so upower/DEs
+  had nothing to show (only a TYPE_USB charger supply existed). The
+  kernel fork now registers a `Battery`-type `bq25890-battery-N`
+  power_supply beside the charger in the same driver (capacity from
+  the VBAT ADC vs a 1S Li-ion OCV table, ≤90 % while pre/fast-charging,
+  100 % only at termination; status/voltage/temp/health mirrored; a
+  `bq25890_supplies_changed()` helper fans out
+  `power_supply_changed()` to both supplies). Fork commit
+  **c8f0787d** (2026-09-10), synced with `bin/sync-kernel-delta.sh` →
+  delta 517 files, byte-verified `v6.6 + delta == c8f0787d`; kernel
+  default.nix header rev updated. Built OK on the aarch64 builder:
+  `linux-6.6.0` drv `78z54a5j…` (System.map carries
+  `bq25890_battery_supply_get_property`).
+- **`services/plumbing.nix`** (new, imported from config/gemini.nix):
+  `services.upower` enabled, percent thresholds 15/5/2 % matching the
+  guard's 3.64/3.57/3.50 V points, `criticalPowerAction = "Ignore"`
+  (only gemini-battery-guard powers the unit off — the voltage-derived
+  % must not drive policy), `ignoreLid`, and a `brightnessctl` package.
+- **Backlight access**: kernel-side 0666 sysfs attrs are IMPOSSIBLE
+  (first attempt failed the build: `VERIFY_OCTAL_PERMISSIONS` rejects
+  write bits for group/other on DEVICE_ATTR — that delta change was
+  reverted before the successful build). Replaced with a udev RUN rule
+  (plumbing.nix) chmodding `/sys/class/backlight/%k/{brightness,bl_power}`
+  to 0666 on add — the standard runtime answer for the session-less
+  system-service desktop (no logind session → logind SetBrightness and
+  udev uaccess never apply).
+- **Wi-Fi → NetworkManager** (`services/wifi.nix`,
+  `services.geminiWifi.useNetworkManager` default **true**): NM owns
+  wlan0 (CONSYS — bring-up units unchanged, NM ordered after +
+  Wants=gemini-wifi-internal) and wlan1 (RTL8821CU dongle); usb0
+  unmanaged (static g_ether link); home networks ("The Lab", "The Lab
+  2.4GHz") as NM profiles via ensureProfiles, same psk as
+  etc/wifi/profiles.conf; DNS via the default resolvconf rc-manager
+  (no systemd-resolved); `wifi.scanRandMacAddress=false` (gen3 driver
+  has no MAC randomization); ModemManager off. Legacy standalone
+  wpa_supplicant+dhcpcd+`wifi auto` = `useNetworkManager = false`
+  fallback (kept installed). cjdell's `networkmanager` group membership
+  + NM's polkit rule make the DE UI work with no logind session.
+- **Bluetooth**: already standard (bluetoothd auto-powered + blueman);
+  no change.
+- **Volume**: state already PipeWire/WirePlumber; physical media keys
+  are NOT wired by any standard path under phoc+phosh (phosh has no
+  media-key code; gsd can't global-grab on Wayland without gnome-shell
+  — same as PinePhone). Documented as a follow-up (actkbd/wevdaemon
+  style daemon → `wpctl`), deliberately not part of this layer.
+
+Eval: `nixosConfigurations.gemini` toplevel builds green, drv
+`48w4r954…`; verified config values (upower 15/5/2 + Ignore, NM
+enabled/unmanaged usb0/rand=false, modemmanager false, brightnessctl
+in the closure). Deployed: **NO** — nothing flashed/switched this
+session (kernel + system built only).
+
+On-glass checklist (owed, docs/desktop-plumbing.md §end): battery in
+upower + phosh top bar tracks AC plug/unplug; `nmcli dev` wlan0 +
+phosh wifi page; `ls -l /sys/class/backlight/*/brightness` = rw-rw-rw-
+and the phosh brightness slider moves the LCD; also confirm the
+backlight class device even registers on this kernel (if
+`/sys/class/backlight` is empty, the disp-pwm backlight node needs
+finishing — the root `backlight` devmem CLI still works). Next action=
+`bin/deploy.sh build && bin/deploy.sh deploy` (or the device-side
+`nixos-rebuild switch --flake .`), then the checklist + a version line.
+
+Also touched: docs/phosh.md (closed the stale "no upower / no NM"
+Known-gaps bullet, marked [corrected 2026-09-10]), README services
+row, AGENTS "Where things live". No legacy GeminiPDA doc touched
+except the kernel fork repo (commit c8f0787d — the fork's bring-up
+branch, which is where kernel edits live per the delta hygiene rule).
+
 ## 2026-09-10a — PHOSH IS THE DEFAULT DESKTOP + ON GLASS: module default flip → gen59 crashed (2 bring-up bugs fixed) → gen61 unlocked by the user (0000)
 
 Task: "can we make phosh the default desktop?" → yes, and it now is:
