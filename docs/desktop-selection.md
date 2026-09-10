@@ -1,11 +1,17 @@
-# Desktop/session selection — GNOME, COSMIC, or the framebuffer console
+# Desktop/session selection — GNOME, COSMIC, niri, or the framebuffer console
 
-Last updated: 2026-09-10
+Last updated: 2026-09-11
 
 **Status (2026-09-10): DEPLOYED to glass as device generation 9
 (`zqkz1vh…`); the selector + GNOME path are verified live (AccountsService
 session set, sentinel logic in place, GNOME session preserved). The
 COSMIC session itself is still UNVERIFIED on glass.**
+
+**niri (2026-09-11): added as a fourth co-installed session at the
+build level.** It uses the same GDM Wayland-session + selector path as
+GNOME/COSMIC (`programs.niri.enable` registers `niri`;
+`gemcli session set niri`); niri 26.04 is aarch64-cache-verified at the
+flake pin. On-glass pending — see the checklist below.
 
 ## The ask
 
@@ -16,15 +22,15 @@ COSMIC session itself is still UNVERIFIED on glass.**
 
 ## Short answer
 
-- **Yes, GNOME and COSMIC co-exist** — they are both ordinary GDM
+- **Yes, GNOME, COSMIC and niri co-exist** — they are all ordinary GDM
   Wayland *sessions* (`services.displayManager.sessionPackages`), so
-  both are installed and GDM offers both. Only **one owns the panel at
-  a time**, and nothing about installing COSMIC changes the GNOME
-  session or its build.
+  all are installed and GDM offers all of them. Only **one owns the
+  panel at a time**, and nothing about installing one changes the other
+  sessions or their builds.
 - **Yes, `gemcli session` switches them** — a persistent marker
   (`/var/lib/gemini/desktop`) is resolved at boot before GDM starts, so
   the choice is runtime-mutable without a rebuild. `gemcli session set
-  cosmic --reboot` is the "switch now" path.
+  niri --reboot` is the "switch now" path.
 - **Console mode exists** — `gemcli session set console`: GDM is
   skipped and the fbcon console (with an autologin getty on tty1) stays.
 
@@ -33,18 +39,20 @@ COSMIC session itself is still UNVERIFIED on glass.**
 Since 2026-09-10 the LCD is a real KMS device
 (`geminipda-drm` → `/dev/dri/card0`) rendered through panfrost via Mesa
 `kmsro`. GNOME's `mutter` holds that device as its primary GPU; COSMIC's
-`cosmic-comp` (smithay) would too. Two compositors cannot both modeset
-the one CRTC, but *nothing about that is a build conflict*:
+`cosmic-comp` (smithay) and niri (smithay) would too. Two compositors
+cannot both modeset the one CRTC, but *nothing about that is a build
+conflict*:
 
-- `services.desktopManager.gnome.enable` and
-  `services.desktopManager.cosmic.enable` are independent options that
-  each append their session package to
+- `services.desktopManager.gnome.enable`,
+  `services.desktopManager.cosmic.enable` and `programs.niri.enable`
+  are independent options that each append their session package to
   `services.displayManager.sessionPackages` (eval receipt below:
-  `["gnome","cosmic"]`).
-- They also both add `xdg.portal` backends; the list-typed options
-  concatenate, so the merged set is
-  `gnome-session + xdg-desktop-portal-cosmic` (verified), and the portal
-  picks the backend from `XDG_CURRENT_DESKTOP`.
+  `["gnome","cosmic","niri"]`).
+- They also all add `xdg.portal` backends; the list-typed options
+  concatenate, so the merged portal packages are unchanged by niri
+  (its `xdg.portal.config.niri` reuses `xdg-desktop-portal-gnome`/`-gtk`,
+  already pulled in by GNOME, and lists `gnome`/`gtk` as its backends),
+  and the portal picks the backend from `XDG_CURRENT_DESKTOP`.
 - The legacy nested stack (`gemwl` + Phosh/LXQt) is a *different*
   architecture (it owns `/dev/gemfb` directly). `services/gnome.nix`
   still force-disables it; the selector does not disturb that.
@@ -54,7 +62,7 @@ The selector only decides **which session GDM auto-logs into per boot**.
 ## Architecture
 
 ```
-/var/lib/gemini/desktop              "gnome" | "cosmic" | "console"
+/var/lib/gemini/desktop              "gnome" | "cosmic" | "niri" | "console"
         |                            (persistent, root-owned; written by
         |                             `gemcli session set`)
         v
@@ -62,7 +70,7 @@ gemini-desktop-apply.service         oneshot, Before=display-manager.service,
   (services/scripts/                 WantedBy=multi-user.target
    gemini-desktop-apply)
         |
-        | gnome|cosmic : AccountsService SetSession/SetSessionType
+        | gnome|cosmic|niri : AccountsService SetSession/SetSessionType
         |                for cjdell (Wayland)  + rm /run/gemini-console
         |
         | console      : touch /run/gemini-console
@@ -86,7 +94,12 @@ on the next boot. `services/gnome.nix` therefore leaves it unset
 (`null`), and the applier reproduces set-session's mechanism directly
 (`AccountsService` `SetSession` + `SetSessionType("wayland")` via
 `busctl` — no python in the closure). GDM reads that saved session for
-auto-login.
+auto-login. **`programs.niri` is the exception that makes this worth
+spelling out**: its module pins `displayManager.defaultSession = "niri"`
+with `mkDefault`, so `services/desktop-select.nix` now `mkForce`-es the
+option back to `null` — otherwise GDM's preStart (which runs *after* the
+applier) would overwrite the marker's session with `niri` on every
+display-manager start.
 
 ## Modes
 
@@ -94,16 +107,18 @@ auto-login.
 |---|---|---|---|
 | `gnome` | `mutter` on card0 (panfrost/kmsro) | GDM autologin → `gnome` session | **Verified on glass** (docs/gnome-feasibility.md). Default. |
 | `cosmic` | `cosmic-comp` on card0 | GDM autologin → `cosmic` session | COSMIC 1.6.0. **Unverified on glass** — see checklist. |
+| `niri` | `niri` on card0 (smithay) | GDM autologin → `niri` session | niri 26.04. **Unverified on glass** — see checklist. |
 | `console` | none (fbcon tty1) | display-manager skipped; `getty@tty1` | No desktop; serial console (ttyS0) unaffected. |
 
 ## gemcli commands
 
 ```
 gemcli session status          # marker, console sentinel, AccountsService session
-gemcli session list            # the three modes
-gemcli session set cosmic      # persist; takes effect next boot
-gemcli session set cosmic --apply    # also update AccountsService now
-gemcli session set cosmic --reboot   # persist + reboot (clean switch)
+gemcli session list            # the four modes
+gemcli session set niri        # persist; takes effect next boot
+gemcli session set niri --apply    # also update AccountsService now
+gemcli session set niri --reboot   # persist + reboot (clean switch)
+gemcli session set cosmic      # (same, for COSMIC)
 gemcli session set console     # no desktop from next boot
 gemcli session apply           # re-run the applier for the current marker
 ```
@@ -127,20 +142,38 @@ Verified at the flake pin `dc5d91f84032`
 | `services.desktopManager.cosmic` option | present (`nixos/modules/services/desktop-managers/cosmic.nix`) |
 | `cosmic-session` provided session name | `cosmic` |
 | aarch64 cache.nixos.org for `cosmic-session/comp/panel/settings` + `xdg-desktop-portal-cosmic` | **CACHED** (`nix path-info --store https://cache.nixos.org`, 2026-09-10) |
-| merged session list (eval) | `["gnome","cosmic"]` |
-| `services.displayManager.defaultSession` (eval) | `null` |
+| merged session list (eval) | `["gnome","cosmic","niri"]` |
+| `services.displayManager.defaultSession` (eval) | `null` (the selector `mkForce`-es it back to null; see above) |
 | `display-manager` unit Condition (eval) | `!/run/gemini-console` |
 | applier unit (eval) | `ExecStart` = gemini-pda-utils `gemini-desktop-apply`; env `GEMINI_DESKTOP_DEFAULT=gnome`, `GEMINI_DESKTOP_USER=cjdell`; `before=["display-manager.service"]` |
 
 The only local compiles this adds are the rebuilt `gemini-pda-utils`
 (new script) and `gemcli` (new `session` subcommand).
 
-## On-glass checklist (COSMIC, in order)
+## niri build facts (rule 9 verification, 2026-09-11)
+
+Verified at the flake pin `dc5d91f84032` (26.11pre1068949):
+
+| Check | Result |
+|---|---|
+| `programs.niri` module | present (`nixos/modules/programs/wayland/niri.nix`) |
+| `niri` package version | `niri-26.04` |
+| `niri` provided session name | `niri` (`passthru.providedSessions = ["niri"]`; `share/wayland-sessions/niri.desktop`) |
+| aarch64 cache.nixos.org for `niri` | **CACHED** (`nix path-info --store https://cache.nixos.org`, 2026-09-11) |
+| `programs.niri` side effects | adds `niri` to `environment.systemPackages` + `services.displayManager.sessionPackages`; `systemd.packages = [niri]`; `xdg.portal.config.niri`; `gnome-keyring` (`mkDefault`) |
+| ⚠ `programs.niri` opens | `services.displayManager.defaultSession = lib.mkDefault "niri"` — **overridden back to `null`** by `services/desktop-select.nix` (`mkForce`) so the marker stays authoritative |
+
+niri is a native KMS/smithay compositor (like `cosmic-comp`), not a
+nested one; it needs the same `/dev/dri/card0` (geminipda-drm) +
+panfrost/kmsro pairing the verified GNOME path uses.
+
+## On-glass checklist (COSMIC / niri, in order)
 
 1. Deploy the toplevel (`bin/deploy.sh`) — no reflash; the KMS boot.img
    is unchanged.
 2. `gemcli session status` — marker/effective session sane.
-3. `gemcli session set cosmic --reboot`.
+3. `gemcli session set cosmic --reboot` (then repeat the block below for
+   `niri`).
 4. After boot: `systemctl status display-manager`, `journalctl -b -u
    display-manager`, `systemctl --user` / `loginctl` show a COSMIC
    session; `XDG_CURRENT_DESKTOP=COSMIC` in the session env.
@@ -148,20 +181,33 @@ The only local compiles this adds are the rebuilt `gemini-pda-utils`
    ever flickers, stop and go to TWRP). COSMIC must not need more from
    `geminipda-drm` than mutter already uses (atomic modeset + a shadow
    primary plane; there is no cursor/overlay plane — smithay is expected
-   to fall back to a software cursor).
+   to fall back to a software cursor). niri has the same expectation.
 6. `gemcli session set gnome --reboot` — verify the return trip.
 7. `gemcli session set console --reboot` — verify no GDM, fbcon tty1
    autologin; then back to `gnome`.
 8. Log the version lines + outcomes in `docs/session-log.md` (rule 0).
 
+### niri-specific checks
+
+- `gemcli session set niri --reboot`; after boot verify `niri` is the
+  session (`loginctl`, `$XDG_CURRENT_DESKTOP=niri`), `journalctl -b -u
+  display-manager` clean, and the panel renders.
+- niri config lives at `~/.config/niri/config.kdl` (a default config is
+  shipped if absent — `niri --validate`). This repo deliberately ships
+  NO niri config; add one later if the on-glass pass needs device keys
+  (the gemini xkb layout reaches it via `XKB_CONFIG_ROOT`, same as
+  GNOME).
+- niri has no built-in greeter of its own; GDM stays the greeter.
+
 ### Known risks / open questions
 
-- **COSMIC + `geminipda-drm` capability matrix.** mutter is verified on
-  this driver; `cosmic-comp`/smithay may request a cursor plane, more
-  formats or modifiers. If it fails to bring up the output, capture the
-  journal and consider an smithay software-cursor/rgba8888 config before
-  touching the driver (the driver is shared with the verified GNOME
-  path — do not regress it).
+- **COSMIC/niri + `geminipda-drm` capability matrix.** mutter is
+  verified on this driver; `cosmic-comp`/smithay and niri (also
+  smithay) may request a cursor plane, more formats or modifiers. If it
+  fails to bring up the output, capture the journal and consider an
+  smithay software-cursor/rgba8888 config before touching the driver
+  (the driver is shared with the verified GNOME path — do not regress
+  it).
 - **GDM auto-login session source.** The mechanism (AccountsService
   `Session`/`SessionType`) is the one nixpkgs' `set-session.py` uses for
   `displayManager.defaultSession`, so it is the sanctioned path; the
@@ -175,6 +221,7 @@ The only local compiles this adds are the rebuilt `gemini-pda-utils`
 |---|---|
 | `services/desktop-select.nix` | the selector module (`services.geminiDesktop.*`) |
 | `services/scripts/gemini-desktop-apply` | boot applier (marker → AccountsService / console sentinel) |
-| `config/gemini.nix` | `services.desktopManager.cosmic.enable = true` + selector wiring |
+| `config/gemini.nix` | `services.desktopManager.cosmic.enable = true` + `programs.niri.enable = true` + selector wiring |
 | `services/gnome.nix` | leaves `displayManager.defaultSession` unset (selector owns it) |
-| `pkgs/gemcli/src/session.rs` | `gemcli session` |
+| `pkgs/gemcli/src/session.rs` | `gemcli session` (modes gnome/cosmic/niri/console) |
+| `pkgs/gemcli/src/main.rs` | `session set <mode>` clap value_parser (gnome/cosmic/niri/console) |

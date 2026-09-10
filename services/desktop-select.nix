@@ -1,30 +1,31 @@
-# Gemini desktop/session selector — GNOME, COSMIC, or the framebuffer
-# console.
+# Gemini desktop/session selector — GNOME, COSMIC, niri, or the
+# framebuffer console.
 #
-# GNOME and COSMIC are both ordinary GDM Wayland sessions on the
+# GNOME, COSMIC and niri are all ordinary GDM Wayland sessions on the
 # geminipda-drm KMS device (drivers/gpu/drm/tiny/geminipda-drm.c ->
 # /dev/dri/card0, rendered through panfrost via Mesa kmsro). They can be
-# INSTALLED side by side — `services.desktopManager.gnome` and
-# `services.desktopManager.cosmic` both register their session with the
-# display manager (`services.displayManager.sessionPackages`), so GDM
-# offers both in its chooser. Only ONE can own the panel at a time, but
-# that is what the marker below decides per boot, not the build.
+# INSTALLED side by side — `services.desktopManager.gnome`,
+# `services.desktopManager.cosmic` and `programs.niri` each register
+# their session with the display manager
+# (`services.displayManager.sessionPackages`), so GDM offers them all in
+# its chooser. Only ONE can own the panel at a time, but that is what the
+# marker below decides per boot, not the build.
 #
 # This module makes the choice runtime-mutable, which the plain NixOS
 # options are not:
 #
-#   /var/lib/gemini/desktop   one of gnome|cosmic|console (persistent)
+#   /var/lib/gemini/desktop   one of gnome|cosmic|niri|console (persistent)
 #         |
 #         v
 #   gemini-desktop-apply.service   (Before=display-manager.service)
-#         | gnome|cosmic: SetSession/SetSessionType in AccountsService
+#         | gnome|cosmic|niri: SetSession/SetSessionType in AccountsService
 #         | console:      create /run/gemini-console
 #         v
 #   display-manager.service (GDM)  has
 #         ConditionPathExists=!/run/gemini-console  -> skipped on console
 #         and auto-logs the user into the AccountsService session otherwise
 #
-# `gemcli session set gnome|cosmic|console` writes the marker (and can
+# `gemcli session set gnome|cosmic|niri|console` writes the marker (and can
 # apply it now / reboot). The compile-time `services.geminiDesktop.mode`
 # is only the fallback used when the marker is absent (fresh install).
 #
@@ -51,16 +52,16 @@ in
     enable = lib.mkEnableOption "the Gemini desktop/session selector (boot marker -> GDM/console)";
 
     mode = lib.mkOption {
-      type = lib.types.enum [ "gnome" "cosmic" "console" ];
+      type = lib.types.enum [ "gnome" "cosmic" "niri" "console" ];
       default = "gnome";
       description = ''
         Desktop to start when the persistent marker
         ({file}`/var/lib/gemini/desktop`) is absent — a fresh install.
-        `gnome` and `cosmic` are GDM Wayland sessions on the
-        geminipda-drm KMS device (both must be enabled at build time,
-        see services.desktopManager.*); `console` starts no display
-        manager and stays on the framebuffer console. Change at runtime
-        with `gemcli session set <mode>`.
+        `gnome`, `cosmic` and `niri` are GDM Wayland sessions on the
+        geminipda-drm KMS device (all must be enabled at build time, see
+        services.desktopManager.* / programs.niri.enable); `console`
+        starts no display manager and stays on the framebuffer console.
+        Change at runtime with `gemcli session set <mode>`.
       '';
     };
 
@@ -106,5 +107,16 @@ in
     # writes ConditionPathExists, so this does not clobber one.
     systemd.services.display-manager.unitConfig.ConditionPathExists =
       "!/run/gemini-console";
+
+    # The selector owns the auto-login session: it writes the
+    # AccountsService `Session` before GDM starts. Session packages that
+    # pin a default would undo that — `programs.niri` (enabled in
+    # config/gemini.nix for the co-installed niri session) sets
+    # services.displayManager.defaultSession to "niri" with mkDefault,
+    # and GDM's preStart would then overwrite the marker's choice on
+    # every display-manager start. Force it to null so the marker stays
+    # authoritative (services/gnome.nix intentionally leaves it unset;
+    # this makes that explicit and robust).
+    services.displayManager.defaultSession = lib.mkForce null;
   };
 }

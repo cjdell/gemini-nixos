@@ -5,6 +5,38 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — niri added as a fourth co-installed desktop session
+
+**Build-level only; nothing flashed, no boot.img change.** Added niri
+26.04 (scrollable-tiling Wayland compositor) as another GDM Wayland
+session alongside GNOME + COSMIC, selectable with `gemcli session set
+niri` (`gnome|cosmic|niri|console`).
+
+What changed:
+- `config/gemini.nix`: `programs.niri.enable = true`.
+- `services/desktop-select.nix`: mode enum + docs gain `niri`; the module
+  now `mkForce`s `services.displayManager.defaultSession` back to `null`.
+  **Reason:** `programs.niri` sets it to `"niri"` with `mkDefault`, and
+  GDM's preStart (which runs after the boot applier) would otherwise
+  overwrite the marker's session on every display-manager start.
+- `services/scripts/gemini-desktop-apply`: `gnome|cosmic|niri)` case arm.
+- `pkgs/gemcli/src/{session.rs,main.rs}`: 4 modes; `session list` shows
+  niri; clap value_parser updated. `cargo test --offline` 12/12 (incl.
+  `modes_are_the_four_known`); `session list` / invalid-mode rejection
+  checked by hand.
+- `docs/desktop-selection.md` + README + AGENTS.md updated.
+
+Rule 9 verification at the flake pin `dc5d91f84032` (26.11pre1068949):
+- `programs.niri` module present (`nixos/modules/programs/wayland/niri.nix`);
+  niri package = `niri-26.04`, `providedSessions=["niri"]`.
+- aarch64 `niri-26.04` (`jcqnp2ma…`) **CACHED** on cache.nixos.org
+  (`nix path-info --store https://cache.nixos.org`, 2026-09-11).
+- eval: `programs.niri.enable = true`, merged sessionPackages
+  `["gnome","cosmic","niri"]`, `displayManager.defaultSession = null`.
+
+Not done: on-glass boot of niri (or COSMIC) — checklist in
+`docs/desktop-selection.md`. Device untouched / nothing flashed.
+
 ## 2026-09-10w — COSMIC vs GNOME re-measured: `NoSupportedPlaneFormat` is a false lead, and the "COSMIC ~20 fps" was the already-fixed dual-Mesa bug
 
 User asked (a) whether the `NoSupportedPlaneFormat` noise is easy/worth

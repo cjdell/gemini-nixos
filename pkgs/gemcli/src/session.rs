@@ -1,19 +1,19 @@
-//! Desktop/session selection — GNOME, COSMIC, or the framebuffer
+//! Desktop/session selection — GNOME, COSMIC, niri, or the framebuffer
 //! console.
 //!
-//! GNOME and COSMIC are both ordinary GDM Wayland sessions on the
+//! GNOME, COSMIC and niri are all ordinary GDM Wayland sessions on the
 //! geminipda-drm KMS device, co-installed; exactly one owns the panel
 //! per boot. This module owns the PERSISTENT marker
-//! `/var/lib/gemini/desktop` (one line: gnome|cosmic|console) that the
-//! boot-time `gemini-desktop-apply.service` reads before
+//! `/var/lib/gemini/desktop` (one line: gnome|cosmic|niri|console) that
+//! the boot-time `gemini-desktop-apply.service` reads before
 //! display-manager.service starts:
 //!
-//!   gnome|cosmic  the service sets AccountsService `Session` /
-//!                 `SessionType=wayland`, which GDM auto-logs into;
-//!   console       the service creates /run/gemini-console, and
-//!                 display-manager.service carries
-//!                 ConditionPathExists=!/run/gemini-console, so GDM is
-//!                 skipped and the fbcon console stays.
+//!   gnome|cosmic|niri  the service sets AccountsService `Session` /
+//!                      `SessionType=wayland`, which GDM auto-logs into;
+//!   console            the service creates /run/gemini-console, and
+//!                      display-manager.service carries
+//!                      ConditionPathExists=!/run/gemini-console, so GDM
+//!                      is skipped and the fbcon console stays.
 //!
 //! `gemcli session` is the runtime half that plain NixOS options cannot
 //! provide. Story + receipts: docs/desktop-selection.md;
@@ -26,7 +26,7 @@ use crate::error::{cmsg, Res};
 use crate::util;
 
 /// Valid modes, in display order.
-pub const MODES: [&str; 3] = ["gnome", "cosmic", "console"];
+pub const MODES: [&str; 4] = ["gnome", "cosmic", "niri", "console"];
 /// Persistent marker (one line).
 pub const MARKER: &str = "/var/lib/gemini/desktop";
 /// Flag file created in console mode; conditions display-manager off.
@@ -90,6 +90,7 @@ pub fn list() {
         let desc = match m {
             "gnome" => "GNOME on GDM (Wayland, geminipda-drm KMS + panfrost)",
             "cosmic" => "COSMIC on GDM (Wayland, geminipda-drm KMS + panfrost)",
+            "niri" => "niri on GDM (scrollable-tiling Wayland, geminipda-drm KMS + panfrost)",
             "console" => "no desktop — framebuffer console on tty1",
             _ => "",
         };
@@ -173,9 +174,10 @@ pub fn set(mode: &str, apply_now: bool, reboot: bool) -> Res<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn modes_are_the_three_known() {
-        assert_eq!(super::MODES, ["gnome", "cosmic", "console"]);
+    fn modes_are_the_four_known() {
+        assert_eq!(super::MODES, ["gnome", "cosmic", "niri", "console"]);
         assert!(super::valid("gnome"));
+        assert!(super::valid("niri"));
         assert!(super::valid("console"));
         assert!(!super::valid("kde"));
     }

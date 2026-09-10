@@ -85,9 +85,9 @@ in
     ../services/gnome.nix
     # Desktop/session selector (2026-09-10): a persistent marker
     # (/var/lib/gemini/desktop) picks which GDM session auto-logs in
-    # (gnome or cosmic) or whether to stay on the fbcon console. GNOME
-    # and COSMIC are BOTH co-installed; only one owns the panel per boot.
-    # `gemcli session set gnome|cosmic|console`. docs/desktop-selection.md.
+    # (gnome, cosmic or niri) or whether to stay on the fbcon console.
+    # They are ALL co-installed; only one owns the panel per boot.
+    # `gemcli session set gnome|cosmic|niri|console`. docs/desktop-selection.md.
     ../services/desktop-select.nix
   ];
 
@@ -113,6 +113,16 @@ in
   # docs/desktop-selection.md. Disable with
   # services.desktopManager.cosmic.enable = false.
   services.desktopManager.cosmic.enable = true;
+
+  # ---- niri: co-installed session, selected at boot (2026-09-11) ------
+  # niri 26.04 (scrollable-tiling Wayland compositor) registers its
+  # session with the display manager (programs.niri -> providedSessions
+  # ["niri"]), so GDM offers it next to GNOME/COSMIC. It does NOT replace
+  # them and does not auto-start: the desktop-select marker chooses which
+  # one GDM auto-logs into. It renders on the same geminipda-drm KMS
+  # device via Mesa kmsro -> panfrost. Disable with
+  # programs.niri.enable = false. docs/desktop-selection.md.
+  programs.niri.enable = true;
 
   # Selector fallback when /var/lib/gemini/desktop is absent (fresh
   # install); `gemcli session set` overrides it persistently.

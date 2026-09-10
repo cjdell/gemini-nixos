@@ -4,7 +4,7 @@
 #
 # Part of the desktop/session selector (services/desktop-select.nix;
 # story + receipts: docs/desktop-selection.md). One Gemini, several
-# panel owners — GNOME and COSMIC are both ordinary GDM Wayland
+# panel owners — GNOME, COSMIC and niri are all ordinary GDM Wayland
 # sessions on the geminipda-drm KMS device, exactly one of which GDM
 # auto-logs into; "console" skips the display manager entirely and
 # stays on the fbcon console.
@@ -17,7 +17,7 @@
 #   GEMINI_DESKTOP_DEFAULT  fallback mode          (default gnome)
 #
 # Modes:
-#   gnome | cosmic : set the AccountsService `Session`/`SessionType` for
+#   gnome | cosmic | niri : set the AccountsService `Session`/`SessionType` for
 #                    the auto-login user — the exact mechanism NixOS's
 #                    `services.displayManager.defaultSession` uses
 #                    (set-session.py, account-service-util.nix) — and
@@ -61,10 +61,10 @@ case "$mode" in
         fi
         echo "gemini-desktop: console — display-manager skipped, fbcon on tty1"
         ;;
-    gnome|cosmic)
+    gnome|cosmic|niri)
         rm -f "$SENTINEL"
         uid=$(id -u "$USER_NAME")
-        # Both are Wayland sessions. Same two setters set-session.py
+        # All are Wayland sessions. Same two setters set-session.py
         # calls via AccountsService; busctl keeps the script python-free.
         busctl call org.freedesktop.Accounts "/org/freedesktop/Accounts/User$uid" \
             org.freedesktop.Accounts.User SetSession s "$mode"
@@ -73,7 +73,7 @@ case "$mode" in
         echo "gemini-desktop: $mode — AccountsService session set for $USER_NAME (uid $uid)"
         ;;
     *)
-        echo "gemini-desktop: unknown mode '$mode' — want gnome|cosmic|console" >&2
+        echo "gemini-desktop: unknown mode '$mode' — want gnome|cosmic|niri|console" >&2
         exit 1
         ;;
 esac
