@@ -148,11 +148,35 @@ measure.
   `/nix/store/khfnmqyqbrdwr62nlli8spf1phxyd96p-gemini-exodus-1.0.0`
   (aarch64 ELF, 4.98 MB binary; RUNPATH pins libglvnd `libEGL`,
   wayland/libwayland-egl, libxkbcommon and alsa-lib).
-- **On glass:** the *base* 0.2.0 engine was verified at a steady 59–60 fps
-  and clean S16 audio (2026-09-09, gen33/gen35); this 1.0.0 build's
-  on-glass pass is **owed**. Planned: `gemini-exodus --stats`, then
-  `--bench 75 --chapter-secs 10` at `--stress 0` and `--stress 3`, and
-  record the p1 numbers + the GPU identity line here.
+- **On glass (2026-09-11, gen 12, GNOME at native 2160×1080):**
+  deployed and running. Steady per-chapter averages (12 s each,
+  `--silent`), avg fps / p1 fps — ASCENT 30.3/18.6, WARP 28.5/19.2,
+  VOID 26.0/17.6, RENDEZVOUS 35.6/25.5, PLANET 26.5/17.3, ORIGIN
+  26.2/14.6. GPU line `Mali-T880 MC4 (Panfrost)`, A72 render-thread pin
+  confirmed. (A 6 s sweep with 1 s chapter jumps is *not* a fair number:
+  jumps + warmup dominate — that first run read 29 fps.)
+- **The renderer is not the bottleneck.** Under identical load the
+  trivial `gemdemo` triangle fullscreen reads ~40 fps; the entire EXODUS
+  scene costs only **~3 ms more** (27.8 ms vs 25 ms at stress 0). The
+  wall is the platform present path under GNOME: `geminipda-drm`'s
+  generic `drm_fb_blit` **XRGB8888→ARGB8888 full-panel shadow blit**
+  runs in the DRM commit worker, which sits at **95 %** of one CPU core
+  while the demo runs (`events_unbound`, `/proc/<pid>/stack`), and the
+  driver has no vblank. The `2026-09-10k` receipt (gemdemo 74 fps after
+  the alpha-loop fix) shows the same path exceeds 60 when the machine is
+  idle; this session had Chrome + GNOME loaded.
+- **`--stress` scales as designed:** same chapter, stress 0 → 27.8 ms,
+  stress 3 → 37.8 ms (S4); S2 WARP stress 3 → 45.0 ms. So MAX stress
+  still runs (~22–26 fps) with the present-path ceiling on top.
+- **Paths to a clean 60 fps (not yet pursued):** (a) the platform fix
+  already identified in the 2026-09-10 COSMIC handover — a driver-local
+  single-pass shadow blit (drop the redundant XRGB→ARGB conversion when
+  the source alpha is already `0xff`) plus vblank timing; a kernel-delta
+  + boot.img change (flash + reboot); (b) run on **`gemwl`** (GPU-direct
+  to the LK framebuffer, no shadow plane) — a session switch, no kernel
+  change; (c) run with the machine idle (no Chrome) to reach the
+  ~74 fps-class ceiling. On-glass run helper:
+  **`bin/exodus-on-glass.sh`**.
 - The 0.1.0 "AETHER" multipass/raymarch result (single-digit fps) and the
   S5 planet-map perf fix (42 → 60 fps by baking 256×128 maps once on the
   CPU instead of per-pixel fbm) are recorded in `docs/gemdemo.md`'s
@@ -163,7 +187,9 @@ measure.
 - **1.0.0 (2026-09-11)** — "Director's Cut": 0.2.0 engine restored as
   `pkgs/gemini-exodus` + stress model, benchmark, stats overlay,
   constellation/twin-sun motif, enriched anthem, chapter-jump race fix,
-  debris field. Build-level verified; on-glass owed.
+  debris field. Build-level verified and **deployed on glass (gen 12)**;
+  the engine costs ~3 ms over a flat triangle — the current fullscreen
+  ceiling is the platform shadow blit (see Status).
 - 0.2.0 (2026-09-09, `gemdemo`, git `32ba356`) — "GEMINI: EXODUS":
   first 60 fps on-glass cinematic spacesynth (gen33). Source the base
   here came from.

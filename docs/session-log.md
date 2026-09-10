@@ -7,9 +7,10 @@ when a session touches device behaviour. Latest entry first.
 
 ## 2026-09-11 — GEMINI: EXODUS revived as a first-class demo + GPU stress test
 
-**No device/flash operation — build-level only; the on-glass pass is
-owed.** The 0.2.0 “GEMINI: EXODUS” demoscene (the engine that held
-60 fps on glass, gen33) had been deleted by the 0.3.0 purge (`6f34d24`)
+**Deployed to the device as generation 12 (no flash, no boot.img
+change); the on-glass pass is done — with a platform-level performance
+finding, below.** The 0.2.0 “GEMINI: EXODUS” demoscene (the engine that
+held 60 fps on glass, gen33) had been deleted by the 0.3.0 purge (`6f34d24`)
 down to the gemdemo triangle. It was recovered byte-for-byte from git
 `32ba356` and revived as a first-class package — `pkgs/gemini-exodus`,
 v1.0.0 **“Director's Cut”** — then genuinely upgraded (not just restored):
@@ -52,22 +53,61 @@ Verification (rules 0/3):
   remote builder OK → `/nix/store/khfnmqyqbrdwr62nlli8spf1phxyd96p-gemini-exodus-1.0.0`
   (aarch64 ELF, 4.98 MB binary; RUNPATH pins libEGL/wayland/libxkbcommon/
   alsa). Nix flake + `nixosConfigurations.gemini` toplevel evaluate.
-- **No device was touched this session** (no deploy, no flash).
+- **Deployed to gen 12** (`jgbz9491…`) via `bin/deploy.sh deploy`; the
+  device binary is exactly the built path
+  `/nix/store/khfnmqyqbrdwr62nlli8spf1phxyd96p-gemini-exodus-1.0.0`
+  (`/run/current-system/sw/bin/gemini-exodus`). No flash, no reboot,
+  `para`/`boot` untouched, glass never at risk (rule 5).
+
+### On-glass performance finding (2026-09-11, GNOME, 2160×1080)
+
+Per-chapter steady (12 s each, `--silent`), avg/p1 fps: ASCENT
+30.3/18.6, WARP 28.5/19.2, VOID 26.0/17.6, RENDEZVOUS 35.6/25.5, PLANET
+26.5/17.3, ORIGIN 26.2/14.6. GPU `Mali-T880 MC4 (Panfrost)`; A72 pin
+confirmed (`cpu: render thread pinned to A72 cluster (cpu8/cpu9)`).
+
+- **The renderer is NOT the bottleneck.** Under identical load the
+  trivial `gemdemo` triangle fullscreen = ~40 fps; the full EXODUS scene
+  = 35.6 fps (27.8 ms vs 25 ms at stress 0) — the whole show costs only
+  **~3 ms more than a flat triangle**.
+- The wall is the **platform present path**: `geminipda-drm`'s generic
+  `drm_fb_blit` XRGB8888→ARGB8888 **full-panel shadow blit** (a
+  fullscreen frame damages the whole panel every frame), running in the
+  DRM commit worker — `top` showed `kworker/u20:4+events_unbound` pegged
+  at **95 %** of one CPU core during the run. The driver also has no
+  vblank.
+- **`--stress` scales as designed:** S4 stress 0 → 27.8 ms, stress 3 →
+  37.8 ms; S2 WARP stress 3 → 45.0 ms. MAX still runs (~22–26 fps),
+  i.e. the stress test does load the GPU on top of the present ceiling.
+- The 2026-09-10k receipt (gemdemo **74 fps** after the alpha-loop fix)
+  proves the same path exceeds 60 when the machine is idle; this session
+  had Chrome (2 procs, ~700 MB) + GNOME loaded.
+- **Measurement caveat:** a 6 s sweep with 1 s chapter jumps is not a
+  fair number (jumps + warmup dominate — it read 29 fps). Use steady
+  per-chapter runs (as above).
+
+**Paths to a clean 60 fps (not yet pursued):** (a) the platform fix from
+the 2026-09-10 COSMIC handover — a driver-local single-pass shadow blit
+(skip the redundant XRGB→ARGB conversion when the source alpha is already
+`0xff`) + vblank timing; needs kernel-delta + boot.img + flash. (b) Run
+on **`gemwl`** (GPU-direct LK fb, no shadow plane) — session switch, no
+kernel change. (c) Run with the machine idle. New helper
+`bin/exodus-on-glass.sh` runs the app in the right session env from the
+host.
 
 Docs: new `docs/gemini-exodus.md` (design, chapters, bench usage, A72,
 receipts, status); pointers added in `docs/gemdemo.md` (version history),
 `README.md` (table), `AGENTS.md` (“Where things live”).
 
-Device left: unchanged. To show it off: `bin/deploy.sh deploy` (or
-`bin/device-rebuild.sh`) delivers the rootfs closure incl. `gemini-exodus`;
-then on glass `gemini-exodus --stats` and
-`gemini-exodus --bench 75 --chapter-secs 10 [--json]` at `--stress 0` and
-`--stress 3` — record the p1/worst numbers + the GPU identity line in
-`docs/gemini-exodus.md`.
+Device left: **gen 12** (`jgbz9491…`) on GNOME, `gemini-exodus` on PATH,
+all benchmark windows exited; no flash, no reboot, `para`/`boot`
+untouched. Reproduce with `bin/exodus-on-glass.sh [-- ARGS]`.
 
-Next: the on-glass pass (60 fps + p1 per stress level; confirm the A72 pin
-and the twin-sun/constellation look); optionally a launcher entry / gemcli
-verb.
+Next: pick a 60 fps path — (a) implement the driver shadow-blit fast path
+(+ vblank) as a kernel delta and flash it, or (b) validate the `gemwl`
+session route without a kernel change; then re-run the stress matrix and
+record the numbers in `docs/gemini-exodus.md`. Optionally a launcher
+entry / gemcli verb.
 
 ## 2026-09-11 — niri added as a fourth co-installed desktop session
 
