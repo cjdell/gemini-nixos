@@ -103,6 +103,11 @@ Device left: **gen 12** (`jgbz9491…`) on GNOME, `gemini-exodus` on PATH,
 all benchmark windows exited; no flash, no reboot, `para`/`boot`
 untouched. Reproduce with `bin/exodus-on-glass.sh [-- ARGS]`.
 
+**User verdict (2026-09-11):** reviewed on glass — *needs more work*
+(visual polish); NOT signed off. On-glass performance path still open
+(above). Frame dumps taken for review: `--dump 200` at S1/S3/S5
+(2160×1080 PPM, ~6.7 MB each).
+
 Next: pick a 60 fps path — (a) implement the driver shadow-blit fast path
 (+ vblank) as a kernel delta and flash it, or (b) validate the `gemwl`
 session route without a kernel change; then re-run the stress matrix and
