@@ -20,3 +20,6 @@ stock-dump/
 # Rust build artifacts (pkgs/gemcli/, pkgs/gemdemo/)
 pkgs/gemcli/target/
 pkgs/gemdemo/target/
+
+# mtkclient writes this DA/eMMC identity file into the cwd (repo root)
+hwparam.json

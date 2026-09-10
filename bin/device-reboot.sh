@@ -2,9 +2,15 @@
 # device-reboot.sh — REMOTE-REBOOT the Gemini PDA.
 #
 # The device is reachable over the g_ether USB network (10.15.19.82).
-# Software resets (systemctl reboot / WDT SWRST) POWER THE DEVICE OFF on
-# this unit (verified 2026-08-31) — only the LK-configured WDT EXRST path
-# self-boots. So we set the WDT timeout to 2s via /dev/mem and let it
+# [updated 2026-09-10] `systemctl reboot` now works on glass: the in-repo
+# mt6797-power driver registers a restart handler that replays LK's
+# mtk_wdt_reset(1) (docs/power-states.md). This script still uses the
+# independent WDT-EXRST arm (no systemd dependency — usable when the
+# guest is too broken to shut down), kept as the robust fallback.
+# Before the driver, software resets (systemctl reboot / WDT SWRST)
+# POWERED THE DEVICE OFF on this unit (verified 2026-08-31) — only the
+# LK-configured WDT EXRST path self-boots. So we set the WDT timeout to
+# 2s via /dev/mem and let it
 # expire: the WDT fires the external PMIC reset, the device power-cycles
 # and boots on its own. Gadget + SSH are back in ~5-10s.
 #

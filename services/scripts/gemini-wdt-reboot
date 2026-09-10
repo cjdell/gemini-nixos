@@ -1,12 +1,20 @@
 #!/bin/sh
-# gemini-wdt-reboot — device-side reboot that actually comes back on.
+# gemini-wdt-reboot — device-side WDT-EXRST reboot (FALLBACK since
+# 2026-09-10; prefer plain `systemctl reboot`).
 #
-# On this unit, a plain software reset (reboot(2)/TOPRGU, or a WDT
-# soft-reset) POWERS THE PDA OFF and it stays off — only the MTK WDT
-# external-reset (EXRST) path configured by LK self-boots: when the WDT
-# expires, the PMIC power-cycles and LK boots the `boot` partition
-# (verified 2026-08-31; see the GeminiPDA project's build/device-reboot.sh,
-# which arms the same register remotely for 2 s).
+# [updated 2026-09-10] `systemctl reboot` now works: the in-repo
+# mt6797-power driver registers a priority-200 restart handler that
+# replays LK's mtk_wdt_reset(1) (the same EXRST sequence this script
+# arms by hand), verified on glass (docs/power-states.md). Keep this
+# script as the escape hatch for a system where that driver did not
+# load or the kernel is too broken to shut down cleanly.
+#
+# Before the driver existed, a plain software reset (reboot(2)/TOPRGU,
+# or a WDT soft-reset) POWERED THE PDA OFF and it stayed off — only the
+# MTK WDT external-reset (EXRST) path configured by LK self-booted:
+# when the WDT expires, the PMIC power-cycles and LK boots the `boot`
+# partition (verified 2026-08-31; see the GeminiPDA project's
+# build/device-reboot.sh, which arms the same register remotely for 2 s).
 #
 # Usage: gemini-wdt-reboot [SECS]    (2..31, default 20)
 #

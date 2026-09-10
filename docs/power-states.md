@@ -1,6 +1,7 @@
 # Power states of the Gemini PDA — reboot, poweroff, and the limbo state
 
-**Last updated:** 2026-09-10 (research session — nothing flashed, no kernel change)
+**Last updated:** 2026-09-10 (research + implementation session — driver
+built, flashed and verified on glass; see "Implementation status" below)
 
 Task: `systemctl reboot` leaves the device in a black-screen limbo (PMIC on,
 power key dead, only a 10 s power+side-button hold recovers it) and
@@ -35,6 +36,24 @@ must not keep draining below the safe voltage when USB is disconnected).
 - Design: one small in-repo kernel delta driver
   (`drivers/power/reset/mt6797-power.c`) registering a restart handler and a
   platform poweroff. §5. On-glass test plan in §7.
+
+## Implementation status — 2026-09-10 (verified on glass)
+
+Landed in `devices/planet-geminipda/kernel/delta/` (fork rev `06fd13e11`,
+built in-repo, delta byte-verified) and flashed as boot.img sha256
+`2fbca31446cf1f70e1b37a8a109c3737e59f8adec7fbdea2d08b47c6a6c3c1f8`.
+
+- Both drivers bind: `mt6797-power 10007000.power: MT6351 RTC_BBPU
+  readback 0x000d` + "MT6797 restart + MT6351 poweroff handlers
+  registered", and `mtk-wdt 10007000.watchdog: Watchdog enabled
+  (timeout=31 sec, nowayout=0)`.
+- `systemctl reboot` → clean self-boot to a new boot_id in ~40 s
+  (`70dd8a9d…` → `dff7d973…`). [verified 2026-09-10]
+- `systemctl poweroff` → unit off: the USB gadget disappears with no
+  preloader/RNDIS and no loop (no limbo). [verified 2026-09-10]
+- The userspace-WDT escape was not needed; the §7 primary paths pass.
+- **Gotcha that cost a boot loop:** the shared TOPRGU block. See the
+  [corrected 2026-09-10] note in §5.
 
 ## 1. The power hardware
 
@@ -185,15 +204,25 @@ New files in `devices/planet-geminipda/kernel/delta/`:
 - DTS node in `mt6797-gemini-pda.dts`:
 
   ```dts
-  mtk6797_power: mtk6797-power@10007000 {
+  mtk6797_power: power@10007000 {
       compatible = "mediatek,mt6797-power";
-      reg = <0 0x10007000 0 0x100>;   /* TOPRGU/WDT */
-      pmic = <&pwrap>;                /* MT6351 regmap (RTC space 0x4000+) */
+      reg = <0 0x10007000 0 0x100>;            /* TOPRGU/WDT */
+      mediatek,pmic = <&pwrap>;                /* MT6351 regmap (RTC space 0x4000+) */
   };
   ```
-  (The inert `watchdog@10007000` node in `mt6797.dtsi:256` — compatible
-  `mediatek,mt6797-wdt`, no mainline driver — is left alone; the new node
-  can replace it once the driver is on glass.)
+
+  **[corrected 2026-09-10]** The first cut called the
+  `watchdog@10007000` node in `mt6797.dtsi` inert. It is not: mainline
+  `mtk_wdt` binds it through the `mediatek,mt6589-wdt` compatible and
+  **kicks the LK-armed watchdog**. So the driver must map the shared
+  TOPRGU block with `devm_ioremap()` — *not*
+  `devm_platform_ioremap_resource()`, which calls
+  `devm_request_mem_region()`. `mt6797_power_driver_init` is linked
+  before `mtk_wdt_driver_init`, so the claim made `mtk_wdt` fail
+  `-EBUSY`, the watchdog went unkicked, and the SoC reset ~20 s into
+  every boot (the flash looked like a brick). Both drivers map the
+  shared block; only `mtk_wdt` claims it. See
+  `docs/session-log.md` 2026-09-10e.
 
 **Restart handler** (`register_restart_handler`, must not return):
 replicate `mtk_wdt_reset(1)` verbatim:
@@ -235,14 +264,20 @@ says), and a defined off-mode-charging state on USB.
    do the identical writes, but our 6.6 kernel has never done one.
    Mitigation: §7 test protocol (the 10 s PWRBB reset is always available as
    escape; a background-armed userspace WDT adds a second escape).
+   **[resolved 2026-09-10]** — `systemctl reboot` self-boots cleanly.
 2. **pwrap regmap → RTC space from the kernel is unexercised** — the kernel
    has only touched the PMIC main space (`0x0220`, `0x0a0c`, `0x0f78`); LK
    proves the same pwrap interface reaches `0x4000+`. Mitigation: the
    driver's probe should first *read* a known RTC register (e.g. the
    RTC second counter `0x401a`) and sanity-check it before any write.
+   **[resolved 2026-09-10]** — probe reads `RTC_BBPU` = `0x000d`
+   (reachable), and the BBPU write path shuts the unit down.
 3. **Post-BBPU behaviour with USB attached is not verified on this unit.**
    We copy the vendor/LK fallback (WDT reset mode 0 after ~1 s if alive).
-   Record actual behaviour in the test.
+   Record actual behaviour in the test. **[resolved 2026-09-10]** —
+   `systemctl poweroff` on USB takes the unit down (USB vanishes, no
+   preloader/RNDIS, no loop); a full off-mode-charging display was not
+   separately confirmed (screen not observed at the time).
 4. **Why exactly the power key is dead in the limbo** is an inference
    (PMIC key routing assumes a live AP; STRUP auto-boot only follows POR /
    WDT-bypass resets). The observables (limbo after `reboot(2)`, 10 s combo
@@ -254,11 +289,21 @@ says), and a defined off-mode-charging state on USB.
 6. `console=` is UART, so kernel halt messages may not reach the journal —
    verify on the serial console during testing.
 
-## 7. On-glass test plan (WDT-escape protocol)
+## 7. On-glass test plan + results (WDT-escape protocol)
 
 Prereq: build the kernel with the driver (delta + config), flash the
 boot.img via `bin/flash-nixos.sh boot` with **para = boot-recovery** (TWRP
 sticky) until verified; keep a `stock-dump/` boot backup current.
+
+**Results (2026-09-10):** steps 1 and 2 pass; step 3 (poweroff on USB)
+passes in the sense that the unit turns off (no limbo, no loop) but the
+screen state was not observed. The first flash of the driver
+boot-looped — root cause and fix in §5 / `docs/session-log.md`
+2026-09-10e (shared TOPRGU block must be mapped without claiming it).
+`gemini-wdt-reboot` is now marked fallback-only (its script header);
+flipping `bin/device-reboot.sh` to a plain `systemctl reboot` over ssh is
+a follow-up (its WDT-EXRST mechanism still works, so it was left alone
+rather than changed untested).
 
 1. **Reboot**: from the device, arm a userspace escape
    (`(sleep 60; busybox devmem 0x10007004 32 $((60<<5|8))) &`), then

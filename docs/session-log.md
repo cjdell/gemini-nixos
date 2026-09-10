@@ -5,6 +5,88 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10e — REBOOT/POWEROFF FIXED: mt6797-power delta driver on glass (reboot self-boots, poweroff turns the unit off); one boot-loop gotcha
+
+Task: implement the 2026-09-10d design and make `systemctl reboot` /
+`systemctl poweroff` actually work.
+
+**What shipped.** New in-repo kernel delta
+`drivers/power/reset/mt6797-power.c` (+ Kconfig/Makefile, DTS node
+`power@10007000`, `CONFIG_MTK6797_POWER=y` in the lean config):
+
+- **restart** (priority 200, above the mainline `mtk_wdt` handler's 128):
+  replays LK's `mtk_wdt_reset(1)` verbatim — WDT_RESTART reload, keyed
+  hw-reboot mode (`KEY|EXTEN|AUTO_RESTART`), `WDT_SWRST=0x1209`.
+- **poweroff** (`register_platform_power_off`): MT6351 RTC space over the
+  pwrap regmap — clear RTC_AL_SEC 2-sec bits, unlock RTC_PROT (0x586a,
+  0x9136), write RTC_BBPU = `KEY|AUTO|PWREN` = 0x4309, WRTGR trigger; if
+  still alive after 1 s (USB holds the rails) fall back to LK
+  off-mode-charging (WDT reset mode 0).
+
+Fork rev `06fd13e11`; `devices/planet-geminipda/kernel/default.nix`
+header updated; delta re-synced and byte-verified.
+
+**First cut boot-looped (the important receipt).** The driver used
+`devm_platform_ioremap_resource()` on `0x10007000`. That calls
+`devm_request_mem_region()`, i.e. it *claims* the TOPRGU block. Mainline
+`mtk_wdt` binds the `watchdog@10007000` node through the
+`mediatek,mt6589-wdt` compatible and also maps that block exclusively, and
+`mt6797_power_driver_init` is linked **before** `mtk_wdt_driver_init`
+(System.map: `ffff80008103f534` vs `ffff80008103faf8`). So `mtk_wdt` failed
+`-EBUSY`, the LK-armed watchdog was never kicked, and the SoC reset ~20 s
+into every boot. Symptom on the host: USB cycling `0e8d:2000` (preloader)
+→ `0525:a4a2` (RNDIS) → reset, every ~29 s; mtkclient could not hold a
+preloader session (`Status: Handshake failed, retrying...`).
+**Fix:** map the shared block with `devm_ioremap()` (no region claim); both
+drivers map it, only `mtk_wdt` claims it. Rebuilt + re-flashed.
+
+**Recovery from the loop.** `para` had been cleared by `boot-nixos`, so
+there was no software path. The user force-powered-off and held the
+volume-up side button to hold a stable preloader; a persistent
+`sudo bash bin/run-mtk.sh w para stock-dump/para-boot-recovery.bin`
+(patched mtkclient; `Wrote … to sector 32832 with sector count 1024`)
+restored the TWRP-sticky marker, `run-mtk.sh reset` booted TWRP
+(`18d1:4ee2`), then `bin/flash-nixos.sh boot` re-flashed.
+
+**Also fixed:** `bin/prune-kernel-config.sh` was dropping `CONFIG_BT` on
+every regeneration (BT is not in the drop family list now), which would
+have clobbered the Bluetooth bring-up the next time the lean config was
+regenerated. Confirmed the only config delta is `CONFIG_MTK6797_POWER=y`.
+
+**Verified on glass (2026-09-10).** boot.img
+`2fbca31446cf1f70e1b37a8a109c3737e59f8adec7fbdea2d08b47c6a6c3c1f8`
+(`/nix/store/cln7rip7khayq5jwabgf7ilindhbrib7-mobile-nixos_planet-geminipda_boot.img`):
+
+- `mt6797-power 10007000.power: MT6351 RTC_BBPU readback 0x000d` +
+  `MT6797 restart + MT6351 poweroff handlers registered`.
+- `mtk-wdt 10007000.watchdog: Watchdog enabled (timeout=31 sec, nowayout=0)`
+  → the region conflict is gone; device booted and stayed up (no loop).
+- `systemctl reboot` → new boot_id (`70dd8a9d…` → `dff7d973…`) in ~40 s.
+- `systemctl poweroff` → USB went silent (no preloader/RNDIS, no loop, no
+  limbo); the unit is off. Screen state not observed (user may confirm).
+- The pre-existing `dev_addr_check` wlan0 warning in dmesg is unrelated
+  (Wi-Fi MAC address, NetworkManager).
+
+**Version line (rule 0).** kernel fork rev `06fd13e11`; boot.img sha256
+`2fbca314…`; the broken first-cut boot.img backup is
+`stock-dump/boot-20260910-115503.img` (do not reflash it). Mesa/wlroots/
+gemwl pins unchanged. Device left with `para` cleared (normal boot) and
+powered off after the poweroff test.
+
+**Gotchas for next time.** (1) TOPRGU is shared with `mtk_wdt` — never
+claim `0x10007000`. (2) A hung/looping boot has no software path back:
+the preloader window is the way in, and a stable one needs a held side
+button (the loop's own windows are too short for mtkclient's DA
+handshake). (3) `mtkclient` writes `hwparam.json` into the repo root —
+delete it before committing (gitignored? — no, it is not; removed here).
+
+**Follow-ups.** `bin/device-reboot.sh` still arms WDT by hand (works;
+flip to plain `systemctl reboot` over ssh once convenient).
+`machine_emergency_restart` (panic path) still bypasses the restart-handler
+chain — see `docs/power-states.md` §6 item 5. On-glass test plan §7
+items 3 (off-mode-charging display) and 4 (battery-guard CRIT) not fully
+exercised.
+
 ## 2026-09-10d — POWER STATES RESEARCH: why `systemctl reboot` limboes, why poweroff is impossible, and the source-verified fix (no flash, no kernel change)
 
 Symptom report: `systemctl reboot` → black-screen limbo (PMIC on, power key
