@@ -40,13 +40,14 @@ completely missing, then to set it up on the device with a solution.
   `69ixww27wwj5qcc2arpq9y1qc5hbsjf1-nixos-system-gemini-26.11pre-git`,
   `sw/bin/dosbox-x` → `67x55vma46qkgw2qqm8m9p8m35yqcpd9-dosbox-x-gemini`,
   `.desktop` wired. **Deployed to the device (LAN 192.168.49.166):**
-  `bin/deploy.sh deploy` → **gen 18** (`system-18-link` →
-  `69ixww27wwj5qcc2arpq9y1qc5hbsjf1-...`); on-glass headless run as
-  `cjdell` logs `DOS keyboard layout loaded with main language code UK
-  for layout uk` and seeds `~/.config/dosbox-x/mapper-dosbox-x.map`
-  (0644, 10 `mod2` Fn binds). `systemctl is-system-running` → running,
-  0 failed units. No kernel/boot.img change (profile-only switch; para
-  untouched).
+  `bin/deploy.sh deploy` → **gen 19** (`system-19-link` →
+  `zk6jnhxia5rl4h3xmc0cbc8rix44i73p-nixos-system-gemini-26.11pre-git`,
+  config revision `48d64b9`; the earlier gen 18 was the dirty-tree build of
+  the same content). On-glass headless run as `cjdell` logs `DOS keyboard
+  layout loaded with main language code UK for layout uk` and seeds
+  `~/.config/dosbox-x/mapper-dosbox-x.map` (0644, 10 `mod2` Fn binds).
+  `systemctl is-system-running` → running, 0 failed units. No
+  kernel/boot.img change (profile-only switch; para untouched).
 - **Gotchas found.** (1) The mapper section must be `[SDL2]`, NOT `[sdl]`
   (`SDL_STRING` = `"SDL2"`, `include/shell.h:27`) — a wrong section name
   makes `MAPPER_LoadBinds()` silently drop every line and use the

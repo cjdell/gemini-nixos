@@ -13,8 +13,8 @@ re-login gotcha** (see §Volume).
 **2026-09-11 (DOSBox-X):** installed DOSBox-X with a Gemini keyboard fix
 (UK table + Fn+1..0 ⇒ F1..F10 via a seeded mapper, since its SDL2 input
 is scancode-based and cannot see XKB level 3) — §DOSBox-X; deployed to
-the device as **gen 18** and headless-verified (UK table + mapper seed);
-the interactive Fn-key test is owed.
+the device as **gen 19** (rev `48d64b9`) and headless-verified (UK table
++ mapper seed); the interactive Fn-key test is owed.
 **2026-09-10q:** internal-speaker L/R swap fixed by a virtual sink +
 `gemini-speakerd` couples the speaker amp to the selected output device
 (§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
@@ -386,10 +386,10 @@ Receipts / gotchas (2026-09-11):
   (Fn+K=`@`, Fn+L=`;`) cannot be expressed because DOSBox-X never sees
   the level.
 
-Status: 🟡 deployed to glass as **gen 18** (2026-09-11) — the wrapper
-+ `.desktop` are live and a headless run as the desktop user logs the UK
-layout and seeds the mapper. The mapper *load* path was verified with the
-x86_64 binary (strace + UK log).
+Status: 🟡 deployed to glass as **gen 19** (2026-09-11, rev `48d64b9`) —
+the wrapper + `.desktop` are live and a headless run as the desktop user
+logs the UK layout and seeds the mapper. The mapper *load* path was
+verified with the x86_64 binary (strace + UK log).
 ⬜ interactive on-glass test owed: launch from the app grid, confirm Fn+1
 gives F1 in a DOS program and Shift+3 gives `£` (needs a human at the
 keyboard or an evdev-injection harness).
