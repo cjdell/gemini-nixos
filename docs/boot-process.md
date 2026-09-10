@@ -235,3 +235,4 @@ all. Full analysis + the workaround ladder: `docs/repartition-android-space.md` 
 | Kernel identity (borrowed #329, vendored artifacts) | `README.md` "Kernel phase" + `kernel/borrowed/` |
 | The initrd implementation | `devices/planet-geminipda/initrd.nix` |
 | Flash/para tooling | `bin/flash-nixos.sh`, `bin/boot-switch.sh` |
+| Reboot/poweroff power states, the limbo, WDT EXRST + MT6351 BBPU design | `docs/power-states.md` (2026-09-10) |

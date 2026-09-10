@@ -5,6 +5,53 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10d — POWER STATES RESEARCH: why `systemctl reboot` limboes, why poweroff is impossible, and the source-verified fix (no flash, no kernel change)
+
+Symptom report: `systemctl reboot` → black-screen limbo (PMIC on, power key
+dead; recovery = 10 s power+side hold). `systemctl poweroff` impossible.
+Battery risk while "off-ish" (≈1.6 W drain per docs/power-sleep.md).
+
+Findings (all source-verified; full write-up: **docs/power-states.md**):
+- Limbo = arm64 6.6 `machine_restart()` with no restart handler:
+  `smp_send_stop()` → `do_kernel_restart()` (empty chain) →
+  `printk("Reboot failed -- System halted")` → `while(1)`
+  (arch/arm64/kernel/process.c:126, v6.6 tag). PMIC stays on, LK never
+  re-runs (panel uninitialised), power key routed to the dead AP.
+- Poweroff refused earlier: `do_reboot()` gates poweroff(2) on
+  `kernel_can_power_off()` (kernel/reboot.c v6.6) — no handler → -EINVAL.
+- Fix exists and is verifiable from source:
+  - **reboot** = TOPRGU WDT SWRST sequence — LK's `mtk_wdt_reset(1)`
+    verbatim (gemini-lk lk/platform/mt6797/mtk_wdt.c:34; RESTART key
+    0x1971 @+0x08, SWRST key 0x1209 @+0x14, MODE KEY|EXTEN|AUTO_RESTART;
+    AUTO_RESTART = bypass-power-key → self-boot; LK re-inits panel =
+    rule-5 safe). Vendor 3.18 wdt_arch_reset identical (mt6797/mtk_wdt.c:335).
+  - **poweroff** = MT6351 `RTC_BBPU` = 0x4309 (KEY|AUTO|PWREN) over the
+    pwrap regmap (RTC space 0x4000+: 0x4018 clear 2SEC, 0x4036 unlock
+    0x586a/0x9136 + 0x403c WRTGR triggers) — LK rtc_bbpu_power_down
+    (mt_rtc.c:109) and vendor mt_power_off (mtk_rtc_common.c:397,
+    pm_power_off hook at mt_pm_init.c:620). Charger present → vendor
+    fallback: WDT SWRST mode 0 → LK off-mode charging.
+  - pwrap regmap (mtk-pmic-wrap.c in our delta, max_register 0xffff) can
+    address the RTC space — LK proves the interface; kernel has so far
+    only touched PMIC main space.
+- Design: new delta driver `drivers/power/reset/mt6797-power.c` (Kconfig
+  MTK6797_POWER=y) + DTS node (reg 0x10007000 + phandle to pwrap);
+  register_restart_handler (SWRST) + register_platform_power_off (BBPU +
+  chrdet fallback). Test plan with 10 s-combo/WDT-escape protocol in
+  power-states.md §7 (para=boot-recovery until verified).
+- Uncertainties logged: SWRST-from-kernel + pwrap→RTC-space writes are new
+  paths (identical to LK/vendor but never run from our kernel); post-BBPU
+  on-USB behaviour unverified (vendor fallback copied); panic /
+  machine_emergency_restart path NOT covered by the handler chain — 10 s
+  combo + userspace WDT remain the panic recovery; WDT LENGTH encoding
+  discrepancy (LK ×2048 vs field-verified (SECS<<5)|0x8) irrelevant to the
+  SWRST design.
+
+Next: implement the driver in the kernel delta, build (aarch64, ~6 min),
+flash boot.img under para=boot-recovery, run the §7 test sequence
+(reboot / poweroff-on-battery / poweroff-on-USB / battery-guard end-to-end).
+Device left as found: gen62 running, para unchanged (NixOS default).
+
 ## 2026-09-10c — TOUCH: real multitouch wl_touch device (no cursor) for the phosh/LXQt desktops
 
 Task: "the touchscreen behaves as a traditional input device moving a
