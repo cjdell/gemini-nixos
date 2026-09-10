@@ -43,6 +43,14 @@ pub const SINK_SPEAKERS: &str = "gemini_speakers";
 /// The one PipeWire system session (services/audio.nix).
 const AUDIO_RUNTIME_DIR: &str = "/run/gemwl-audio";
 
+/// Persisted manual output mode, shared with services/scripts/audio-output
+/// and audio-defaults.sh. gemini-speakerd keeps it in sync with the
+/// observed default sink so a choice made only in GNOME (which writes
+/// WirePlumber state, never this file) is restored at next boot by
+/// gemini-audio-defaults. [added 2026-09-11]
+const MODE_FILE: &str = "/etc/gemini/audio-output-mode";
+const MODE_DIR: &str = "/etc/gemini";
+
 /// Resolve the chip that owns the speaker-amp pads: on this kernel the
 /// gpiochip indexes follow probe order and are not guaranteed (the
 /// bring-up used chip0; the lean/self-built kernel boots two chips) —
@@ -139,20 +147,16 @@ fn with_audio_env(cmd: &mut std::process::Command) -> &mut std::process::Command
         .env("XDG_RUNTIME_DIR", AUDIO_RUNTIME_DIR)
 }
 
-/// The node.name of the current PipeWire default sink (None when
-/// PipeWire/WirePlumber is not running — sleep stops it, and early boot).
-pub fn default_sink() -> Option<String> {
-    let mut cmd = std::process::Command::new(util::swbin("wpctl"));
-    cmd.args(["inspect", "@DEFAULT_SINK@"]);
-    let out = with_audio_env(&mut cmd).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    // wpctl inspect prints one property per line, e.g.
-    //   node.name = "gemini_speakers"
+/// The node.name out of `wpctl inspect` output. wpctl marks the
+/// properties of the *default* node with a leading `* ` marker
+/// (`  * node.name = "gemini_speakers"`), so strip marker characters
+/// before matching. [fixed 2026-09-11: matching the un-stripped line
+/// made default_sink() always return None, so gemini-speakerd never
+/// drove the amps — selecting Headphones in GNOME left the internal
+/// speakers playing.]
+fn parse_sink_name(text: &str) -> Option<String> {
     for line in text.lines() {
-        let line = line.trim();
+        let line = line.trim().trim_start_matches(['*', ' ']);
         if let Some(rest) = line.strip_prefix("node.name = ") {
             let name = rest.trim().trim_matches('"').to_string();
             if !name.is_empty() {
@@ -163,11 +167,24 @@ pub fn default_sink() -> Option<String> {
     None
 }
 
+/// The node.name of the current PipeWire default sink (None when
+/// PipeWire/WirePlumber is not running — sleep stops it, and early boot).
+pub fn default_sink() -> Option<String> {
+    let mut cmd = std::process::Command::new(util::swbin("wpctl"));
+    cmd.args(["inspect", "@DEFAULT_SINK@"]);
+    let out = with_audio_env(&mut cmd).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_sink_name(&String::from_utf8_lossy(&out.stdout))
+}
+
 /// One reconciliation pass: make the amp pads match the default sink.
 /// Returns the sink name observed (None if PipeWire is down).
 pub fn sync_amp() -> Option<String> {
     let sink = default_sink()?;
     let want_on = sink == SINK_SPEAKERS;
+    persist_mode(mode_for_sink(&sink));
     if amps_on() != Some(want_on) {
         let r = if want_on { on() } else { off() };
         match r {
@@ -180,6 +197,81 @@ pub fn sync_amp() -> Option<String> {
         }
     }
     Some(sink)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mode_for_sink, parse_sink_name};
+
+    /// Real `wpctl inspect @DEFAULT_SINK@` output shape: the default
+    /// node's properties carry a "* " marker. Regression test for the
+    /// 2026-09-11 headphone-switch bug.
+    const WPCTL_DEFAULT: &str = r#"id 51, type PipeWire:Interface:Node
+    alsa.card = "0"
+  * node.description = "Headphones / Jack"
+  * node.name = "alsa_output.platform-sound.stereo-fallback"
+    device.id = "46"
+"#;
+
+    /// Older/unmarked output (and non-default inspects) still parse.
+    const WPCTL_PLAIN: &str = "    node.name = \"gemini_speakers\"\n";
+
+    #[test]
+    fn parses_marked_default_sink() {
+        assert_eq!(
+            parse_sink_name(WPCTL_DEFAULT).as_deref(),
+            Some("alsa_output.platform-sound.stereo-fallback")
+        );
+    }
+
+    #[test]
+    fn parses_unmarked_sink() {
+        assert_eq!(parse_sink_name(WPCTL_PLAIN).as_deref(), Some("gemini_speakers"));
+    }
+
+    #[test]
+    fn missing_name_is_none() {
+        assert_eq!(parse_sink_name("id 1, type PipeWire:Interface:Node\n"), None);
+    }
+
+    #[test]
+    fn mode_maps_virtual_sink_to_speaker_and_all_else_to_headphone() {
+        assert_eq!(mode_for_sink("gemini_speakers"), "speaker");
+        assert_eq!(
+            mode_for_sink("alsa_output.platform-sound.stereo-fallback"),
+            "headphone"
+        );
+        assert_eq!(mode_for_sink("bluez_output.AA_BB_CC.a2dp-sink"), "headphone");
+    }
+}
+
+/// The persisted mode string for a default sink: the L/R-correcting
+/// virtual sink means the internal amps are in circuit; any other sink
+/// (hardware jack, USB, Bluetooth) means amp-off "headphone".
+fn mode_for_sink(sink: &str) -> &'static str {
+    if sink == SINK_SPEAKERS {
+        "speaker"
+    } else {
+        "headphone"
+    }
+}
+
+/// Write the observed selection to MODE_FILE (the same value
+/// `audio-output` stores), refreshing gemini-audio-defaults' boot intent.
+/// No-op when it already matches; never fatal on write failure.
+fn persist_mode(mode: &str) {
+    if util::read_str_opt(MODE_FILE).as_deref() == Some(mode) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(MODE_DIR);
+    if let Err(e) = util::write_str(MODE_FILE, &format!("{mode}\n")) {
+        println!(
+            "{} gemcli speaker: WARNING could not persist {} mode: {}",
+            util::hms(),
+            MODE_FILE,
+            e.msg
+        );
+    }
 }
 
 /// `gemcli speaker watch` — the gemini-speakerd daemon (foreground).

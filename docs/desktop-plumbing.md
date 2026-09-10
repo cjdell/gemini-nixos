@@ -14,7 +14,10 @@ re-login gotcha** (see §Volume).
 `gemini-speakerd` couples the speaker amp to the selected output device
 (§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
 ⇒ `dout=0`, speakers ⇒ `dout=1`; the L/R correction itself still needs an
-ear test). Touch is now a **real multi-touch
+ear test). **2026-09-11: the coupling was actually DEAD** — the watcher's
+`wpctl` parse never matched (the default node carries a `* ` marker), so
+selecting Headphones left the amp ON; fixed + verified on glass (gen 17),
+plus mode persistence (§Speakers → Correction). Touch is now a **real multi-touch
 wl_touch device** (2026-09-10, §Touch — protocol chain verified
 source-level + on the journals; on-glass finger test pending).
 **2026-09-10p:** GNOME audio wired (session → the one system PipeWire
@@ -340,8 +343,9 @@ that couples the amp to the default sink**:
 So the GNOME way to choose output is just the normal one: pick
 **Built-in Speakers** or **Headphones / Jack** in Settings → Sound (or
 the Quick Settings output picker); the amp follows within ~1 s. The
-choice persists (WirePlumber's configured default sink), and
-`gemini-audio-defaults` re-syncs it at boot.
+choice persists in WirePlumber state **and** in
+`/etc/gemini/audio-output-mode`, which `gemini-audio-defaults` re-syncs
+at boot.
 
 CLI / console equivalent: `audio-output speaker|headphone|toggle|status`
 now also sets the PipeWire default sink (and `sync-default`, the
@@ -353,11 +357,60 @@ on|off|status` drives the pads directly.
 `services/scripts/audio-output`, `services/audio.nix`
 (`gemini-speakerd`), `pkgs/gemcli/src/speaker.rs`.
 
-**On-glass check (pending):** play a left/right test tone to the
-Built-in Speakers sink and confirm it is no longer reversed; select
-Headphones and confirm the speakers go silent while the jack still
-plays; `gemcli speaker status` shows `dout=1` for speakers and `dout=0`
-for headphones; unplug/replug and reboot to confirm persistence.
+#### Correction + fix (2026-09-11, on glass): headphones-only was dead
+
+**Symptom (user report).** Selecting **Headphones / Jack** in GNOME left
+the internal speakers playing.
+
+**Root cause.** `speaker::default_sink()` parsed only lines starting
+with `node.name = `, but `wpctl inspect @DEFAULT_SINK@` prefixes the
+default node's properties with a `* ` marker:
+
+    * node.name = "alsa_output.platform-sound.stereo-fallback"
+
+so the parse always returned `None`. `sync_amp()` then bailed before
+touching the pads — the watcher never drove the amp at all, and because
+`gemini-audio-defaults` had already forced the default sink to
+`gemini_speakers` at boot, the amps stayed ON. (The 2026-09-10q "amp
+coupling verified on glass" receipt exercised `audio-output
+headphone`, i.e. the CLI's *direct* `speaker off`, never the watcher.)
+Fixed in `parse_sink_name()` (strip `* `/space from the trimmed line
+before matching) + 4 regression unit tests in `speaker.rs`.
+
+**Secondary defects found while fixing it:**
+
+1. `/etc/gemini` did not exist on the fresh (post-repartition) rootfs,
+   so `audio-output`'s `echo > /etc/gemini/audio-output-mode` silently
+   failed and **no** stored mode ever persisted. New tmpfiles rule
+   `d /etc/gemini 0755 root root -` in `services/audio.nix`; the script
+   also `mkdir -p`s it now.
+2. A choice made **only in GNOME** was never written back to the mode
+   file, so the next boot reverted to the stored (or default "speaker")
+   mode. `gemini-speakerd` now persists the observed default sink to
+   that file (`mode_for_sink`), and the unit is ordered
+   `after gemini-audio-defaults.service` so the boot-time sink write is
+   settled before it reads (no transient hardware-sink default can be
+   persisted by accident).
+
+**Files changed:** `pkgs/gemcli/src/speaker.rs`,
+`services/scripts/audio-output`, `services/audio.nix`.
+
+**On glass 2026-09-11 (device system-16 → 17; final toplevel
+`hra1d2ajgkblw9ql7hf8m9nkiyp3akhg-nixos-system-gemini-26.11pre-git`;
+rootfs only, no boot.img/kernel):** `journalctl -u gemini-speakerd` shows
+`default sink alsa_output.platform-sound.stereo-fallback -> amps OFF`
+and `default sink gemini_speakers -> amps ON`; `speaker status` reads
+`dout=0` on both pads for Headphones and `dout=1` for Built-in
+Speakers, following `wpctl set-default`. Selecting Headphones in GNOME
+now silences the internal speakers. `audio-output status` reports
+`mode: headphone (stored intent: headphone)` and `/etc/gemini` exists;
+toggling the default sink rewrites `/etc/gemini/audio-output-mode`
+(`headphone` ↔ `speaker`) within ~1 s, and the unit's `After=` includes
+`gemini-audio-defaults.service`. gemcli test suite: 16 passed.
+
+**Still owed:** L/R correction by ear (test tone to Built-in Speakers —
+the 2026-09-10q virtual sink is unchanged); a real reboot to confirm the
+new mode persistence; jack-plugged playback under "Headphones / Jack".
 
 ### Touch: a real multi-touch device (no cursor) [2026-09-10]
 

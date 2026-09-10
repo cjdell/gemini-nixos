@@ -44,7 +44,11 @@
 set -eu
 
 repo=/home/cjdell/Projects/gemini-nixos
-dev=10.15.19.82
+# Device address: the g_ether USB gadget default; override with
+# GEMINI_DEV_IP when the unit is reachable another way (Wi-Fi/LAN) —
+# bin/device-ssh.sh honours the same variable.
+dev=${GEMINI_DEV_IP:-10.15.19.82}
+key=$HOME/.ssh/id_ed25519_gemini
 profile=/nix/var/nix/profiles/system
 
 sudo_build() { sudo nix build --store local "$@"; }
@@ -76,9 +80,13 @@ ship_and_switch() {
     # (the freshly reinstalled rootfs has a new host key; 2026-09-10
     # repartition).  nix copy does not, so set NIX_SSHOPTS for the same
     # behaviour — otherwise a new rootfs host key aborts the deploy.
-    # [added 2026-09-10p]
-    NIX_SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-        nix copy --to "ssh://$dev" "$tl"
+    # [added 2026-09-10p] | Use root@ explicitly: with no ssh-config
+    # entry for the address (e.g. GEMINI_DEV_IP on the LAN) ssh would
+    # otherwise log in as the local user (cjdell), which is an untrusted
+    # nix user → the daemon enforces require-sigs and rejects every
+    # unsigned locally-built path. [fixed 2026-09-11]
+    NIX_SSHOPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $key" \
+        nix copy --to "ssh://root@$dev" "$tl"
     echo "deploy: switching device profile -> ${tl##*/}"
     device_ssh "nix-env -p $profile --set '$tl'"
     device_ssh "'$tl/bin/switch-to-configuration' switch" \

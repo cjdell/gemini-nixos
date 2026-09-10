@@ -5,6 +5,55 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — Headphones selection still played the speakers: gemini-speakerd's wpctl parse was dead (fixed + on glass, gen 17)
+
+User report: "when i select headphones i still get sound coming through
+the internal speakers" (device now reachable on the LAN at
+192.168.49.166).
+
+- **Root cause.** `speaker::default_sink()` (`pkgs/gemcli/src/speaker.rs`)
+  matched only `node.name = ` at the start of the trimmed line, but
+  `wpctl inspect @DEFAULT_SINK@` marks the default node's properties with
+  a leading `* ` (`  * node.name = "..."`). The parse therefore returned
+  `None` on every poll, `sync_amp()` bailed out, and the amp pads were
+  never driven. On this rootfs the default sink had been forced to
+  `gemini_speakers` at boot, so the amp stayed ON when the user picked
+  Headphones. The 2026-09-10q "amp coupling verified on glass" receipt
+  exercised `audio-output headphone` — the CLI's *direct* `speaker off` —
+  not the watcher, hence the gap.
+- **Secondary defects found while fixing it.** (a) `/etc/gemini` did not
+  exist on the fresh post-repartition rootfs, so `audio-output`'s
+  `echo > /etc/gemini/audio-output-mode` silently failed and no mode ever
+  persisted; (b) a choice made only in GNOME was never written to that
+  file, so a reboot reverted to the built-in "speaker" default.
+- **Fixes.** `parse_sink_name()` strips `*`/spaces before matching (+ 4
+  regression tests; gemcli suite now 16 passed); `gemini-speakerd`
+  persists the observed sink (`mode_for_sink`, only on change) and is
+  ordered `after gemini-audio-defaults.service` so the boot-time sink
+  write settles first; `services/audio.nix` adds the tmpfiles rule
+  `d /etc/gemini 0755 root root -`; `services/scripts/audio-output`
+  `mkdir -p`s the state dir. `bin/device-ssh.sh`/`bin/deploy.sh` also
+  gained a `GEMINI_DEV_IP` override (LAN address support) and deploy now
+  copies to `ssh://root@$dev` — without the explicit root user a LAN
+  address logs in as `cjdell`, an untrusted nix user, and the daemon
+  rejects every unsigned locally-built path (`require-sigs`).
+- **Toplevels.** `c7g2n7z…` (wpctl parse fix; shipped as device
+  system-16) and final `hra1d2ajgkblw9ql7hf8m9nkiyp3akhg` (mode
+  persistence, system-17). Rootfs only — no boot.img/kernel touched.
+- **On glass (gen 17).** `journalctl -u gemini-speakerd`:
+  `default sink alsa_output.platform-sound.stereo-fallback -> amps OFF`
+  and `default sink gemini_speakers -> amps ON`; `speaker status` reads
+  `dout=0` for Headphones / `dout=1` for Built-in Speakers following
+  `wpctl set-default`; `/etc/gemini/audio-output-mode` rewrites
+  `headphone`/`speaker` within ~1 s; `audio-output status` agrees.
+  Device left on **Headphones (amp OFF)**.
+- **Still owed.** L/R correction by ear (the 2026-09-10q virtual sink is
+  unchanged); a real reboot to confirm the persisted mode; jack playback.
+- **Docs.** `docs/desktop-plumbing.md` §Speakers carries the correction
+  (the 2026-09-10q claim was about the CLI, not the watcher);
+  `docs/gemcli.md` gained the on-glass receipt + test-count update;
+  `AGENTS.md` speakers row annotated.
+
 ## 2026-09-11 — Fn transport keys (Q/W/E) + British/UK regional settings (config-only)
 
 User request: Fn+Q = play/pause, Fn+W = previous track, Fn+E = next

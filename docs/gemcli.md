@@ -30,8 +30,10 @@ local --option builders @/etc/nix/machines --fallback --print-out-paths
 .#packages.aarch64-linux.gemcli` (86 s first build). In the rootfs
 closure via `services/gemini-pda.nix` → `environment.systemPackages`;
 also exposed as the flake package `.#packages.aarch64-linux.gemcli`.
-(The compiled test suite is now **11 tests** — the original 8 plus an
-A72-list and a PPD state.ini parser test — 2026-09-10.)
+(The compiled test suite is now **16 tests** — the original 8, an
+A72-list + PPD state.ini parser test (2026-09-10), and 4 speaker tests
+(2026-09-11: the `wpctl` default-sink `* ` marker parse + the
+sink→mode mapping).)
 
 Local typecheck/test loop (host, x86_64 cargo): `cd pkgs/gemcli &&
 cargo check && cargo test` (hardware-free unit tests only; keep
@@ -173,6 +175,31 @@ each noted in the module header too)
   `gemcli a72 down both` — cpu9 per-core, cpu8 last-A72 secure
   teardown (ISO bit1 re-asserted, PWR_CON bit0 clear), DA9214 BUCKB
   rail dropped → online 0-7, cold-boot state, rc 0 both ways.
+
+## On-glass receipts (2026-09-11, gens 16–17): speaker watcher was dead
+
+User report: selecting **Headphones** left the internal speakers playing.
+
+- **Root cause**: `speaker::default_sink()` matched only lines starting
+  `node.name = `, but `wpctl inspect @DEFAULT_SINK@` marks the default
+  node's properties with a leading `* ` (`  * node.name = "..."`), so it
+  always returned `None` and `speaker watch` never drove the pads.
+  `audio-output` worked because it calls `speaker off` directly — which
+  is why the 2026-09-10q receipt passed while the GNOME path was broken.
+  Fixed in `parse_sink_name()` (strip `*`/spaces before matching).
+- **Also fixed**: `/etc/gemini` was never created (NixOS does not make
+  plain `/etc` subdirs), so the persisted mode never wrote; and a
+  GNOME-only choice was never written back to it. `service/audio.nix`
+  adds a tmpfiles rule, `audio-output` `mkdir -p`s the dir, and
+  `gemini-speakerd` persists the observed sink (`mode_for_sink`) — with
+  the unit ordered after `gemini-audio-defaults.service` so the boot
+  write settles first.
+- **Verified on glass** (toplevel
+  `hra1d2ajgkblw9ql7hf8m9nkiyp3akhg-nixos-system-gemini-26.11pre-git`,
+  rootfs-only): `wpctl set-default` → speaker `dout=1`/
+  `mode=speaker`, hardware sink `dout=0`/`mode=headphone`, within ~1 s;
+  `audio-output status` → `mode: headphone (stored intent: headphone)`.
+  Details + journal lines: `docs/desktop-plumbing.md` §Speakers.
 
 ## Parity & migration (the on-glass pass — step 1–2 DONE, flips remain)
 

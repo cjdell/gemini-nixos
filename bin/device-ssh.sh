@@ -28,6 +28,16 @@ if [ ! -f "$KEY" ]; then
 fi
 cd "$(dirname "$0")/.."
 
+# Explicit device address override (GEMINI_DEV_IP <ip>): use it when the
+# unit is reachable some other way (Wi-Fi/LAN) and the g_ether USB link
+# is not in use. Host-side gadget setup is skipped in that case.
+if [ -n "${GEMINI_DEV_IP:-}" ]; then
+  exec ssh -i "$KEY" \
+    -o BatchMode=yes -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=8 root@"$GEMINI_DEV_IP" "$@"
+fi
+
 IFACE="enp10s0f4u1u2"
 # iface discovery when the hardcoded name is missing (USB ports renumber)
 if ! ip link show "$IFACE" >/dev/null 2>&1; then

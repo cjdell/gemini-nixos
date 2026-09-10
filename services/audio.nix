@@ -58,6 +58,14 @@ in
   # /var/lib/alsa/asound.state; gemini-audio-defaults runs after it).
   hardware.alsa.enable = true;
 
+  # /etc/gemini holds the persisted manual output mode
+  # (/etc/gemini/audio-output-mode). NixOS does not create plain /etc
+  # subdirectories; without this rule audio-output's state write silently
+  # fails on a fresh rootfs (found 2026-09-11: the file did not exist, so
+  # every boot reverted to the built-in "speaker" default and a GNOME
+  # headphone choice never survived a reboot). [added 2026-09-11]
+  systemd.tmpfiles.rules = [ "d /etc/gemini 0755 root root -" ];
+
   environment.systemPackages = [
     pkgs.pipewire
     pkgs.wireplumber
@@ -146,11 +154,14 @@ in
   # through PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio (set inside gemcli —
   # pkgs/gemcli/src/speaker.rs). It leaves the amp alone when PipeWire is
   # down (early boot, sleep), so the boot-time amp state stays whatever
-  # gemini-audio-defaults applied. [added 2026-09-10]
+  # gemini-audio-defaults applied. Ordered AFTER gemini-audio-defaults so
+  # the boot-time default-sink write is settled before the watcher reads
+  # it (otherwise a transient hardware-sink default could be persisted as
+  # the mode). [added 2026-09-10; ordering + mode persistence 2026-09-11]
   systemd.services.gemini-speakerd = {
     description = "Gemini PDA speaker-amp follows the PipeWire default sink";
-    after = [ "pipewire.service" "wireplumber.service" ];
-    wants = [ "pipewire.service" ];
+    after = [ "pipewire.service" "wireplumber.service" "gemini-audio-defaults.service" ];
+    wants = [ "pipewire.service" "gemini-audio-defaults.service" ];
     wantedBy = [ "multi-user.target" ];
     serviceConfig = {
       Type = "simple";

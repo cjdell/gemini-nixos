@@ -12,7 +12,10 @@
 #                                parallel net, documented caveat)
 #     audio-output headphone  -> pads LOW = 3.5 mm jack only.
 # The choice persists in /etc/gemini/audio-output-mode and is re-applied
-# at every boot by gemini-audio-defaults.service.
+# at every boot by gemini-audio-defaults.service. The same file is kept in
+# sync by gemini-speakerd when the output is chosen in GNOME instead of
+# with this CLI (the daemon follows the default sink and rewrites the mode
+# accordingly — pkgs/gemcli/src/speaker.rs). [added 2026-09-11]
 #
 # It ALSO sets the PipeWire default sink so the GNOME Sound menu / Quick
 # Settings output picker agrees with the amp state (2026-09-10):
@@ -59,6 +62,11 @@ set_default_sink() { # name
 }
 
 apply() { # mode  -> flip the amp pads + default sink + persist the choice
+  # /etc/gemini may not exist on a fresh rootfs (NixOS does not create
+  # plain /etc subdirs); services/audio.nix also ships a tmpfiles rule.
+  # [fixed 2026-09-11 — the write silently failed, so the stored mode
+  # never persisted]
+  mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
   case "$1" in
     speaker)
       "$SPEAKER" on || die "speaker on failed"
