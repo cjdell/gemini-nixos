@@ -5,6 +5,97 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10c — TOUCH: real multitouch wl_touch device (no cursor) for the phosh/LXQt desktops
+
+Task: "the touchscreen behaves as a traditional input device moving a
+visible onscreen cursor; make it a real multitouch device in userspace
+so modern GNOME apps get proper gestures like pinch."
+
+**Root cause (not the kernel).** The NT36772 kernel driver
+(`devices/planet-geminipda/kernel/delta/drivers/input/touchscreen/
+novatek-nt36xxx.c`) was already a correct 10-point Protocol-B
+direct device (verified in source: input_mt slots, ABS 2160x1080
+landscape, `input_mt_set_slots(10)`). The cursor came from **gemwl**:
+its touch handlers emulated the first finger as an absolute pointer
+(warp `wlr_cursor` + synthetic `BTN_LEFT` press/release), and its seat
+only advertised POINTER|KEYBOARD — so the nested compositor never
+created a touch device and every app saw a mouse.
+
+**Change** (commit **39ee053**, `pkgs/gemwl/gemwl.c`): seat advertises
+`WL_SEAT_CAPABILITY_TOUCH` when a touch device is attached; touch
+handlers forward EVERY finger via `wlr_seat_touch_notify_down/motion/
+up` + `_frame` (normalized 0..1 → output layout box →
+`wlr_scene_node_at` → surface-local — same transform as the pointer
+path; nested toplevel is full-screen at scale 1 so the wl_touch
+"relative to the down surface" contract holds); a `client_has_touch()`
+guard drops a down until the nested client called
+`wl_seat.get_touch()` (avoids per-down wlroots error spam pre-session);
+`GEMWL_TOUCH_POINTER_EMU=1` restores the legacy first-finger-as-pointer
+behaviour for A/B (and suppresses the TOUCH capability in that mode).
+Why it works: wlroots' wayland backend — in BOTH lines we run (0.19.3
+for phoc, 0.18.2 for labwc) — synthesizes a `wlr_touch` from the outer
+seat when the TOUCH cap is present (`backend/wayland/seat.c`
+`seat_handle_capabilities` → `init_seat_touch`) and forwards the
+`wl_touch` events into it; phoc then runs its own touch stack
+(`seat_add_touch` → cursor touch handlers → `wlr_seat_touch_notify_*`
+to the phosh apps) plus compositor-side gesture recognizers
+(`gesture-zoom.c` pinch, `gesture-swipe.c`) and touch-point overlay
+feedback (`touch-point.c`). Source receipts: wlroots 0.18.2/0.19.3
+trees + phoc v0.54.0 (`gitlab.gnome.org/World/Phosh/phoc`) read on 2026-09-10.
+Docs: `docs/desktop-plumbing.md` §Touch.
+
+**Deployed + verified as far as the journals go** (2026-09-10 ~02:30):
+- gemwl built clean (aarch64 builder), pushed to the device clone
+  (`bin/device-repo.sh push` → 39ee053), `nixos-rebuild switch --flake .`
+  on the PDA (297 s, system `mbzswv53…-nixos-system-gemini-26.11pre-git`;
+  the switch also pulled the device out of light sleep — it was asleep
+  since 01:23 when the units were "started").
+- gemwl log 02:22:02: `gemwl input: touchscreen attached (wl_touch
+  forwarding): Novatek NT36772 Touchscreen`.
+- phoc (with a transient `G_MESSAGES_DEBUG=all` /run drop-in, since
+  removed): `[backend/wayland/seat.c:356] seat 'seat0' offering touch`,
+  `New input device: wayland-touch-seat0 touch seat:seat0`,
+  `Adding device wayland-touch-seat0 2` — the synthesized touch device
+  exists end-to-end.
+- **Synthetic-finger test** (`bin/touch-inject.c`, new — writes raw
+  Protocol-B events into the NT36772 evdev node): tap → gemwl
+  `touch DOWN id=0 (0.50,0.50) -> surface-local (1080,540)` + UP;
+  pinch → `touch DOWN id=0 (…830,540)` + `touch DOWN id=1 (…1330,540)`
+  + motions + both UPs. So kernel evdev → libinput → gemwl's wl_touch
+  forwarding is proven with real (synthesized) events.
+- NOT yet verified: the last hop phoc → phosh app (a real finger on
+  glass: no cursor, tap/drag, pinch-zoom in a GTK4/WebKit app).
+  A wl_touch probe client to close that gap is `bin/touch-probe.c`
+  (WIP — blocked on the wayland 1.26 API change, see gotchas below).
+
+**Gotchas (keep for the next input session):**
+- **aarch64 `struct input_event` is 24 bytes** (16-byte `timeval`
+  first), not the 8 of 32-bit: an 8-byte evdev write is rejected with
+  EINVAL (`count < input_event_size()` in evdev_write). The kernel
+  replaces the timestamp on injection, so tv=0 is fine.
+- `/sys/class/input/inputN/dev` is **empty** on this kernel build —
+  find the evdev node via the `eventN` subdirectory of inputN (the
+  `device` symlink points at the i2c client, not an event device).
+- The device store holds BOTH arches of wayland 1.26.0
+  (`vjcw…`=x86_64, `njzs…`=aarch64) — ld says "skipping incompatible".
+- **wayland ≥1.23 unified `struct wl_interface`**: generated protocol
+  headers declare `extern const struct wl_interface wl_seat_interface`
+  — the classic per-interface client listener structs are gone;
+  touch-probe.c needs that migration before it compiles.
+- Light sleep (silver button) stops gemwl/phosh-nested and UNBINDS
+  the NT36772 touch driver — after `gemcli sleep off` the touch device
+  re-registers and gemwl hot-plugs it (that is the 02:22:02 "Adding"
+  above, not a boot). `G_MESSAGES_DEBUG=all` makes phoc log the
+  wlroots DEBUG lines (its `wlr_log_init(WLR_DEBUG, log_glib)` bridge
+  maps them to glib DEBUG).
+
+**Left behind:** device AWAKE on the new generation, gemwl +
+phosh-nested active, touch driver bound, debug drop-in removed,
+`/var/tmp/touchinj-src/` + a built `touchinj` in the device store if
+the synthetic test is wanted again. Next: user's on-glass finger test
+(no cursor on touch, pinch-zoom in a web app); if anything misbehaves,
+A/B with a `GEMWL_TOUCH_POINTER_EMU=1` drop-in on gemwl.
+
 ## 2026-09-10b — DESKTOP PLUMBING: battery via UPower, Wi-Fi via NetworkManager, backlight access (eval-green + kernel built; NOT yet deployed)
 
 Task: "phosh is not usable at the moment — need backlight/volume
