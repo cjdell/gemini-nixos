@@ -1,9 +1,10 @@
 # Phosh on the Gemini PDA (nested inside gemwl) — bring-up design + receipts
 
-Last updated: 2026-09-09. Status: 🟡 built + packaged; **the DEFAULT
-desktop since 2026-09-09** (module defaults flipped: phosh on, lxqt off)
-— deployed as gen59, on-glass verification owed (see the checklist +
-session log).
+Last updated: 2026-09-10. Status: ✅ **on glass as the DEFAULT desktop**
+since gen61 (2026-09-10) — two bring-up bugs found + fixed on the way
+(gen59 crashed; receipts below); user unlocked the phosh lockscreen on
+glass. Cold-boot re-verify pending (user was on the device — not
+rebooted under them).
 
 ## TL;DR — the answer to "will gemwl support phosh with GPU accel?"
 
@@ -81,7 +82,7 @@ fork's libgbm in place of nixpkgs' mesa-libgbm. Receipts:
   GNOME-sized closure) substitutes from cache.nixos.org — the pinned
   rev is the hydra-built channel snapshot (golden rule 9).
 
-## What was implemented (2026-09-09, built + eval'd; 2026-09-09 → default desktop + deployed as gen59)
+## What was implemented (2026-09-09, built + eval'd; 2026-09-09 → default desktop; 2026-09-10 → on glass gen61)
 
 - `services/phosh.nix` — option `services.phoshDesktop.enable`
   (default **true** since 2026-09-09 — Phosh is the DEFAULT desktop;
@@ -172,6 +173,46 @@ no reflash). Device loop: `cd /root/gemini-nixos && nixos-rebuild
 switch --flake .`. Console-only boot: `systemctl disable gemwl
 phosh-nested`.
 
+## On-glass receipts (2026-09-10 — gen59 crash → gen61 works)
+
+Gen59 (the default-desktop flip) crashed ~6 s after phoc's "Enabling
+shell mode" on EVERY run: silent SIGABRT in phosh, then SIGBUS in phoc.
+Backtraced via a throwaway btpreload LD_PRELOAD (signal handler +
+backtrace_symbols_fd) shipped to the device — no tooling added to the
+image:
+
+- **Bug 1 (fatal, gen59): no GSettings schemas on the unit env.**
+  g_settings_set_property (glib gio gsettings.c:676) g_error'd "No
+  GSettings schemas are installed on the system" → abort. Cause: NixOS
+  gsettings packages install schemas under
+  `share/gsettings-schemas/<pkgname>/glib-2.0/schemas` (the nixpkgs
+  gsettings-schemas hook layout), NOT upstream `share/glib-2.0/`
+  schemas — and libexec/phosh is unwrapped (started by phoc -E), so
+  wrapGAppsHook4 never rewrote XDG_DATA_DIRS for it. The phosh-nested
+  env only listed plain /share dirs → gio's default schema source was
+  empty → first g_settings_new aborted. Fix (408071b): carry the
+  gsettings-schemas dirs of phosh/gnome-shell/squeekboard/
+  gnome-console/gsettings-desktop-schemas/gnome-settings-daemon on
+  XDG_DATA_DIRS. Runtime-verified first (drop-in env override): "Phosh
+  ready after 3.39s".
+- **Bug 2 (lockscreen, gen60): no 'phosh' PAM service.** cjdell had NO
+  password (locked account) so the passcode pad could never succeed —
+  set passcode 0000 (user's choice; chpasswd live + hashedPassword in
+  users.users.cjdell, 408071b). Then 0000 STILL failed on glass:
+  phosh PAM-authenticates in-process under service name "phosh" but
+  NixOS generates no such /etc/pam.d/phosh → pam falls back to the
+  deny-all "other" file (pam_warn spam in the journal) → every code
+  rejected. Fix (7f33bee): security.pam.services.phosh = { } (default
+  unix rules; pam_unix as euid 1000 verifies via the setuid
+  /run/wrappers/bin/unix_chkpwd NixOS already provides). User unlocked
+  with 0000 on gen61.
+
+GPU truth on glass (phoc journal): WLR_RENDERER=gles2 → "OpenGL ES 3.1
+Mesa 25.0.7, Mali-T880 (Panfrost)", EGL display extensions incl.
+EGL_EXT_image_dma_buf_import — same fork-mesa chain as LXQt/gemdemo.
+Remaining journal noise = the documented v1 gaps (no gnome-session /
+dconf / upower / NM — non-fatal).
+
 ## On-glass verification checklist (owed — the 🟡 → ✅ step)
 
 1. **Build + switch** (above). Expect the only local compiles to be
@@ -198,7 +239,9 @@ phosh-nested`.
 6. Record the version line (rule 0) + outcome in `docs/session-log.md`.
    Phosh is the default desktop since 2026-09-09; if the glass is wrong:
    `bash bin/deploy.sh rollback` (gen58 = the LXQt desktop) or flip the
-   options back (above).
+   options back (above). [done 2026-09-10: gen61 on glass, unlocked; a
+   cold-boot re-verify is the remaining step — do NOT reboot while the
+   user is on the device.]
 
 ## Known gaps / deliberate v1 scope (next steps, in rough order)
 

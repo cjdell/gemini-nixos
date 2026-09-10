@@ -5,6 +5,64 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10a — PHOSH IS THE DEFAULT DESKTOP + ON GLASS: module default flip → gen59 crashed (2 bring-up bugs fixed) → gen61 unlocked by the user (0000)
+
+Task: "can we make phosh the default desktop?" → yes, and it now is:
+the module defaults flipped (services.phoshDesktop.enable = **true**,
+services.lxqtNested.enable = **false** — LXQt becomes the alternative),
+committed 3e83f6c; docs (README/AGENTS/phosh.md) updated to match.
+
+Gens: gen58 (start) → gen59 (flip, CRASHED) → gen60 (schema fix,
+passcode) → gen61 (PAM fix, UNLOCKED on glass). Versions on glass:
+phosh 0.54.0 + phoc 0.54.0 (wlroots 0.19.3, fork-gbm override) + mesa
+25.0.7 fork — all pre-pinned; toplevels 152x4bz (g58) / bj6gys6i (g59)
+/ 9vd6qqw8 (g60) / 3fik824n (g61). No boot.img/para touch; all
+profile switches via deploy.sh. btpreload triage .so shipped for the
+crash debug (never wired into any unit; runtime override removed).
+
+**gen59 crash (deterministic, ~6 s after "Enabling shell mode")**:
+silent SIGABRT in phosh then SIGBUS in phoc, every run, NRestarts loop.
+Triage without touching the image: btpreload LD_PRELOAD (SIGABRT/SIGBUS
+handler + backtrace_symbols_fd) → backtrace showed abort ←
+g_log_default_handler ← g_log from gio's g_settings_set_property
+(gsettings.c:676): g_error "No GSettings schemas are installed on the
+system". Root cause: NixOS gsettings packages install schemas under
+share/gsettings-schemas/<pkgname>/glib-2.0/schemas (not upstream
+share/glib-2.0/schemas), and libexec/phosh is UNWRAPPED (phoc -E), so
+the hand-rolled XDG_DATA_DIRS never pointed at the schemas → gio's
+default source empty → first g_settings_new aborts. Fix (408071b):
+services/phosh.nix carries the gsettings-schemas dirs of phosh,
+gnome-shell, squeekboard, gnome-console, gsettings-desktop-schemas and
+gnome-settings-daemon on XDG_DATA_DIRS. Runtime-verified (drop-in env
+override): "Phosh ready after 3.39s". GPU truth on glass: phoc gles2 →
+OpenGL ES 3.1 Mesa 25.0.7, Mali-T880 (Panfrost); EGL
+EGL_EXT_image_dma_buf_import present.
+
+**Lockscreen blocked entry (gen60)**: phosh demanded a passcode but
+cjdell had none (locked account — users.users.cjdell created without a
+password; passwd -S = L). User chose passcode 0000 → set live via
+chpasswd + baked the yescrypt hash into users.users.cjdell (408071b).
+Then 0000 still failed: phosh PAM-authenticates in-process under the
+service name "phosh" and NixOS generates no /etc/pam.d/phosh → pam
+fell back to the deny-all "other" file (pam_warn(phosh:auth) spam) →
+every code rejected. Fix (7f33bee): security.pam.services.phosh = { }
+(default unix rules; pam_unix as euid 1000 → setuid
+/run/wrappers/bin/unix_chkpwd → /etc/shadow). gen61 deployed → user
+unlocked the phosh lockscreen with 0000 — **phosh is on glass and
+usable as the default desktop** (LXQt gen58 remains the rollback
+state: bash bin/deploy.sh rollback 3).
+
+State left: gen61 current, phosh-nested active NRestarts=0, LXQt unit
+absent, runtime triage overrides removed (only the committed config
+remains). Remaining journal noise = documented v1 gaps (no
+gnome-session/dconf/upower/NM — non-fatal; phosh.md Known gaps).
+
+Next: cold-boot re-verify (do NOT reboot while the user is on the
+device — offered instead); then eyes-on-glass UX pass (top bar, app
+grid, gnome-console/firefox GL clients), then the phosh.md checklist
+items 3-5, and decide whether the LXQt nested desktop stays packaged
+(as alternative) or gets disabled by default permanently.
+
 ## 2026-09-09q — DEPLOY ROUND-TRIP: gen58 on the device (content-identical to gen57 — no config change since)
 
 Request: "deploy the current gen to the device and switch." Ran
