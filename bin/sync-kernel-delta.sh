@@ -8,13 +8,24 @@
 #            (legacy source of the local-only bring-up branch; the delta
 #            tree HERE is the source of truth for builds — this script is
 #            only for folding new fork commits in)
-#   rev      default: 188aade698dd286f36a321ffe2ac6ae08762ee97
-#            (geminipda-bringup HEAD = the on-glass kernel #329 tree)
+#   rev      default: 06fd13e112b23c5b2b4a9310af633cd27c14c57f
+#            (geminipda-bringup rev the delta was last synced from; note
+#            the fork rev default USED to be 188aade69 — stale — see the
+#            local-divergence note below)
 #
 # Source model (docs/library-deltas.md, kernel entry): the kernel builds
 # from the published Linux v6.6 base + this delta as a plain file tree
-# (no patch files — agents edit source directly). The delta must be
-# exactly "the files the bring-up line changes over v6.6":
+# (no patch files — agents edit source directly).
+#
+# LOCAL-DIVERGENCE GUARD (2026-09-10k). The delta is the build source of
+# truth and now carries work that is NOT in the fork rev: the DRM/KMS
+# bring-up added `drivers/gpu/drm/tiny/geminipda-drm.c` (+ its tiny/Kconfig
+# and tiny/Makefile) directly to the delta, and modified the
+# mt6797-gemini-pda.dts (geminipda-drm node). A blind `rm -rf delta` sync
+# would silently delete the DRM driver and remove the DTS node, breaking
+# GNOME. So this script now REFUSES to clobber a delta that diverges from
+# the rev being synced; set FORCE=1 to overwrite anyway (and first fold the
+# local work into the fork / a new rev if you want it kept).
 #
 #   - materialized from `git diff --name-status v6.6..rev` (only A/M
 #     entries; the bring-up line adds 457 files and modifies 55, and has
@@ -29,7 +40,7 @@
 set -euo pipefail
 
 GIT_DIR="${1:-/home/cjdell/Projects/GeminiPDA/repos/linux-6.6}"
-REV="${2:-188aade698dd286f36a321ffe2ac6ae08762ee97}"
+REV="${2:-06fd13e112b23c5b2b4a9310af633cd27c14c57f}"
 BASE_REV="$(git -C "$GIT_DIR" rev-parse v6.6^{commit})"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,6 +63,38 @@ if echo "$LIST" | grep -qE "^(D|R|C|T|U|X)"; then
 fi
 FILES="$(echo "$LIST" | awk '{print $2}')"
 echo "    files: $(echo "$FILES" | wc -l) (add/modify)"
+
+# 1b. Local-divergence guard (see header). The delta may carry delta-only
+#     files or locally-modified fork files; the materialize step below is
+#     destructive, so abort instead of silently losing them.
+PRE="$(mktemp -d)"
+trap 'rm -rf "$PRE"' EXIT
+git -C "$GIT_DIR" archive "$REV" $FILES | tar -x -C "$PRE"
+declare -A FORKSET=()
+while IFS= read -r f; do [ -n "$f" ] && FORKSET["$f"]=1; done <<< "$FILES"
+DIVERGED=()
+for f in $FILES; do
+    if [ ! -f "$DELTA/$f" ]; then
+        DIVERGED+=("missing:    $f")
+    elif ! cmp -s "$DELTA/$f" "$PRE/$f"; then
+        DIVERGED+=("modified:   $f")
+    fi
+done
+while IFS= read -r f; do
+    [ -n "${FORKSET[$f]:-}" ] || DIVERGED+=("delta-only: $f")
+done < <(cd "$DELTA" && find . -type f | sed 's#^\./##' | sort)
+if [ ${#DIVERGED[@]} -gt 0 ]; then
+    if [ "${FORCE:-0}" = 1 ]; then
+        echo "!! FORCE=1: overwriting ${#DIVERGED[@]} locally-diverged file(s):" >&2
+        printf '     %s\n' "${DIVERGED[@]}" >&2
+    else
+        echo "FAIL: the delta diverges from $REV — refusing to clobber it." >&2
+        printf '      %s\n' "${DIVERGED[@]}" >&2
+        echo "      Fold these into the fork / a new rev, or set FORCE=1 to overwrite." >&2
+        exit 1
+    fi
+fi
+rm -rf "$PRE"; trap - EXIT
 
 # 2. Materialize into the delta tree (clear first — a file that stopped
 #    changing would otherwise linger as a stale copy).

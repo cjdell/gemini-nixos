@@ -7,7 +7,7 @@
 > Both `stock-dump/` dirs are gitignored — nvram/protect/tee hold
 > private/identity data; **never `git add` them**. This repo is the
 > golden ledger; the legacy repo is the bulk archive until migration M3.
-> **Last updated:** 2026-09-07
+> **Last updated:** 2026-09-10
 
 ## Device / eMMC identity (DA session 2026-08-30; `stock-dump/gpt-2026-08-30.txt`)
 
@@ -58,7 +58,7 @@ pending — rsync command in the footer).
 | p19 | nvram | 5 MiB | 0xab00000 | `nvram.bin` (readback 08-30; **IMEI — private**) | here | ⚠️ identity |
 | p20 | lk | 0.5 MiB | 0xb000000 | `lk.bin` (readback) — content = stock `lk_s.img` (verified) | here | ✅ |
 | p21 | lk2 | 0.5 MiB | 0xb080000 | ❌ **missing** | — | (backup LK slot) |
-| p22 | boot | 16 MiB | 0xb100000 | `boot.bin` (stock Android) + `boot-327-20260906.img`, `boot-20260907-013541.img` (current pre-#329) copied; **~85 further dated `boot-*.img`** | here (sel.) / legacy (bulk) | ✅ |
+| p22 | boot | 16 MiB | 0xb100000 | `boot.bin` (stock Android) + `boot-327-20260906.img`, `boot-20260907-013541.img` (current pre-#329) copied; `boot-20260910-134318.img` = the last nested-desktop boot (pre-GNOME-KMS, rollback point); **~85 further dated `boot-*.img`** | here (sel.) / legacy (bulk) | ✅ |
 | p23 | logo | 8 MiB | 0xc100000 | `logo.bin` (readback) | here | (boot logo) |
 | p24 | tee1 | 5 MiB | 0xc900000 | `android/tee1.img` | legacy | |
 | p25 | tee2 | 5 MiB | 0xce00000 | `android/tee2.img` | legacy | |
@@ -97,6 +97,7 @@ d8c80417585be1062d90ff7387fc5fbe0a9de282eb8a2c5eeb5b89561f6b9c85  boot.bin      
 c1d5d87386eaf2115f7b475dd742ad6a88f077cc4c1a676826cabbbc64fda179  nvram.bin             (IMEI — private)
 66c9e523c9a1a53e7bb4ea7e83c794203f2f8c6522ee61e927258873000ac27a  boot-327-20260906.img
 28ae68008155cf26e99ab07ea1190217b70d9cb66d5a021ae9fe1a6c09fe6e97  boot-20260907-013541.img  (pre-#329 current)
+959eded5d34cfeac8c0b8e95728f91948105558297c15946bb5641ef452e67e9  boot-20260910-134318.img  (last nested-desktop boot; KMS/GNOME rollback)
 7b4e3615d7be37e4bb311dcbf72e751449d752b31906e1d09e904b5aae576c4b  gpt-2026-08-30.txt
 ```
 

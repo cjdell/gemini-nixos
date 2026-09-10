@@ -5,6 +5,671 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10m — keyboard REALLY fixed (gemini was not in the xkb *registry*) + touch 180
+
+Follow-up to 2026-09-10l, which was necessary but not sufficient.
+
+### Keyboard — root cause: libgnome-desktop's XkbInfo could not find "gemini"
+
+Setting the dconf source to `[('xkb','gemini')]` and fixing the model
+did **not** change the keymap.  The missing piece:
+
+- GNOME Shell's `KeyboardManager` does not compile whatever the source
+  says.  It validates the source id through **libgnome-desktop's
+  `XkbInfo`** (`js/misc/keyboardManager.js`: `_xkbInfo.get_layout_info(id)`;
+  `getXkbInfo()` = `new GnomeDesktop.XkbInfo()`), and if the lookup
+  fails it silently uses `DEFAULT_LAYOUT = 'us'` — no warning, no journal
+  entry.
+- `XkbInfo` enumerates layouts with **libxkbregistry** (`rxkb`), which
+  reads only `rules/evdev.xml` from the xkb tree
+  (gnome-desktop 44.5 gnome-xkb-info.c:
+  `rxkb_context_new (RXKB_CONTEXT_NO_FLAGS)` + `rxkb_context_parse(ctx, "evdev")`).
+  `rxkb` does **not** read `XKB_CONFIG_EXTRA_PATH`, and "gemini" was in
+  no registry.  So the lookup always failed.
+- Receipts (before the fix): `xkbcli list | grep gemini` empty; a small
+  Wayland client (`bin/wl-keymap-dump.c`) dumping the keymap mutter sent
+  clients showed a plain **two-level US** map (`<AE01> = [1, !]`, no
+  level3, `RALT` not ISO_Level3_Shift).
+
+Fix (all in `services/gnome.nix` + a new package):
+
+- **`pkgs/gemini-xkeyboard-config.nix`** — a copy of the
+  `xkeyboard-config` tree (from `share/X11/xkb`; `etc/X11/xkb` is a
+  symlink, so `cp -rL`) with (a) `symbols/gemini` installed and (b) a
+  `<layout>` entry for gemini inserted into `rules/evdev.xml`.  Sanity
+  asserts in the derivation.
+- `XKB_CONFIG_ROOT = "${geminiXkeyboardConfig}/etc/X11/xkb"` in
+  `environment.sessionVariables` (replaces `XKB_CONFIG_EXTRA_PATH` for
+  GNOME).  Both `xkbcommon` and `rxkb` honour it, so mutter and
+  gnome-desktop see the same tree.
+- The 2026-09-10l dconf system-db lock (`sources=[('xkb','gemini')]`)
+  stays — it is what *selects* the layout.
+
+Verification (host + glass):
+
+- `XKB_CONFIG_ROOT=$(out)/etc/X11/xkb xkbcli list` → `- layout: 'gemini'`.
+- `xkbcli compile-keymap --layout gemini --model pc105 --rules evdev`
+  → `<AE01> = [ 1, !, |, F1 ]`, `<AE03> = [ 3, £, \, F3 ]` (4 levels).
+- On glass, after deploy+reboot: gnome-shell env has the new
+  `XKB_CONFIG_ROOT`, `gsettings …sources = [('xkb','gemini')]` (locked),
+  and **the keymap mutter hands clients is the gemini layout**:
+  `<AE01> symbols[1] = [0x31, 0x21, 0x7c, 0xffbe]` (1 ! | F1),
+  `<AE03> = [0x33, 0xa3, 0x5c, 0xffc0]` (3 £ \ F3),
+  `<RALT> = [0xfe03]` (ISO_Level3_Shift = the Fn key driving level3).
+  symbols[2] is the appended locale (us) group, as GNOME does; group 1
+  (index 0) is gemini.
+
+Tooling: added **`bin/wl-keymap-dump.c`** (build with
+`gcc $(pkg-config --cflags --libs wayland-client)`) — this is what made
+"the compositor still ships US" provable instead of guesswork.
+
+### Touch — raw portrait alone was 180 off; sensor is mounted 180° to the panel
+
+The 2026-09-10l change (drop the DT pre-rotation so the driver reports
+raw portrait + let mutter apply the panel-orientation transform) was the
+right direction, but on glass touch then landed **rotated 180**.
+
+Interpretation: mutter *is* applying the panel-orientation 90°
+rotation, and the display is correct, so the panel-orientation property
+is right for the output.  A 180° input error with a correct output means
+the **touch sensor is mounted 180° relative to the LCD panel** (they are
+independent parts).
+
+Fix: `touchscreen-inverted-x;` **+** `touchscreen-inverted-y;` in the
+DTS node — in the kernel helper that is `x = max_x - x; y = max_y - y`,
+a pure 180° rotation.  A 180 commutes with mutter's 90° rotation, so it
+cancels the error regardless of whether mutter picked T90 or T270.
+
+Build/identity:
+
+- boot.img (touch 180): `/nix/store/p6zpsb9byh5nad8ablflywgcjrriip9y-mobile-nixos_planet-geminipda_boot.img`
+  sha256 `0b176d934de6e97bda3b9089b9dda30ed105f0a0ca3748497e7ef725e1e7c0c6`,
+  DTB carries `touchscreen-size-x/y` + `touchscreen-inverted-x/y`.
+- toplevel (keyboard): `f5lpk3cnnj3hpifpnvm0kvgadmz4z5lq-nixos-system-gemini-26.11pre-git`,
+  built with `z56mjiwsgsllvn1ybznl230rqyhvpxak-gemini-xkeyboard-config-2026-09-10`.
+- Both deployed; `gemdemo` still **74 fps** (2026-09-10k perf fix intact),
+  0 failed units.
+- **CONFIRMED on glass by the user 2026-09-10m:** touch top-left lands
+  top-left, and the Fn layer / UK symbols type correctly.  All three
+  GNOME issues from the handover (perf, keyboard, touch) are closed.
+
+## 2026-09-10l — GNOME keyboard fixed (gemini layout was never selected) + touch handed to mutter's panel-orientation transform
+
+Two follow-ups from the user after the kworker fix: GNOME's keymap was
+wrong / Fn produced nothing, and touch was still rotated. Both traced to
+the same root: things the nested gemwl era set up are simply not what
+GNOME/mutter uses.
+
+### Keyboard — mutter ignores XKB_DEFAULT_LAYOUT; the layout comes from gsettings
+
+> **[corrected 2026-09-10m] This was NECESSARY BUT NOT SUFFICIENT.**
+> Setting the source to `[('xkb','gemini')]` and fixing the model did not
+> change the compiled keymap: GNOME Shell validates the source id against
+> the **xkb registry** (libgnome-desktop XkbInfo) and silently falls back
+> to 'us' when it is absent. The real fix (registering gemini in
+> `rules/evdev.xml` + `XKB_CONFIG_ROOT`) is in 2026-09-10m. The claims
+> below about gsettings/lock are accurate; the conclusion “keymap fixed”
+> was wrong on glass.
+
+Recipe (services/gnome.nix):
+- The session set `XKB_DEFAULT_LAYOUT=gemini` (and even an invalid
+  `XKB_DEFAULT_MODEL=gemini`), but mutter builds its keymap from the
+  gsettings `org.gnome.desktop.input-sources sources` list and ignores
+  the env. On glass it was `[('xkb', 'us')]` — hence US symbols and a
+  dead Fn/level3 layer (no F1–F12, no @ on Fn+K, no £). Receipts: mutter
+  50.4 `meta-keymap-native.c` hardcodes rules=evdev/model=pc105 and
+  `meta-keymap-description.c` uses the rules from the keymap description.
+- A stale per-user dconf value outranks a plain system default, so the
+  fix installs the source in a system dconf db **and locks it**:
+  `programs.dconf.profiles.user.databases = [{ settings = {"org/gnome/desktop/input-sources".sources = mkArray [mkTuple ["xkb" "gemini"]];}; locks = ["/org/gnome/desktop/input-sources/sources"]; }]`.
+- `XKB_DEFAULT_MODEL` corrected `gemini` -> `pc105` (the symbols file is
+  a `partial alphanumeric_keys` overlay, not a model).
+- Verified on glass after reboot: `gsettings get …sources` =
+  `[('xkb', 'gemini')]`, `gsettings writable …sources` = **false** (lock
+  took effect), and the generated system db reads back
+  `[('xkb', 'gemini')]`. `xkbcli compile-keymap --layout gemini --model
+  pc105 --rules evdev` succeeds. No xkb errors in the journal.
+
+### Touch — the kernel now reports raw portrait; mutter rotates it
+
+- Root cause: the DT pre-rotated the sensor to landscape
+  (`touchscreen-inverted-x` + `touchscreen-swapped-x-y`), but mutter
+  **also** applies the panel-orientation transform to absolute input:
+  `meta_monitor_manager_get_monitor_matrix()` computes the matrix
+  "corrected for LCD panel-orientation" (`meta-monitor-manager.c`), and
+  for `panel_orientation = Left Side Up` (connector prop value 2,
+  confirmed with modetest) `meta-kms-connector.c` maps it to
+  `TRANSFORM_90`, whose matrix is `{0,-1,1,1,0,0}` = `(x'=1-y, y'=x)`.
+  Pre-rotating as well double-rotates (the user's "rotated by 90").
+- Fix: removed `touchscreen-inverted-x` and `touchscreen-swapped-x-y`
+  from the DTS node (kept `touchscreen-size-x/y`), so the driver reports
+  the sensor's native frame. On glass the device now advertises
+  `ABS_MT_POSITION_X 0..1079`, `Y 0..2159` (portrait), where before it was
+  2159x1079.
+- The former transform was calibrated for the gemwl/nested stack, which
+  consumes the LK framebuffer directly and has no panel-orientation
+  handling; those desktops are force-disabled under GNOME.
+- **Pending on-glass confirmation** of the rotation direction: if it is
+  still off, the offset is a rotation and can be applied either with a
+  `LIBINPUT_CALIBRATION_MATRIX` udev rule (fast, no flash) or by adding
+  the matching inverted-x/inverted-y pair to the DT. [awaiting user]
+
+### Build/identity
+
+- boot.img (DT change): `/nix/store/81grjjhzwdhybjr7xivha1gf7y7saigv-mobile-nixos_planet-geminipda_boot.img`
+  sha256 `c5befa54e905b62f61c18c4492c033f816b9c8d4c735b472f80d24015d071ea9`
+  (flashed to p22, then `boot-nixos`).
+- toplevel (keyboard + module): `hd8kf8yhx52157hmfw779ra0cwlkrs15-nixos-system-gemini-26.11pre-git`
+  (deployed). 0 failed units after reboot.
+- No kernel .c logic changed this session (the touch driver change is a
+  comment; the previous entry's alpha-loop removal is already on glass).
+
+## 2026-09-10k — FOUND IT: the ~99 % kworker behind the sluggish GNOME is geminipda-drm's per-pixel alpha loop; removed (it was redundant — the XRGB→ARGB blit already writes 0xff)
+
+User added the decisive clue to the 2026-09-10j handover: **a kworker at
+~99 % CPU while scrolling the UI**. Live recon (gen
+`3w3xh4hwr52ynd50mn645nl8paiqpwi2-nixos-system-gemini-26.11pre-git`,
+kernel `ribq69k94rz3nl88p5vzmjd70d8h2z89-linux-6.6.0`, boot.img
+`1d2f350a…`) turned that into a proven, reproducible root cause. No
+blind guessing — this is the `file:line` + backtrace receipt.
+
+**Reproduction (no rebuild).** Ran `gemdemo` 0.3.0 (spinning triangle,
+`OpenGL ES 3.1 Mesa 26.2.2`, renderer `Mali-T880 (Panfrost)`) as a client
+of the running GNOME session:
+`runuser -u cjdell -- env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus <gemdemo-0.3.0>/bin/gemdemo`.
+Result: gemdemo logged **`6 fps`** and `top -H` showed
+**`kworker/u20:1+events_unbound` at 96–100 %**. The Mali *did* draw
+(renderer = Panfrost), so this was **not** a renderer fallback — the
+display-commit path was the bottleneck.
+
+**Which kworker / where.** While gemdemo ran:
+`echo l > /proc/sysrq-trigger` → `dmesg` backtrace (PID 56,
+`kworker/u20:1+events_unbound`):
+
+```
+geminipda_drm_primary_plane_helper_atomic_update+0x1f8/0x228 [geminipda_drm]
+drm_atomic_helper_commit_planes+0xf8/0x2e4 [drm_kms_helper]
+drm_atomic_helper_commit_tail+0x54/0xb4 [drm_kms_helper]
+commit_tail+0x180/0x20c [drm_kms_helper]
+commit_work+0x14/0x2c [drm_kms_helper]
+process_one_work+0x13c/0x278
+worker_thread+0x344/0x470
+kthread+0x110/0x114
+```
+
+The DRM atomic-commit work (system_unbound_wq) is running our shadow-plane
+`atomic_update`. The sample sits at `0x1f8/0x228` (~90 % through the
+function) — the **inlined per-pixel alpha loop**.
+
+**Root cause.** `geminipda_drm_force_alpha()` did
+`writeb(0xff, row + x*4 + 3)` for every pixel: 1080 × 2160 = **2.33 M
+barriered byte stores per full-screen update** (arm64 `writeb()` carries a
+`__iowmb()`/`dmb`), i.e. 2.33 M memory barriers in the commit worker every
+frame. That is why the worker never leaves the CPU and the compositor is
+throttled to ~6 fps. (A plain `modetest -v` page-flip hammer on a CPU
+RAM buffer showed the same worker at ~30 % — the GPU dma-buf sync added by
+GNOME/gemdemo accounts for the rest.)
+
+**…and the loop is redundant.** In the v6.6 DRM core,
+`drm_fb_build_fourcc_list()` replaces native alpha formats with non-alpha
+ones (`drm_fb_nonalpha_fourcc()`: ARGB8888 → XRGB8888, documented as
+"primary planes usually don't support alpha"). On-glass proof:
+`cat /sys/kernel/debug/dri/0/framebuffer` → gnome-shell's fb is
+`format=XR24 little-endian` (XRGB8888), `pitch[0]=4352`. Because
+`sdev->format` (the scanout) is ARGB8888, `drm_fb_blit()` takes its
+**XRGB8888 → ARGB8888 conversion path**
+(`drm_fb_xrgb8888_to_argb8888_line()`, `pix |= GENMASK(31,24)`), which
+writes the `0xff` alpha byte the OVL needs *during the copy*. The separate
+pass only re-wrote bytes that were already correct.
+
+**Fix (this entry).** Deleted `geminipda_drm_force_alpha()` and its call
+from `geminipda_drm_primary_plane_helper_atomic_update` in
+`devices/planet-geminipda/kernel/delta/drivers/gpu/drm/tiny/geminipda-drm.c`;
+rewrote the file-header bullet + an inline comment explaining that the
+blit's XRGB→ARGB conversion is the single source of the alpha byte, so it
+must not be reintroduced. No functional change. The kernel delta now
+diverges from fork rev `06fd13e11` by this one file (noted in the kernel
+derivation header).
+
+**Build/flash/verify results (this entry).**
+
+- **Artifacts:** boot.img
+  `/nix/store/zvr9lrjvidbdri6ziq0044xgmkaihb3d-mobile-nixos_planet-geminipda_boot.img`
+  sha256 `d649896e3e762efbc062d0a82a5163f65d2ff720cdb937e6c95918e22ee03846`
+  (9,986,048 B); toplevel
+  `/nix/store/1m7v0g75nyq6i31q5vl5qx4n6zsr50fg-nixos-system-gemini-26.11pre-git`.
+  New module
+  `0c83e11a82bd15a25e2e6a1614322f9c44577d6bb00cef05699dd6dc8a7e235d`
+  (404,832 B, down from 408,672 B).
+- **No boot.img flash needed (verified, not assumed):** the initrd has
+  only 35 entries and does **not** contain `geminipda-drm.ko`, and the
+  rebuilt `Image.gz` is byte-identical to the old one except 70 bytes of
+  embedded `/nix/store/…-linux-6.6.0` path strings (the `linux_banner`
+  is identical). A driver-module change therefore lives only in the
+  rootfs system closure — `bin/deploy.sh deploy` + reboot suffices. The
+  boot.img was still built (rule 0 identity) but was **not** flashed.
+- **A/B via hot-swap (before deploy):** `rmmod geminipda_drm; insmod
+  /tmp/geminipda-drm-new.ko` on the running system (display-manager
+  stopped) — `gemdemo` went **6 fps → 73 fps** and the commit worker
+  from ~99 % to ~65 %.
+- **Cold-boot proof:** rebooted with `bin/device-reboot.sh`; the deployed
+  system closure loads module `0c83e11a…` (sha compared), `gemdemo`
+  reports **64–65 fps**, commit worker ~40–77 % (vs 6 fps / 99 % before).
+- **Remaining cost is legitimate:** sysrq-l backtraces now show
+  `drm_fb_xrgb8888_to_argb8888_line` → `__drm_fb_xfrm_toio` →
+  `drm_fb_blit` → `atomic_update` — i.e. the XRGB→ARGB conversion that
+  writes the alpha byte, which is required. Follow-up idea (not done): a
+  driver-local single-pass blit (read the cached shadow buffer, OR
+  `0xff000000`, `writel` to the WC scanout) would skip the generic
+  helper's intermediate `stmp` line-buffer copy; possibly ~2× less
+  commit CPU. Not needed for responsiveness.
+- **Mesa-mix hypothesis demoted:** since responsiveness is restored by
+  the kworker fix alone, the two-Mesa-versions concern from 2026-09-10j
+  is unlikely to be the bottleneck — confirm `GL_RENDERER`/maps before
+  attempting the Mesa 26 rebase.
+
+**Tooling fix (2026-09-10k).** While touching the delta, found that the
+built delta **diverges from fork rev `06fd13e11` in four files**: the
+DRM/KMS work was added directly to the delta — delta-only
+`drivers/gpu/drm/tiny/{geminipda-drm.c,Kconfig,Makefile}`, plus a
+modified `arch/arm64/boot/dts/mediatek/mt6797-gemini-pda.dts`
+(`planet,geminipda-drm` node). `bin/sync-kernel-delta.sh` did
+`rm -rf delta` first, so a routine sync would have **silently deleted
+the DRM driver and the DTS node — breaking GNOME**. Added a pre-flight
+divergence guard: the script now lists the diverged files and aborts
+unless `FORCE=1`; also updated its stale default rev `188aade69` →
+`06fd13e112b23c5b2b4a9310af633cd27c14c57f`. Receipt: running it now
+prints exactly those four files and exits without touching the delta.
+
+## 2026-09-10j — GNOME on glass: user reports sluggish UI + 90°-rotated touch; recon + handover written
+
+User confirmed GNOME runs with the **correct orientation**, but reported
+(1) the UI is **very sluggish, feels like software rendering** and (2) the
+**touchscreen is rotated 90°** (left edge activates the right of the UI).
+No code changed this entry — live recon + a handover so the next session
+starts with a diagnosis.
+
+**Recon (live device, gen `3w3xh4w…`):**
+- **Sluggishness — the gnome-shell process has TWO Mesa versions mapped:**
+  `libgallium-26.2.2.so` ×6 (`mesa-26.2.2`, what mutter/gnome-shell 50.4
+  link) **and** `libgallium-25.0.7.so` ×4 (the `mesa-geminipda` fork, via
+  `/etc/glvnd/egl_vendor.d/50_mesa.json` →
+  `…-mesa-geminipda-25.0.7/lib/libEGL_mesa.so.0`), plus split
+  `mesa-libgbm-26.1.3`. Root cause hypothesis: the mixed GL/GBM stack
+  degrades the kmsro path. **panfrost is idle** meanwhile:
+  `runtime_status=suspended`, `active_time=78059 ms` vs
+  `suspended_time=667252 ms` of 12 min — the UI is not being drawn on the
+  Mali. (kmsro itself is proven good: `kmscube` with the fork env on card0
+  → `Mali-T880 (Panfrost)`.) No llvmpipe/softpipe string in the journal,
+  so the fallback is silent.
+- **Mesa fork patch audited** (`patches/mesa-panfrost-geminipda-25.0.7.patch`,
+  272 lines/5 files): only **two functional hunks** — `pan_screen.c`
+  `caps->dmabuf = IMPORT|EXPORT` (needed for GBM/dma-buf) and
+  `pan_cmdstream.c` **whole-polygon-list CPU memset each batch** (a real
+  **T880 tiler workaround**; `PAN_NO_POLYLIST_MEMSET=1` restores upstream
+  as an oracle). Everything else is env-gated debug (`PAN_TILERDBG`,
+  `PAN_TILER_MASK`, `PAN_DUMP_POLYLIST`, `PAN_POLYLIST_FRESH`,
+  `PAN_FLUSH_POLYLIST`, `PAN_MESA_TILER_HEAP_CPU`). So the fix is to make
+  ONE Mesa carry these (rebase to the pinned mesa 26.2.2), not to drop the
+  fork.
+- **Touch:** device = `Novatek NT36772 Touchscreen` (`event0`); kernel
+  driver `novatek-nt36xxx.c` documents native **portrait 1080×2160** and a
+  DT-driven transform to landscape **`X'=y, Y'=1080-x`** (tuned for gemwl).
+  Board DTS sets `touchscreen-inverted-x` + `touchscreen-swapped-x-y`.
+  Under GNOME the DRM mode is portrait with `panel orientation = Left Side
+  Up` and mutter rotates the output; grepping mutter 50.4's
+  `meta-input-*.c`/`meta-seat-impl.c` finds **no** panel-orientation input
+  handling, so the touch mapping must come from the device space and the
+  gemwl-era transform is now off by the panel orientation.
+
+**Handover written:** `docs/handover-2026-09-10-gnome-perf-touch.md` —
+root-cause hypotheses, the single-Mesa fix (rebase the fork onto mesa
+26.2.2 and make every process resolve to it; quick experiment = force the
+fork as the only GL), the touch calibration plan (measure with
+`libinput`/`evtest`, iterate live via a `LIBINPUT_CALIBRATION_MATRIX` udev
+rule, then bake the winner into the `cap_touch@62` DT props and reflash),
+the tooling/env patterns that worked, and a definition-of-done. Device left
+untouched.
+
+**Next:** follow the handover; confirm the in-session `GL_RENDERER` first
+(it should be Panfrost, not llvmpipe) — that one measurement decides
+whether the sluggishness is the Mesa mix or something in mutter's selection.
+
+## 2026-09-10i — ON GLASS: GNOME is the default desktop, GPU-accelerated (kmsro → panfrost); KMS boot.img flashed and verified
+
+User: "proceed with the recommended path, test on the device." DONE — the
+kmsro path from 2026-09-10h was implemented, flashed and verified on
+hardware.
+
+**Version line (golden rule 0).**
+- Kernel: `/nix/store/ribq69k94rz3nl88p5vzmjd70d8h2z89-linux-6.6.0` —
+  published v6.6 base + delta (fork rev `06fd13e11`) + new
+  `drivers/gpu/drm/tiny/geminipda-drm.c`; `DRM_GEMINIPDA=m`,
+  `DRM_KMS_HELPER=m`.
+- boot.img: sha256 `1d2f350a794f55cc828132c42a0696952207a04ae9ba2a8ef81fbc11a0a7be82`
+  (9,986,048 B); embeds `Image.gz` + the DTB with `planet,geminipda-drm`
+  (verified by extracting both and `cmp`-ing against the new kernel).
+- Toplevels: gen65 `8wj3h24m…` (KMS kernel, nested desktop still default),
+  then **gen66 `3w3xh4hwr52ynd50mn645nl8paiqpwi2-nixos-system-gemini-26.11pre-git`
+  = GNOME default**. Mesa fork `mfqyzn3rz6i2w5hliz5w8jr5vylk8h3m-mesa-geminipda-25.0.7`.
+  GNOME/mutter/gnome-shell **50.4**.
+
+**Sequence.** Built toplevel+bootimg (cached+remote builder) → deploy
+`bin/deploy.sh deploy` (gen65) → `bin/flash-nixos.sh boot <img>` (converged
+to TWRP, **backed the old boot up** to
+`stock-dump/boot-20260910-134318.img`, flashed `boot`, stayed para =
+`boot-recovery`) → `bin/flash-nixos.sh boot-nixos` (para clear + reboot) →
+new kernel came up on g_ether in ~1 min.
+
+**On-glass results (all confirmed):**
+- `/dev/dri/card0` = geminipda-drm, `/dev/dri/card1` = panfrost,
+  `/dev/dri/renderD128`. Driver bound: `[drm] Initialized geminipda-drm
+  … on minor 0`; `card0-DSI-1` present.
+- `drm_info`: connector DSI **`Status: connected`**, mode
+  **`1080×2160@60.00 preferred driver`**, immutable
+  **`panel orientation … = Left Side Up`**, dumb buffers + PRIME +
+  modifiers supported. debugfs: `crtc[33]: crtc-0 active=1`,
+  `mode: "1080x2160": 60 …`, `connector[35]: DSI-1 crtc=crtc-0`,
+  `crtc-pos=1080x2160+0+0`.
+- **kmsro pairing (the make-or-break):** `kmscube` (fork mesa env:
+  `LD_LIBRARY_PATH`, `LIBGL_DRIVERS_PATH`, `GBM_BACKENDS_PATH`) on card0 →
+  `OpenGL ES 3.1 Mesa 25.0.7` / **`renderer: "Mali-T880 (Panfrost)"`**.
+  GPU acceleration proven, no software fallback.
+- **GNOME session:** `services.gnomeDesktop.enable = true` deployed (gen66).
+  Journal: `Added device '/dev/dri/card0' (geminipda-drm) using atomic
+  mode setting`; `Created gbm renderer for '/dev/dri/card0'`;
+  `GPU /dev/dri/card0 selected primary from builtin panel presence`;
+  gnome-shell holds **both** `/dev/dri/card0` and `/dev/dri/renderD128`
+  open (the kmsro pair). `Failed to open gpu '/dev/dri/card1': No suitable
+  mode setting backend found` is correct/harmless (panfrost has no
+  `DRIVER_MODESET`). No llvmpipe/swrast/software-rendering warnings.
+- **Unattended boot:** `systemctl reboot` → device back in ~48 s with
+  `display-manager` **active** and gnome-shell auto-logged in as `cjdell`.
+  `systemctl --failed` = **0 units**. gemwl/phosh-nested/lxqt-nested all
+  inactive (force-disabled, as designed).
+- GNOME apps present on PATH (gnome-calculator/calendar/maps/clocks/
+  weather/contacts/papers/loupe/gnome-text-editor).
+
+**Correction carried forward:** 2026-09-10h's "software-rendered" finding
+was wrong; the live device confirms the opposite (see the doc).
+`services.gnome.nix` `softwareRendering` stays **false**.
+
+**Caveats / follow-ups (none block daily use):**
+- No X server runs (Wayland-native). Mutter advertises
+  `Using public X11 display :0`; Xwayland starts only on demand, so no
+  X11 process is active. Compiling mutter with `xwaylandSupport = false`
+  is possible (overlay; rebuilds gnome-shell) if the letter of "no
+  Xwayland" is required — not needed for function.
+- Geolocation portal gap: `No entry for geolocation` — Maps/Weather cannot
+  place you until a geoclue location agent exists (gnome-shell normally
+  provides one; something in this image does not register it).
+- No camera (`Failed to start camera monitor`) — hardware, Snapshot can't
+  work. Benign noise: "Failed to obtain high priority context",
+  `g_close(fd:0) EBADF`, dbus "Ignoring duplicate name".
+- Minor driver cleanups for next kernel build (cosmetic, not urgent):
+  use `fb->format` instead of `sdev->format` in the plane's
+  `atomic_update` (commented as intentional); consider returning the
+  `drm_fbdev_generic_setup` value; the `struct copy` from `DRM_MODE_INIT`
+  is fine as written.
+- Delta/fork divergence (unchanged from 2026-09-10g): the delta is the
+  source of truth; the legacy fork is still at `06fd13e11`.
+- DR ledger: new boot backup `stock-dump/boot-20260910-134318.img`
+  (pre-GNOME boot) — inventory note pending.
+
+**Next:** user to confirm the visual result (orientation/colours/fonts).
+If good, GNOME is the everyday desktop; the nested gemwl/phosh/LXQt stack
+remains as a buildable fallback (set `services.gnomeDesktop.enable = false`
+and re-deploy, no reflash needed since the kernel still carries
+`FB_GEMINIPDA`).
+
+## 2026-09-10h — CORRECTION: GNOME on the Gemini PDA IS GPU-accelerated (Mesa kmsro); no software rendering
+
+User pushed back on 2026-09-10g's conclusion that GNOME would be
+software-rendered: "software rendering is not acceptable. what are our
+options?" Re-investigating from source showed the conclusion was WRONG,
+and the `softwareRendering = true` default it produced (which sets
+`LIBGL_ALWAYS_SOFTWARE=1`) would have actively defeated the correct path.
+
+**Corrected mechanism (all source receipts re-verified 2026-09-10):**
+
+1. **Panfrost owns a card node.** `ls -l /dev/dri` on the live PDA shows
+   `card0` (226,0) AND `renderD128` (226,128), both panfrost. Panfrost is
+   `DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ` (no `DRIVER_MODESET`),
+   but the kernel's `drm_dev_register()` (`drivers/gpu/drm/drm_drv.c`)
+   still allocates + registers the PRIMARY minor for a non-accelerator
+   DRM device. So mutter (which enumerates only `/dev/dri/card*` in
+   default mode, `meta-backend-native.c` `init_gpus()`) DOES see panfrost.
+   My earlier "panfrost is invisible to mutter" was false.
+2. **kmsro is already in our mesa fork.** `pkgs/mesa-geminipda.nix`
+   auto-enables kmsro whenever panfrost is enabled (mesa `meson.build`:
+   `with_gallium_kmsro = system_has_kms_drm and gallium_drivers.contains
+   (true)`), and the built `libgallium-25.0.7.so` exports
+   `kmsro_drm_screen_create`, `panfrost_drm_screen_create_renderonly` and
+   `pipe_kmsro_create_screen` (grep of the store path, 2026-09-10). kmsro
+   exists exactly for this: Mali is 3D-only, so Mesa pairs it with a
+   display controller.
+3. **Mesa's pipe-loader falls back to kmsro for unknown KMS names.**
+   `pipe_loader_drm_probe_fd_nodup()` calls `get_driver_descriptor(name)`,
+   and on failure `get_driver_descriptor("kmsro")` ("kmsro supports lots
+   of drivers, try as a fallback") — `src/gallium/auxiliary/pipe-loader/
+   pipe_loader_drm.c`; reached by `dri2_init_screen()`
+   (`src/gallium/frontends/dri/dri2.c`).
+4. **kmsro pairs platform display devices with platform render devices.**
+   `kmsro_drm_screen_create()` →
+   `pipe_loader_get_compatible_render_capable_device_fds()` pairs any
+   PLATFORM display-only device with a platform render driver
+   (`loader_open_render_node_platform_devices([panfrost, panthor, …])`).
+   Our `geminipda-drm` is a DT platform device. Mesa EGL also calls it
+   directly: `dri_query_compatible_render_only_device_fd()`
+   (`platform_drm.c:get_fd_render_gpu_drm()`).
+5. **Net:** EGL on `geminipda-drm` is a panfrost-backed renderonly screen,
+   `GL_RENDERER = Mali-T880 (Panfrost)`. Mutter's `meta-render-device.c`
+   marks a device hw unless `GL_RENDERER` starts with
+   llvmpipe/softpipe/swrast, and `choose_primary_gpu_unchecked()` prefers
+   a GPU with a connected built-in panel AND hw rendering → picks
+   `geminipda-drm` as primary and renders via panfrost. **GPU-accelerated
+   GNOME, no nesting, no bespoke compositor.**
+
+**Changes made to match the correction:**
+- `services/gnome.nix`: `softwareRendering` **default changed true →
+  false**; the option is now documented as a DEBUG fallback only, and the
+  description carries the kmsro mechanism. (Left the option itself so a
+  session can still be forced up if the pairing fails on glass.)
+- `docs/gnome-feasibility.md`: the "software-rendered by construction"
+  section replaced with the kmsro finding + receipts; the stale
+  "no such card / panfrost is a render-only node" text and the old
+  "render split is the main unknown" plan bullet corrected; on-glass
+  checklist gained **step 2b** (verify `GL_RENDERER` == Mali-T880, not
+  swrast) and a new **"Options if the kmsro pairing does not hold"**
+  section (pairing-inputs fix → explicit kmsro name/alias in the fork →
+  mutter secondary-GPU path → real mediatek-drm → llvmpipe debug).
+- Kernel artifacts from 2026-09-10g are unchanged and still valid
+  (driver/boot.img build fine; the KMS device is the prerequisite for
+  either path).
+
+**Remaining honest risk:** the kmsro runtime sharing
+(`panfrost_create_kms_dumb_buffer_for_resource` allocating a dumb buffer
+on the shmem `geminipda-drm` card and importing it into panfrost) is
+source-plausible but unproven on glass. That is exactly what checklist
+step 2b checks. No software work is needed before flashing the already
+built boot.img.
+
+## 2026-09-10g — STANDARDS-COMPLIANT KMS DEVICE: `geminipda-drm` driver + NixOS GNOME desktop (built, eval-verified; not flashed)
+
+User directive (following 2026-09-10f): "make the kernel stack appear to
+userspace as a typical Linux machine (or as close as possible) … Then get
+GNOME running." Approved the DRM/KMS route, so this session IMPLEMENTED it
+(the previous entry only documented it).
+
+**Kernel: `geminipda-drm`, a DRM/KMS driver for the LK framebuffer.** New
+delta `devices/planet-geminipda/kernel/delta/drivers/gpu/drm/tiny/`:
+`geminipda-drm.c` + `Kconfig` (full base tiny Kconfig + `DRM_GEMINIPDA`)
++ `Makefile`. Modelled on upstream `simpledrm` (v6.6 source read for the
+exact APIs: shadow planes, `drm_fb_blit(&dst,&pitch,fmt,src,fb,clip)`,
+`drm_fb_clip_offset`, `drm_connector_set_panel_orientation`). Design:
+- binds new DT node `planet,geminipda-drm` (added to the board DTS next to
+  `planet,geminipda-fb`); geometry from `/chosen` `atag,videolfb` with the
+  same parser as geminipda-fb.c;
+- one CRTC + one **shadow primary plane** (GEM buffer blitted into the LK
+  scanout memory each atomic update — the "render on panfrost, copy into
+  the OVL region" model, in-kernel; no CPU render, no panel re-init);
+- **DSI** connector (mutter's `meta_output_info_is_builtin()` treats DSI
+  as a built-in panel) + fixed mode 1080x2160, stride 4352, ARGB8888;
+- standard **panel orientation** property, default **Left Side Up = 90**,
+  module param `panel_orientation` (0..3). Receipt: mutter 50.4
+  `meta-kms-connector.c` maps LEFT_UP→MTK_MONITOR_TRANSFORM_90 and
+  `calculate_view_transform()` renders the rotation in the compositor
+  because our CRTC advertises no HW rotation — i.e. the same transform
+  gemwl uses with `-t 90`, but standard. This AVOIDS needing kernel
+  rotation.
+- after each blit, force the alpha byte to `0xff` (the `ARGB8888 renders
+  BLACK` receipt in `pkgs/gemwl/gemwl.c`).
+
+Config pipeline: `bin/prune-kernel-config.sh` section 4 now keeps
+`DRM_GEMINIPDA|KMS_HELPER` and new section 9b emits
+`CONFIG_DRM_GEMINIPDA=m` + `CONFIG_DRM_KMS_HELPER=m` (DRM itself is `=m`,
+so the driver is a module; udev autoloads it from the DT modalias).
+Regenerated `kernel/config`. Rule-5 gate in `kernel/default.nix` still
+passes (no mediatek-drm/mtk-mmsys/DSI-PHY). `FB_GEMINIPDA` stays enabled,
+so the SAME kernel still supports gemwl/phosh/LXQt — one desktop stack at
+a time (rollback preserved).
+
+**Userspace: `services/gnome.nix`** (`services.gnomeDesktop.enable`,
+**default false**). Uses the ORDINARY NixOS modules —
+`services.desktopManager.gnome` + `services.displayManager.gdm` +
+autologin — not a bespoke session (this is the point of the KMS work).
+Force-disables gemwl/phosh/LXQt (mutually exclusive), keeps the repo's
+custom PipeWire (`services.pipewire.enable = lib.mkForce false`; GNOME's
+pipewire definition collided with nixpkgs alsa.nix and would have started
+a second `pipewire.service`), and loads panfrost after
+`gemini-gpu-poweron` (gemwl used to own that step). Imported from
+`config/gemini.nix`.
+
+**Verification done here (no hardware):**
+- kernel derivation evaluates: `
+  nix eval .#nixosConfigurations.gemini.config.mobile.boot.stage-1.kernel.package.drvPath`
+  → `/nix/store/nc7mzs5j2ncr036y02jiywm11np1yr02-linux-6.6.0.drv`
+  (rule-5 assert passes).
+- full kernel **build succeeded** on the remote aarch64 builder
+  (192.168.49.191) via `bin/run-job.sh`:
+  `/nix/store/ribq69k94rz3nl88p5vzmjd70d8h2z89-linux-6.6.0` (403 s).
+  Verified in the output: `lib/modules/6.6.0/kernel/drivers/gpu/drm/tiny/
+  geminipda-drm.ko` (modinfo: `of:N*T*Cplanet,geminipda-drm`,
+  parm `panel_orientation`; depends `drm_kms_helper,drm,drm_shmem_helper`,
+  all present + in `modules.dep`); `dtbs/mediatek/mt6797-gemini-pda.dtb`
+  carries `planet,geminipda-drm` (and the old `planet,geminipda-fb`).
+  First build attempt failed on two v6.6 API details, both fixed:
+  `drm_atomic_get_new/old_plane_state` + `drm_plane_helper_atomic_check`
+  needed `drm_atomic.h`/`drm_plane_helper.h`; and `.remove` must return
+  `int` in v6.6 (not `void`).
+- **boot.img built**: `
+  /nix/store/j7z4v7lcy36c9c7znm9fw7qx6g6wgcqp-mobile-nixos_planet-geminipda_boot.img`
+  (9,986,048 B / 9.52 MiB; kernel 7.66 MiB + ramdisk 1.86 MiB; fits the
+  16 MiB partition). sha256 `1d2f350a794f55cc828132c42a0696952207a04ae9ba2a8ef81fbc11a0a7be82`.
+  cmdline carries the mandatory `bootopt=64S3,32N2,64N2` + the verified
+  console params (dumped with `bin/dump-bootimg-header.sh`). No
+  `geminipda-drm.panel_orientation=` override → default 90 (left-up).
+  **Not flashed.**
+- system config with GNOME enabled evaluates green:
+  `nixos-system-gemini-26.11pre-git.drv` (temporary `default = true`
+  eval, then restored); the renamed option warning fixed to
+  `services.desktopManager.gnome.enable`.
+- GNOME app suite entry from 2026-09-10f unchanged (eval-green).
+
+**NOT done / important caveats:**
+- **Nothing flashed.** `services.gnomeDesktop.enable` stays false until the
+  KMS boot.img is on the device (two-step; on-glass checklist in
+  `docs/gnome-feasibility.md`). Booting this rootfs on a kernel without
+  `geminipda-drm` gives no session.
+- **Delta workflow divergence:** the driver + Kconfig/Makefile were added
+  DIRECTLY to the tracked delta (now the source of truth per
+  `bin/sync-kernel-delta.sh`'s own header). The legacy fork is still at
+  `06fd13e11`, so `base+delta != rev` and a future `sync-kernel-delta.sh`
+  would need the fork fast-forwarded (or the rev treated as the last
+  synced point). The script already documents the delta as authoritative.
+- Xwayland: nixpkgs' mutter is built with it; it is lazy (no X client →
+  not started). A `-Dxwayland=false` mutter build would remove it if
+  wanted. Documented in `services/gnome.nix`.
+
+**Next:** (1) `bin/flash-nixos.sh boot` with the new boot.img (sha256
+`1d2f350a…`, 9.52 MiB), keeping para = `boot-recovery`; (2) confirm
+`/dev/dri/card0` + `card0-DSI-1` + panel orientation on glass;
+(3) set `services.gnomeDesktop.enable = true` and deploy the rootfs;
+(4) verify rotation (try `panel_orientation=3` if wrong), colors (alpha),
+touch, audio. **Expectation to check first on glass:** mutter 50.4
+`meta-backend-native.c` enumerates only `/dev/dri/card*` in default mode,
+so panfrost (renderD128, render-only) is invisible to it; the only card is
+the shmem `geminipda-drm`, so GNOME will select it via the software
+fallback and render with llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1` set by the
+module). I.e. GNOME = correct but software-rendered; GPU acceleration
+stays with gemwl/phosh.
+
+## 2026-09-10f — VANILLA GNOME request: documented as a KMS project (not a config flip); GNOME app suite installed
+
+Task: user asked to make vanilla GNOME the default desktop (Phosh is
+WIP) and install the supporting GNOME apps (calc/maps/calendar/…) — with
+the explicit constraint "No X11 or Xwayland. Phosh is essentially built
+on GNOME so it should be possible".
+
+**Finding (read-only research; NOTHING flashed/deployed).** Vanilla
+GNOME cannot run on this device's current stack, and it is not a Phosh-
+style missing-protocol problem:
+
+- The pinned nixpkgs' `mutter`/`gnome-shell` are **50.4** (receipt:
+  `nix eval .#nixosConfigurations.gemini.pkgs.{mutter,gnome-shell}.version`).
+  Extracted the mutter source the same way
+  (`nix build .#…pkgs.mutter.src` → `mutter-50.4.tar.xz`) and read it:
+  `src/backends/` has **no `x11/` directory**, and there are **no**
+  `META_TYPE_BACKEND_X11` / `BACKEND_X11_NESTED` / `x11_nested` matches
+  anywhere in `src/`. `src/core/meta-context-main.c` implements only the
+  native (KMS) backend and `--headless`; there is no `--nested`. (GNOME 49
+  disabled X11 by default; GNOME 50 removed it — Phoronix/heise.)
+- `src/backends/native/` is all `meta-crtc-kms.c` / `meta-gpu-kms.c` /
+  `meta-drm-buffer-*.c` — the native backend needs a `/dev/dri/cardN`
+  KMS pipeline + GBM. This device has none: `geminipda-fb.c` exposes the
+  LK framebuffer as fbdev `/dev/fb0` (+ `/dev/gemfb` dma-buf) and
+  panfrost is **render-only** (`/dev/dri/renderD128`).
+- "Phosh is built on GNOME" is true of the *toolkit/apps*, not the
+  session: Phosh is a GTK4/libadwaita shell **client** over its own
+  wlroots compositor (`phoc`), so it nests in gemwl. GNOME Shell **is**
+  the compositor (mutter); it has no Wayland-client backend, so it can
+  never be a gemwl client — that is the whole difference.
+
+**Shipped (safe part):** new `services/gnome-apps.nix`
+(`services.geminiGnomeApps.enable`, default true) → system-profile GNOME
+apps (gnome-calculator/calendar/maps/clocks/weather/contacts/characters/
+text-editor/system-monitor/disk-utility/connections/usage/baobab/seahorse/
+file-roller/papers/loupe/snapshot/screenshot/console) plus
+adwaita-icon-theme, gsettings-desktop-schemas, gnome-online-accounts and
+`services.geoclue2`. They are ordinary Wayland clients and show up in
+Phosh's or LXQt's app grid. Imported from `config/gemini.nix`.
+**Eval-green**: `nix eval .#nixosConfigurations.gemini.config.system.build.toplevel.drvPath`
+→ `/nix/store/60x682qn2g9926nr7hscy4pr7q86ib5f-nixos-system-gemini-26.11pre-git.drv`
+(2026-09-10; new files `git add`-ed so the flake sees them). No desktop
+default was changed, no kernel/boot change, nothing flashed.
+
+**Documented the real path:** `docs/gnome-feasibility.md` — expose the LK
+framebuffer as a DRM/KMS device. The in-tree `simpledrm` (v6.6) is the
+template: it binds a `simple-framebuffer` platform device, uses
+`DRM_GEM_SHADOW_PLANE_HELPER_FUNCS` and blits a GEM buffer into the fixed
+firmware region (`screen_base`) every atomic update — exactly the "render
+on panfrost, copy into the LK OVL region" model, in-kernel. Plan: enable
+`DRM_KMS_HELPER`/`DRM_SIMPLEDRM`/`DRM_FBDEV_EMULATION`, register the
+region from the existing `geminipda_fb_get_geometry()` parser, then a
+hand-rolled GNOME session (logind seat + gnome-session/gsd/portals — the
+current desktops are logind-less systemd system services, so GNOME's
+session model does not drop in). Risks: rule 5 (display path — on-glass
+only, rollback kept); the render-only panfrost + KMS `simpledrm` split is
+the main unknown (mutter primary-GPU selection). Retiring gemwl is the
+end state. **Deliberately NOT started** without explicit go-ahead, per
+rule 5.
+
+Next: (a) decide whether to start the KMS/GNOME project; (b) if Phosh's
+WIP status is the real blocker, consider flipping the default to LXQt in
+the meantime (one-line option change); (c) the app-service gaps (geoclue
+has no shell-side location agent; GOA needs a session manager) are noted
+in the doc.
+
 ## 2026-09-10e — REBOOT/POWEROFF FIXED: mt6797-power delta driver on glass (reboot self-boots, poweroff turns the unit off); one boot-loop gotcha
 
 Task: implement the 2026-09-10d design and make `systemctl reboot` /

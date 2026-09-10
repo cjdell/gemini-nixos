@@ -169,6 +169,14 @@
       # (xkbcli compile-keymap --layout gemini -I <dir>).
       geminiXkb = eval.pkgs.callPackage ./pkgs/gemini-xkb.nix { };
 
+      # gemini-xkeyboard-config — full xkeyboard-config tree with the gemini
+      # layout registered in rules/evdev.xml, so libgnome-desktop's XkbInfo
+      # (libxkbregistry) can find it and GNOME Shell actually selects it.
+      # Wired into GNOME via XKB_CONFIG_ROOT (services/gnome.nix). Standalone
+      # for checks: XKB_CONFIG_ROOT=$out/etc/X11/xkb xkbcli list.
+      geminiXkeyboardConfig =
+        eval.pkgs.callPackage ./pkgs/gemini-xkeyboard-config.nix { };
+
       # gemcli — Rust device-control CLI (backlight/battery/A72/WDT/boot/
       # GPU/speaker; script-parity ports, see docs/gemcli.md). In the rootfs
       # closure via services/gemini-pda.nix; standalone for builds/checks.
@@ -229,6 +237,7 @@
         phosh   = phosh;   # 0.54.0 mobile shell (nixpkgs, nested on phoc)
         squeekboard = squeekboard; # OSK for phosh (sm.puri.OSK0)
         gemini-xkb = geminiXkb; # xkb layout include dir (XKB_CONFIG_EXTRA_PATH)
+        gemini-xkeyboard-config = geminiXkeyboardConfig; # + registry entry (XKB_CONFIG_ROOT, GNOME)
         # Rust device-control CLI (script-parity ports; in the rootfs via
         # services/gemini-pda.nix — standalone build/iteration target).
         gemcli = gemcli;

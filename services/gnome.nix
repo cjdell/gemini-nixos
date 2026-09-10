@@ -1,0 +1,198 @@
+# Vanilla GNOME on the Gemini PDA — the standards path.
+#
+# This is the desktop that becomes possible once the LK framebuffer is a
+# real DRM/KMS device (devices/planet-geminipda/kernel/delta/drivers/gpu/
+# drm/tiny/geminipda-drm.c -> /dev/dri/card0).  With a normal KMS device
+# there is no reason to hand-roll a session: this module uses the
+# ORDINARY NixOS GNOME modules (services.xserver.desktopManager.gnome +
+# GDM), exactly as on a laptop.  That is the whole point of the KMS work —
+# no bespoke compositor, no nesting, and future GNOME releases keep
+# working.
+#
+# Relationship to the nested desktops (services/{desktop,phosh,lxqt}.nix):
+#   gemwl + phosh/lxqt own the raw LK framebuffer through /dev/gemfb and
+#   present a nested Wayland session.  GNOME needs the whole screen and a
+#   logind seat, so it REPLACES that stack: this module force-disables
+#   gemwl and the nested sessions.  The two modes are mutually exclusive
+#   by construction; enable exactly one.
+#
+# Why GNOME is off by default: it needs /dev/dri/card0, i.e. the
+# geminipda-drm module in a NEW boot.img.  Booting this config on a kernel
+# without that driver gives no session at all.  So the switch is a
+# deliberate two-step (flash the KMS boot.img, confirm card0, then set
+# services.gnomeDesktop.enable = true) — see docs/gnome-feasibility.md.
+#
+# X11/Xwayland: the session is Wayland-native.  GNOME 50's mutter has no
+# X11 backend at all (the X11 and nested backends were removed), so no
+# Xorg is used; Xwayland is built into nixpkgs' mutter but is only
+# started on demand for X clients, of which this image has none.  (A
+# mutter built with -Dxwayland=false would remove it outright; not done
+# here because the pinned nixpkgs' mutter is shared with the pinned GNOME
+# packages.)
+#
+# GPU: panfrost is blacklisted at boot (services/gemini-pda.nix) because
+# an early probe on the un-powered Mali soft-resets.  In the nested stack
+# gemwl.service loads it in ExecStartPre; with gemwl disabled this module
+# owns that step, ordered after gemini-gpu-poweron and before GDM.
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.services.gnomeDesktop;
+  utils = pkgs.callPackage ./gemini-utils.nix { };
+  # Full xkeyboard-config tree with the gemini layout registered in
+  # rules/evdev.xml — required for GNOME to *find* the layout (see the
+  # package header); the plain gemini-xkb include dir alone only makes it
+  # compilable, which is not enough for GNOME Shell.
+  geminiXkeyboardConfig = pkgs.callPackage ../pkgs/gemini-xkeyboard-config.nix { };
+in
+{
+  options.services.gnomeDesktop = {
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      # OFF until the geminipda-drm KMS boot.img is on the device — see
+      # the header. Flipping it on is the actual "GNOME as the desktop"
+      # switch.
+      default = false;
+      description = ''
+        Run the standard NixOS GNOME desktop (services.xserver.
+        desktopManager.gnome + GDM, Wayland, autologin) on the
+        geminipda-drm KMS device. Requires a boot.img whose kernel
+        provides /dev/dri/card0 (the geminipda-drm delta driver); a
+        kernel without it yields no session. Mutually exclusive with the
+        nested gemwl/phosh/LXQt stack, which it force-disables.
+      '';
+    };
+
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "cjdell";
+      description = ''
+        User to auto-login into the GNOME session (the device's desktop
+        user, config/gemini.nix users.users.cjdell).
+      '';
+    };
+
+    softwareRendering = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Force Mesa's software rasteriser (llvmpipe) for the whole session.
+        DEBUG FALLBACK ONLY — normally leave this off.
+
+        The Gemini PDA displays through two DRM devices: panfrost
+        (/dev/dri/card0 + renderD128; the Mali GPU, no display) and
+        geminipda-drm (/dev/dri/cardN; the LK framebuffer as KMS, no GPU).
+        Mesa's kmsro layer is compiled into pkgs/mesa-geminipda.nix (it is
+        auto-enabled because panfrost is a renderonly driver) and pairs the
+        display-only KMS card with panfrost for rendering: Mesa's
+        pipe-loader falls back to the kmsro driver for the unknown
+        "geminipda-drm" name, and kmsro_drm_screen_create() calls
+        pipe_loader_get_compatible_render_capable_device_fds(), which pairs
+        any PLATFORM display-only device with a platform render driver
+        (panfrost).  The result is a hardware-accelerated EGL screen whose
+        GL_RENDERER is "Mali-T880 (Panfrost)", so mutter
+        (meta-render-device.c: anything not llvmpipe/softpipe/swrast is
+        "hardware accelerated") selects geminipda-drm as its primary GPU
+        (it is the GPU with the built-in DSI panel) and renders through
+        panfrost.  Setting this option forces llvmpipe instead and throws
+        that away; it exists only to get a session up if kmsro ever fails
+        to pair on glass.  Receipts + the on-glass check: docs/
+        gnome-feasibility.md.
+      '';
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    # ---- The standard session ------------------------------------
+    # Exactly the modules a normal NixOS GNOME machine enables.
+    services.xserver.enable = true;
+    services.desktopManager.gnome.enable = true;
+    services.displayManager.gdm.enable = true;
+    services.displayManager.defaultSession = "gnome";
+    services.displayManager.autoLogin.enable = true;
+    services.displayManager.autoLogin.user = cfg.user;
+
+    # ---- Replace the nested stack --------------------------------
+    # GNOME owns the panel; gemwl owns /dev/gemfb and the nested sessions
+    # own gemwl's socket. Force them off so the two models can never
+    # fight over the scanout.
+    systemd.services.gemwl.enable = lib.mkForce false;
+    services.phoshDesktop.enable = lib.mkForce false;
+    services.lxqtNested.enable = lib.mkForce false;
+
+    # ---- Keep this repo's custom PipeWire ------------------------
+    # services/audio.nix runs PipeWire/WirePlumber/pipewire-pulse as a
+    # root system session tuned for the MT6351 S16 path (docs/audio).
+    # nixpkgs' GNOME module (via gnome-remote-desktop) sets
+    # services.pipewire.enable = true, which would start a SECOND
+    # pipewire.service and collide with the custom unit of the same
+    # name. Keep the custom one: its `pipewire.service` still satisfies
+    # GNOME's Requires=, and GNOME audio works through the existing
+    # session. [2026-09-10]
+    services.pipewire.enable = lib.mkForce false;
+
+    # GPU bring-up (gemwl used to do this) --------------------
+    # panfrost must be loaded before the session so that Mesa's kmsro can
+    # pair it with the geminipda-drm KMS card (see softwareRendering).
+    systemd.services.gemini-panfrost-load = {
+      description = "Load panfrost for the GNOME/KMS session";
+      after = [ "gemini-gpu-poweron.service" "systemd-udevd.service" ];
+      wants = [ "gemini-gpu-poweron.service" ];
+      before = [ "display-manager.service" ];
+      wantedBy = [ "display-manager.service" "multi-user.target" ];
+      path = [ pkgs.kmod pkgs.coreutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Same retry logic gemwl used: keeps re-probing until
+        # /dev/dri/renderD128 appears (docs/desktop-plumbing.md).
+        ExecStart = "${utils}/bin/panfrost-load.sh";
+      };
+    };
+
+    # ---- Keyboard: the gemini xkb layout -------------------------
+    # XKB_CONFIG_ROOT points at a full xkeyboard-config tree (a copy) with
+    # the gemini layout added to symbols/ AND registered in
+    # rules/evdev.xml, so BOTH xkbcommon (mutter compiling the keymap) and
+    # libxkbregistry (libgnome-desktop's XkbInfo, which GNOME Shell uses to
+    # decide whether a source id is a real layout) see it.  The plain
+    # XKB_CONFIG_EXTRA_PATH dir was not enough: XkbInfo could not find
+    # "gemini", so gnome-shell quietly fell back to 'us' and the keymap
+    # stayed US.  XKB_DEFAULT_LAYOUT only helps clients that do not set a
+    # layout themselves. [fixed 2026-09-10m; the 2026-09-10l attempt only
+    # set XKB_CONFIG_EXTRA_PATH + the model and was not sufficient]
+    environment.sessionVariables = {
+      XKB_CONFIG_ROOT = "${geminiXkeyboardConfig}/etc/X11/xkb";
+      XKB_DEFAULT_LAYOUT = "gemini";
+      XKB_DEFAULT_MODEL = "pc105";
+    } // lib.optionalAttrs cfg.softwareRendering {
+      LIBGL_ALWAYS_SOFTWARE = "1";
+    };
+
+    # ---- Keyboard: force the gemini layout in the GNOME session ----
+    # The env vars above do NOT select the layout for mutter: mutter
+    # builds its keymap from the gsettings `input-sources` list
+    # [('xkb', <layout>)] and ignores XKB_DEFAULT_LAYOUT.  That gsettings
+    # key defaults to [('xkb','us')], and a stale per-user value (the
+    # device had [('xkb','us')]) also outranks a plain system default.
+    # Install it in a system dconf database AND lock it: the dconf module
+    # documents that a locked key takes its value from the database that
+    # holds the lock, so the system value wins over user-db.  This is
+    # what makes the UK silkscreen (shift+3 = £, Fn+K = @, …) and the Fn
+    # layer (Fn+1..0 = F1..F10, media keys) work. [added 2026-09-10l]
+    # NOTE: this only takes effect together with geminiXkeyboardConfig —
+    # gnome-shell rejects a source id that is not in the xkb registry.
+    programs.dconf.profiles.user.databases = [
+      {
+        settings = {
+          "org/gnome/desktop/input-sources" = {
+            sources = lib.gvariant.mkArray [
+              (lib.gvariant.mkTuple [ "xkb" "gemini" ])
+            ];
+          };
+        };
+        locks = [ "/org/gnome/desktop/input-sources/sources" ];
+      }
+    ];
+  };
+}

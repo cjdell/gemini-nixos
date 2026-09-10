@@ -66,9 +66,30 @@ in
     # layer so ANY desktop's own controls work (phosh today, LXQt/
     # gemwl later). docs/desktop-plumbing.md.
     ../services/plumbing.nix
+    # GNOME application suite (2026-09-10): calculator/calendar/maps/
+    # clocks/weather/contacts + viewer/etc. as Wayland clients on the
+    # system profile, so they show up in the app grid of whichever
+    # nested shell is enabled. NOT the GNOME session/shell — that still
+    # needs a DRM/KMS device (docs/gnome-feasibility.md).
+    ../services/gnome-apps.nix
+    # Vanilla GNOME desktop on the KMS device (2026-09-10, default OFF):
+    # the standard NixOS GNOME + GDM modules, which need the geminipda-drm
+    # kernel driver (/dev/dri/card0). Mutually exclusive with gemwl/phosh/
+    # LXQt, which it force-disables. docs/gnome-feasibility.md.
+    ../services/gnome.nix
   ];
 
   system.stateVersion = "26.11";
+
+  # ---- Desktop: vanilla GNOME is the DEFAULT (2026-09-10) ------------
+  # The geminipda-drm KMS device (/dev/dri/card0) plus Mesa kmsro make
+  # the STANDARD NixOS GNOME session possible; verified on glass
+  # 2026-09-10 (kmscube on card0 -> OpenGL ES 3.1, renderer
+  # "Mali-T880 (Panfrost)"). services/gnome.nix runs
+  # services.desktopManager.gnome + GDM and force-disables the nested
+  # gemwl/phosh/LXQt stack, so exactly one desktop owns the panel.
+  # Evidence + on-glass receipts: docs/gnome-feasibility.md.
+  services.gnomeDesktop.enable = true;
 
   # ---- Console --------------------------------------------------------
   # The kernel config bakes the console setup

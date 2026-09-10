@@ -184,11 +184,13 @@ drop_family CONFIG_VIDEO      '^NOMATCH$'
 drop_family CONFIG_GNSS       '^NOMATCH$'
 
 # ---- 4. Display stack: panfrost DRM chain (=m, stage-2 loaded) + the
-# geminipda LK-framebuffer only. Everything else DRM (nouveau/exynos/
-# rockchip/rcar/... + panels + KMS) is a display that can never exist
-# (rule 5: no DRM/DSI panel stack).
+# geminipda LK framebuffer. Two alternative userspace views of the LK
+# buffer are built: FB_GEMINIPDA (fbdev/dma-buf, the gemwl path) and
+# DRM_GEMINIPDA (the standard KMS path used by GNOME) — see section 10.
+# Everything else DRM (nouveau/exynos/rockchip/rcar/... + panels) is a
+# display that can never exist (rule 5: no mediatek-drm/DSI panel stack).
 grep -oE "^CONFIG_DRM_[A-Z0-9_]+=(y|m)" "$IN" | cut -d= -f1 \
-  | grep -vE '^CONFIG_DRM_(GEM_SHMEM_HELPER|SCHED|PANFROST)$' \
+  | grep -vE '^CONFIG_DRM_(GEM_SHMEM_HELPER|SCHED|PANFROST|GEMINIPDA|KMS_HELPER)$' \
   > /tmp/prune-drm.txt || true
 disable_from_list /tmp/prune-drm.txt "$OUT.tmp"
 grep -oE "^CONFIG_FB_[A-Z0-9_]+=(y|m)" "$IN" | cut -d= -f1 \
@@ -244,6 +246,27 @@ EOF
 #  FTRACE/KPROBES/KGDB/SCHED_DEBUG = bring-up tooling, DEBUG_FS = the
 #  wifi-internal debugfs pwr-on)
 disable_from_list /tmp/prune-debug.txt "$OUT.tmp"
+
+# ---- 9b. Enable the Gemini KMS stack (2026-09-10) -------------------
+# The LK framebuffer exposed as a standard DRM/KMS device (delta
+# drivers/gpu/drm/tiny/geminipda-drm.c) so userspace gets /dev/dri/card0
+# and an ordinary compositor (GNOME Shell/mutter) can drive the panel.
+# Built as a module because DRM itself is =m. The section-4 DRM prune
+# drops every DRM_* symbol by default, so the symbols the driver needs
+# are (re-)enabled here; the driver's `select`s cover the rest.
+enable_syms() {
+  local sym
+  for sym in "$@"; do
+    if grep -q "^${sym}=" "$OUT.tmp"; then
+      sed -i "s|^${sym}=.*|${sym}=m|" "$OUT.tmp"
+    elif grep -q "^# ${sym} is not set" "$OUT.tmp"; then
+      sed -i "s|^# ${sym} is not set|${sym}=m|" "$OUT.tmp"
+    else
+      printf '%s=m\n' "$sym" >> "$OUT.tmp"
+    fi
+  done
+}
+enable_syms CONFIG_DRM_GEMINIPDA CONFIG_DRM_KMS_HELPER
 
 # ---- 9. Fix the CONSYS firmware dir (machine-absolute -> in-tree) ----
 sed -i 's|^CONFIG_EXTRA_FIRMWARE_DIR=.*|CONFIG_EXTRA_FIRMWARE_DIR="firmware"|' "$OUT.tmp"

@@ -22,9 +22,14 @@
  * buffer like the Gemini keyboard and SSD2092 touch drivers do. Reset is
  * I2C-only (vendor sequence below), so no reset GPIO is required either.
  *
- * The touchscreen DT properties (touchscreen-size-x/y + inverted/swap)
- * reproduce the vendor orientation transform: sensor native portrait
- * 1080x2160 -> the landscape fb/desktop 2160x1080 (X'=y, Y'=1080-x).
+ * The driver reports the sensor's native frame: portrait 1080x2160
+ * (touchscreen-size-x/y).  It deliberately does NOT pre-rotate to the
+ * landscape desktop.  The panel's DRM connector advertises
+ * panel-orientation = Left Side Up, and the compositor applies that
+ * rotation to input too (mutter: meta_monitor_manager_get_monitor_matrix,
+ * "transform corrected for LCD panel-orientation").  For this panel the
+ * correction is the same X'=y, Y'=1080-x mapping the vendor used, so
+ * pre-rotating in DT as well double-rotates touch. [corrected 2026-09-10l]
  */
 
 #include <linux/delay.h>

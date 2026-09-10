@@ -79,6 +79,18 @@
 		compatible = "planet,geminipda-fb";
 	};
 
+	/*
+	 * DRM/KMS view of the same LK framebuffer (geminipda-drm). LK does not
+	 * model the OVL as a DRM device, so this node just gives the driver a
+	 * device to bind to; the geometry still comes from the atag,videolfb
+	 * handover in /chosen (see geminipda-fb.c). The fbdev node above and
+	 * this one are alternative userspace views of one buffer — they can
+	 * coexist, but only one desktop stack should drive the screen at once.
+	 */
+	geminipda-drm {
+		compatible = "planet,geminipda-drm";
+	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -591,17 +603,33 @@
 		vcc-supply = <&touch_vcc>;
 		iovcc-supply = <&vdd_fixed_1v8>;
 		/*
-		 * Sensor is native portrait 1080x2160; the desktop/display runs
-		 * landscape 2160x1080. The vendor driver transforms X'=y,
-		 * Y'=1080-x (swap X/Y then reverse the post-swap Y), which in
-		 * touchscreen_properties terms is inverted-x + swap in sensor
-		 * space (same conclusion as the earlier ssd2092 node). If touch
-		 * lands 180 deg rotated on glass, flip inverted-x to inverted-y.
+		 * Sensor is native portrait 1080x2160 and is delivered in that
+		 * raw frame — do NOT pre-rotate it here.
+		 *
+		 * The DRM connector carries panel-orientation = Left Side Up and
+		 * the compositor applies the rotation to input as well: mutter's
+		 * meta_monitor_manager_get_monitor_matrix() computes the matrix
+		 * "corrected for LCD panel-orientation" (for this panel a pure 90
+		 * rotation).  Pre-rotating here as well made touch double-rotate
+		 * under GNOME. [fixed 2026-09-10l]
+		 *
+		 * The touch sensor itself is mounted 180 deg relative to the
+		 * panel, though, so the panel-correct transform still lands 180
+		 * off; inverting BOTH axes is that 180 and commutes with mutter's
+		 * rotation.  On glass 2026-09-10: raw portrait alone = touch
+		 * rotated 180; with inverted-x + inverted-y it matches.
+		 * [added 2026-09-10l]
+		 *
+		 * (The old touchscreen-inverted-x + touchscreen-swapped-x-y was
+		 * calibrated for the gemwl/nested stack, which consumed the LK
+		 * framebuffer directly and did no panel-orientation handling.  The
+		 * nested desktops are force-disabled while GNOME is on; if one is
+		 * re-enabled its input path has to apply the rotation itself.)
 		 */
 		touchscreen-size-x = <1080>;
 		touchscreen-size-y = <2160>;
 		touchscreen-inverted-x;
-		touchscreen-swapped-x-y;
+		touchscreen-inverted-y;
 	};
 };
 
