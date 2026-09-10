@@ -7,11 +7,14 @@ Last updated: 2026-09-11
 session set, sentinel logic in place, GNOME session preserved). The
 COSMIC session itself is still UNVERIFIED on glass.**
 
-**niri (2026-09-11): added as a fourth co-installed session at the
-build level.** It uses the same GDM Wayland-session + selector path as
+**niri (2026-09-11): added as a fourth co-installed session and
+DEPLOYED to glass as device generation 11 (`343g0r3v…`, commit
+`5e43187`).** It uses the same GDM Wayland-session + selector path as
 GNOME/COSMIC (`programs.niri.enable` registers `niri`;
 `gemcli session set niri`); niri 26.04 is aarch64-cache-verified at the
-flake pin. On-glass pending — see the checklist below.
+flake pin. The deploy did **not** restart display-manager (live COSMIC
+session preserved, 0 failed units). On-glass niri boot pending — see the
+checklist below.
 
 ## The ask
 

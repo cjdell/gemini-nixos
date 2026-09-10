@@ -7,10 +7,11 @@ when a session touches device behaviour. Latest entry first.
 
 ## 2026-09-11 — niri added as a fourth co-installed desktop session
 
-**Build-level only; nothing flashed, no boot.img change.** Added niri
-26.04 (scrollable-tiling Wayland compositor) as another GDM Wayland
-session alongside GNOME + COSMIC, selectable with `gemcli session set
-niri` (`gnome|cosmic|niri|console`).
+**Deployed to the device as generation 11 (`343g0r3v…`, commit
+`5e43187`); no reflash, no boot.img change.** Added niri 26.04
+(scrollable-tiling Wayland compositor) as another GDM Wayland session
+alongside GNOME + COSMIC, selectable with `gemcli session set niri`
+(`gnome|cosmic|niri|console`).
 
 What changed:
 - `config/gemini.nix`: `programs.niri.enable = true`.
@@ -34,8 +35,19 @@ Rule 9 verification at the flake pin `dc5d91f84032` (26.11pre1068949):
 - eval: `programs.niri.enable = true`, merged sessionPackages
   `["gnome","cosmic","niri"]`, `displayManager.defaultSession = null`.
 
-Not done: on-glass boot of niri (or COSMIC) — checklist in
-`docs/desktop-selection.md`. Device untouched / nothing flashed.
+Deploy (2026-09-11): `bin/deploy.sh deploy` built + pinned the native
+aarch64 toplevel and switched the device profile + activated — **gen 11**,
+system `343g0r3v3xlsr4yya6k2i8w5607y9nsi-nixos-system-gemini-26.11pre-git`
+(commit `5e43187`). The activation explicitly reported `NOT restarting
+the following changed units: display-manager.service`, so the live COSMIC
+session was not disturbed; **0 failed units** after the switch. On-device
+checks: `gemcli session list` shows all four modes; `/run/current-system/
+sw/share/wayland-sessions/` carries `niri.desktop`; marker still `cosmic`,
+AccountsService `cosmic (wayland)` (live session unchanged).
+
+Not done: on-glass boot of niri — the live marker is still `cosmic`.
+Switch with `gemcli session set niri --reboot` (checklist in
+`docs/desktop-selection.md`). Nothing flashed (deploy = profile switch).
 
 ## 2026-09-10w — COSMIC vs GNOME re-measured: `NoSupportedPlaneFormat` is a false lead, and the "COSMIC ~20 fps" was the already-fixed dual-Mesa bug
 
