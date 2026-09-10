@@ -1,0 +1,6 @@
+{
+  "uuid": "no-osk@gemini-nixos",
+  "name": "Gemini: no on-screen keyboard",
+  "description": "Suppresses GNOME Shell's automatic (touch-mode) on-screen keyboard on the Gemini PDA, which has a real keyboard. mutter reports touch-mode when a touchscreen is present and no pointer is, so the OSK would otherwise pop up on every text entry regardless of the accessibility toggle.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"]
+}

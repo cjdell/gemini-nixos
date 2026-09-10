@@ -5,6 +5,56 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10s — GNOME on-screen keyboard permanently suppressed (mutter `touch_mode` root cause; shell extension + locked dconf)
+
+User ask: stop GNOME ever showing the OSK — "this device has a real
+keyboard". The a11y toggle was **already off** (checked cjdell's dconf,
+not root's), so the OSK was the **automatic (touch-mode) path**.
+
+**Root cause (source-level, GNOME 50.4).** gnome-shell creates the OSK
+when `a11y(screen-keyboard-enabled) || (seat.touch_mode &&
+lastDeviceIsTouchscreen)` (`js/ui/keyboard.js`, `_syncEnabled()`), and
+mutter sets `touch_mode = !has_pointer` for a seat with a touchscreen and
+no tablet-mode switch (`src/backends/native/meta-seat-impl.c`,
+`update_touch_mode()`). The Gemini has a touchscreen + a keyboard + **no
+pointer** ⇒ `touch_mode=true`. A keypress does not clear `_lastDevice`
+(keyboard devices are ignored), so touching/focusing a text field popped
+the OSK. Pre-fix the shell log even showed it: `maybeHandleEvent`
+(`keyboard.js:1159`) threw on a null actor, which only runs when the OSK
+object exists.
+
+**Fix (committed; build-level — not yet in a deployed generation):**
+
+- new `pkgs/gnome-extension-no-osk/` — a GNOME 45+ ESM Shell extension
+  forcing `KeyboardManager._lastDeviceIsTouchscreen() = false` (private
+  method; re-check on a gnome-shell upgrade). `nix-build` validated.
+- `services/gnome.nix` — install it in `environment.systemPackages`,
+  and in the system dconf DB set + **lock**
+  `org.gnome.shell enabled-extensions=[no-osk@gemini-nixos]` and
+  `org.gnome.desktop.a11y.applications screen-keyboard-enabled=false`.
+  `nix eval .#nixosConfigurations.gemini.config.programs.dconf…` evaluates
+  and shows both settings + all three locks.
+
+**Evidence (on the LIVE shell, GNOME Shell 50.4).** Installed the
+extension by hand under `~/.local/share/gnome-shell/extensions/` and ran a
+temporary diagnostic that set `_lastDevice` to a fake touchscreen device
+and called the real `_syncEnabled()`:
+
+| no-osk ext | `seat.touch_mode` | OSK object |
+|---|---|---|
+| off | `true` | **CREATED** |
+| on | `true` | **not-created** |
+
+The diagnostic was then removed; the hand-installed extension is left
+enabled, so the device is already OSK-free. **Device state:** the GNOME
+session was restarted twice via `systemctl restart display-manager` during
+the A/B (autologin restored it each time, ~6 s); `para`/`boot` untouched;
+no boot.img/reflash; generation unchanged.
+
+**Next:** deploy a generation carrying the change (profile-only switch),
+then remove the hand-installed user copy so the system extension is the
+sole source. **Doc:** `docs/desktop-plumbing.md` §"On-screen keyboard".
+
 ## 2026-09-10r — A2DP stutter + after-playback crackle: ROOT CAUSE = the STP PSM (fixed in the delta, verified on glass)
 
 User report: A2DP headphones stutter **predictably** even at idle, plus a

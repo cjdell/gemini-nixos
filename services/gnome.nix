@@ -44,6 +44,10 @@ let
   # package header); the plain gemini-xkb include dir alone only makes it
   # compilable, which is not enough for GNOME Shell.
   geminiXkeyboardConfig = pkgs.callPackage ../pkgs/gemini-xkeyboard-config.nix { };
+  # Never auto-show the on-screen keyboard (mutter's touch_mode heuristic;
+  # see the package header + docs/desktop-plumbing.md §"On-screen
+  # keyboard").  Enabled + locked below via the system dconf DB.
+  noOskExtension = pkgs.callPackage ../pkgs/gnome-extension-no-osk { };
 in
 {
   options.services.gnomeDesktop = {
@@ -161,6 +165,15 @@ in
     # stayed US.  XKB_DEFAULT_LAYOUT only helps clients that do not set a
     # layout themselves. [fixed 2026-09-10m; the 2026-09-10l attempt only
     # set XKB_CONFIG_EXTRA_PATH + the model and was not sufficient]
+    # ---- On-screen keyboard: never show it ------------------------------
+    # The Gemini has a real keyboard, so the OSK must never appear.  The
+    # accessibility toggle is not enough: mutter reports touch_mode=true
+    # (touchscreen + no pointer, no tablet switch), and gnome-shell then
+    # auto-creates the OSK on every text focus regardless.  This installs
+    # the small extension that kills that auto path, and the dconf DB below
+    # enables it + locks the a11y toggle off.  [added 2026-09-10]
+    environment.systemPackages = [ noOskExtension ];
+
     environment.sessionVariables = {
       XKB_CONFIG_ROOT = "${geminiXkeyboardConfig}/etc/X11/xkb";
       XKB_DEFAULT_LAYOUT = "gemini";
@@ -211,8 +224,28 @@ in
               (lib.gvariant.mkTuple [ "xkb" "gemini" ])
             ];
           };
+          # On-screen keyboard: the a11y toggle is off and locked.  The
+          # other half (mutter's touch_mode auto path) is killed by
+          # noOskExtension; see the package header for the receipts.
+          "org/gnome/desktop/a11y/applications" = {
+            screen-keyboard-enabled = false;
+          };
+          # Enable the no-osk extension declaratively.  NixOS has no
+          # first-class option for this (the nixpkgs GNOME doc: a GSettings
+          # override "will only influence the default value"), so put it in
+          # the system dconf DB and LOCK it — the lock makes the system
+          # value win over any stale per-user enabled-extensions list.  The
+          # package installs to share/gnome-shell/extensions, which
+          # gnome-shell scans on the system XDG_DATA_DIRS path.
+          "org/gnome/shell" = {
+            enabled-extensions = [ "no-osk@gemini-nixos" ];
+          };
         };
-        locks = [ "/org/gnome/desktop/input-sources/sources" ];
+        locks = [
+          "/org/gnome/desktop/input-sources/sources"
+          "/org/gnome/desktop/a11y/applications/screen-keyboard-enabled"
+          "/org/gnome/shell/enabled-extensions"
+        ];
       }
     ];
 

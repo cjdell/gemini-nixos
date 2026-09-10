@@ -1,6 +1,6 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
-Last updated: 2026-09-10q. Status: 🟡 implemented; **gen62 deployed
+Last updated: 2026-09-10s. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
 boot.img (kernel battery supply), not just the rootfs generation.
@@ -14,6 +14,10 @@ source-level + on the journals; on-glass finger test pending).
 **2026-09-10p:** GNOME audio wired (session → the one system PipeWire
 session: Settings→Sound device list + gsd volume keys) and the Fn
 volume/brightness keys bound in mutter — see §Volume.
+**2026-09-10s:** the on-screen keyboard is permanently suppressed
+(mutter reports `touch_mode=true` on this touchscreen+no-pointer
+hardware, so gnome-shell auto-created the OSK regardless of the a11y
+toggle) — see §"On-screen keyboard".
 "make every desktop environment just work" layer: the system services
 that Phosh (default desktop), LXQt (alternative), GNOME or KDE would
 all consume through the standard D-Bus APIs, with zero gemini-specific
@@ -328,6 +332,74 @@ compatibility synthesizes clicks inside the app (no compositor
 anymore); Qt Quick content gets real multi-touch. A USB mouse, when
 plugged in, still gets the pointer as before.
 
+### On-screen keyboard: never show it [2026-09-10s]
+
+**Problem.** GNOME popped the on-screen keyboard up on every text entry
+even though the device has a real keyboard. The accessibility toggle was
+already off (`org.gnome.desktop.a11y.applications screen-keyboard-enabled
+= false` in cjdell's dconf), so that was not the cause.
+
+**Root cause (source-level, verified).** gnome-shell creates the OSK when
+*either* path is true (`js/ui/keyboard.js`, `KeyboardManager._syncEnabled()`):
+
+```
+enabled = a11y(screen-keyboard-enabled)
+          || (seat.get_touch_mode() && lastDeviceIsTouchscreen())
+```
+
+and mutter computes touch-mode as `!has_pointer` when the seat has a
+touchscreen but no tablet-mode switch (`src/backends/native/
+meta-seat-impl.c`, `update_touch_mode()`):
+
+```
+if (!has_touchscreen)            touch_mode = FALSE;
+else if (has_tablet_switch ...)  touch_mode = <switch state>;
+else                             touch_mode = !has_pointer;
+```
+
+The Gemini has a touchscreen (`Novatek NT36772 Touchscreen`), a real
+keyboard, and **no pointer**, so mutter reports `touch_mode=true` and the
+second path fires. A keypress does not clear it either: the shell's
+`last-device-changed` handler ignores `KEYBOARD_DEVICE`, so the touchscreen
+stays the last non-keyboard device — the classic "touchscreen laptop with
+no trackpad looks like a tablet" case.
+
+**Fix — two halves, both in `services/gnome.nix`:**
+
+1. `pkgs/gnome-extension-no-osk/` — a small GNOME 45+ ESM Shell extension
+   that forces `KeyboardManager._lastDeviceIsTouchscreen()` to false,
+   killing exactly the auto path (the accessibility OSK still works if it
+   is ever turned on). It uses a private `KeyboardManager` method, so
+   re-check `js/ui/keyboard.js` on a gnome-shell upgrade.
+2. The system dconf DB enables the extension
+   (`org.gnome.shell enabled-extensions`) and **locks** it, and locks
+   `screen-keyboard-enabled=false` — the a11y path off for good. NixOS has
+   no first-class option for enabling an extension, and a GSettings
+   override only moves the *default*, so the system-db + lock is what
+   makes this actually stick.
+
+**On-device proof (2026-09-10, GNOME Shell 50.4).** A temporary diagnostic
+extension set the shell's last-device state to a fake touchscreen and
+called the real `_syncEnabled()`, reporting for the same live shell:
+
+| no-osk extension | `seat.touch_mode` | OSK object after `_syncEnabled()` |
+|---|---|---|
+| **off** | `true` | **CREATED** |
+| **on** | `true` | **not-created** |
+
+`touch_mode` really is true on this hardware, and the extension really
+does suppress the OSK object the shell would otherwise create (the OSK is
+only opened on text focus, so no object ⇒ no keyboard, ever).
+
+**Deploy note.** The extension is a *system* extension under
+`$out/share/gnome-shell/extensions/no-osk@gemini-nixos`, found via the
+system `XDG_DATA_DIRS`. dconf enabling takes effect on the next session
+start (gnome-shell only scans extension dirs at startup); no reboot/rootfs
+flash is involved. During bring-up it was also installed under
+`~/.local/share/gnome-shell/extensions/` for the live A/B — that copy
+shadows the system one and should be removed after the first
+`nixos-rebuild switch`/deploy that carries this change.
+
 ## Where it lives
 
 - `services/plumbing.nix` — UPower + thresholds + udev backlight rule +
@@ -340,6 +412,10 @@ plugged in, still gets the pointer as before.
 - `pkgs/gemwl/gemwl.c` — the touch → wl_touch forwarding (see §Touch);
   the NT36772 kernel driver itself was already correct (Protocol B,
   10 points, output-space ABS).
+- `pkgs/gnome-extension-no-osk/` — the never-show-the-OSK GNOME Shell
+  extension (§"On-screen keyboard"); `services/gnome.nix` installs it and
+  enables + locks it (and `screen-keyboard-enabled=false`) in the system
+  dconf DB.
 - `services/audio.nix` — the one PipeWire system session, the S16
   WirePlumber rule, the L/R-correcting virtual sink (`60-gemini-
   speakers.conf`) and `gemini-speakerd` (default-sink → amp pads).
