@@ -185,6 +185,11 @@
       # gemdemo — minimal GLES 3.1 + ALSA template (docs/gemdemo.md; in
       # the rootfs via services/gemini-pda.nix — standalone builds/checks).
       gemdemo = eval.pkgs.callPackage ./pkgs/gemdemo.nix { };
+      # gemini-exodus — GEMINI: EXODUS (Director's Cut): the cinematic
+      # spacesynth + GPU stress test restored from the 0.2.0 engine and
+      # upgraded (docs/gemini-exodus.md; in the rootfs via
+      # services/gemini-pda.nix).
+      gemini-exodus = eval.pkgs.callPackage ./pkgs/gemini-exodus.nix { };
     in
     {
       # nixosConfiguration for the device hostname (`networking.hostName`
@@ -246,6 +251,10 @@
         # (docs/gemdemo.md; in the rootfs via services/gemini-pda.nix —
         # standalone build/iteration target).
         gemdemo = gemdemo;
+        # GEMINI: EXODUS (Director's Cut) — cinematic spacesynth + GPU
+        # stress test (docs/gemini-exodus.md; in the rootfs via
+        # services/gemini-pda.nix).
+        gemini-exodus = gemini-exodus;
       };
 
       # Host tooling stays x86_64 (this flake is evaluated from an x86_64

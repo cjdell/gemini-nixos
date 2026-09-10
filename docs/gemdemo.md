@@ -1,6 +1,13 @@
 # gemdemo — minimal GLES 3.1 + ALSA template for the Gemini PDA
 
-Last updated: 2026-09-09
+Last updated: 2026-09-11
+
+> **2026-09-11:** the 0.2.0 "GEMINI: EXODUS" demoscene was recovered
+> from git history and revived as a first-class package — `pkgs/gemini-exodus`,
+> the **Director's Cut** with a GPU stress-test load model, a benchmark, a
+> frametime overlay, the Gemini constellation/twin-sun motif and an
+> enriched score. See **`docs/gemini-exodus.md`**. This doc stays the
+> hardware-receipt reference both apps are built on.
 
 **0.3.0: the "how do we talk to the hardware from Rust" skeleton.** The
 0.2.0 "GEMINI: EXODUS" demoscene (10 modules, ~5200 lines — see git
@@ -89,7 +96,8 @@ reason the template exists, and the reason the code must not be
   (7 chapters, real-time synth score; 60 fps on glass; gen33). Source
   preserved in git history — still the reference for textured quads,
   baked sprites, direct single-framebuffer layering and the synth
-  engine if a demoscene is ever wanted again.
+  engine. **Revived 2026-09-11 as `pkgs/gemini-exodus` (Director's
+  Cut) — see `docs/gemini-exodus.md`.**
 - 0.1.0 (2026-09-08) — "AETHER" (multipass + raymarch; single-digit
   fps; superseded).
 

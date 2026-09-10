@@ -5,6 +5,70 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — GEMINI: EXODUS revived as a first-class demo + GPU stress test
+
+**No device/flash operation — build-level only; the on-glass pass is
+owed.** The 0.2.0 “GEMINI: EXODUS” demoscene (the engine that held
+60 fps on glass, gen33) had been deleted by the 0.3.0 purge (`6f34d24`)
+down to the gemdemo triangle. It was recovered byte-for-byte from git
+`32ba356` and revived as a first-class package — `pkgs/gemini-exodus`,
+v1.0.0 **“Director's Cut”** — then genuinely upgraded (not just restored):
+
+- `src/stress.rs` (new; also the crate's **lib target**, so its tests run
+  on a host with no device GL/ALSA link): `--stress 0..3` load model
+  (star/warp/particle/nebula multipliers + a debris field) that only
+  ever adds more of the *same* single-pass layers; benchmark capture with
+  per-chapter frametime and nearest-rank **p1**/worst. Fixing my first
+  p1 cut (it returned the single worst frame as “p1” — the `ceil(n*0.99)-1`
+  indexing is now tested). Hard `PART_CAP < SPRITE_QUAD_CAP` guard so a
+  MAX-stress burst cannot overflow the sprite `DynVbo` mid-benchmark.
+- `src/main.rs`: `--bench SECS [--chapter-secs S] [--json]`, `--stats`
+  frametime overlay (60/30 fps reference lines + 30-bucket history +
+  GPU/A72/stress readout; drawn with the existing font, suppressed during
+  `--bench` unless asked), `--no-a72`, and the **chapter-jump race fix**
+  (0.2.0 `swap()`-ed the `jump` atomic in the render thread even when
+  audio owned the clock — `[`/`]` could be eaten/raced; now exactly one
+  clock consumer). A72 render-thread pinning (cpu.rs) retained.
+- `src/show.rs`: the **GEMINI constellation** motif (Castor & Pollux
+  stick figure, dotted additive star-quads; S3 VOID + S6 ORIGIN) and the
+  **twin-sun finale** (S5).
+- `src/synth.rs`: third-below harmony lead in the warp theme;
+  low-octave counter-melody + timpani under the anthem finale (existing
+  voices only — no new DSP). The synth mix test still passes.
+- `src/gfx.rs`: a `rock` debris sprite + stress debris layer; sprite VBO
+  sized for the star cap (`STAR_CAP`). Rendering stays **direct,
+  single-pass — no FBO/bloom/SSAA**, the 0.1.0 multipass lesson.
+- `pkgs/gemini-exodus.nix` (same alsa-lib/libglvnd/wayland recipe + rpath
+  `patchelf` as gemdemo); in the rootfs closure via
+  `services/gemini-pda.nix`; `packages.aarch64-linux.gemini-exodus` in the
+  flake. `bin/gemini-exodus-host-check.sh` = the seconds-long x86_64
+  type-check loop (pinned rev, shared CARGO_TARGET_DIR with gemdemo).
+
+Verification (rules 0/3):
+- host — `cargo check --release` clean; **5 lib tests + 4 bin tests
+  pass** (incl. the synth assertion: audible, `peak ≤ 1.001`,
+  `rms < 0.45`, the 0.1.0 over-limited guard).
+- aarch64 — `nix build .#packages.aarch64-linux.gemini-exodus` on the
+  remote builder OK → `/nix/store/khfnmqyqbrdwr62nlli8spf1phxyd96p-gemini-exodus-1.0.0`
+  (aarch64 ELF, 4.98 MB binary; RUNPATH pins libEGL/wayland/libxkbcommon/
+  alsa). Nix flake + `nixosConfigurations.gemini` toplevel evaluate.
+- **No device was touched this session** (no deploy, no flash).
+
+Docs: new `docs/gemini-exodus.md` (design, chapters, bench usage, A72,
+receipts, status); pointers added in `docs/gemdemo.md` (version history),
+`README.md` (table), `AGENTS.md` (“Where things live”).
+
+Device left: unchanged. To show it off: `bin/deploy.sh deploy` (or
+`bin/device-rebuild.sh`) delivers the rootfs closure incl. `gemini-exodus`;
+then on glass `gemini-exodus --stats` and
+`gemini-exodus --bench 75 --chapter-secs 10 [--json]` at `--stress 0` and
+`--stress 3` — record the p1/worst numbers + the GPU identity line in
+`docs/gemini-exodus.md`.
+
+Next: the on-glass pass (60 fps + p1 per stress level; confirm the A72 pin
+and the twin-sun/constellation look); optionally a launcher entry / gemcli
+verb.
+
 ## 2026-09-11 — niri added as a fourth co-installed desktop session
 
 **Deployed to the device as generation 11 (`343g0r3v…`, commit

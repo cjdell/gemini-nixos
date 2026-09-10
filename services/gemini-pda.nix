@@ -37,6 +37,13 @@ let
   # run it from the LXQt/labwc session or on gemwl (needs the Wayland
   # compositor running + the audio card up).
   gemdemo = pkgs.callPackage ../pkgs/gemdemo.nix { };
+  # gemini-exodus — GEMINI: EXODUS (Director's Cut): the cinematic
+  # spacesynth + GPU stress test (docs/gemini-exodus.md). In the rootfs
+  # closure so the flagship show is on-glass without a separate copy;
+  # run it fullscreen from the desktop session and drive the stress test
+  # with `--stats` / `--bench`. Needs the compositor running + the audio
+  # card up (falls back to a silent clock otherwise).
+  gemini-exodus = pkgs.callPackage ../pkgs/gemini-exodus.nix { };
   kernelModulePath =
     # Runtime path of the A72 bring-up module in the booted system's
     # module tree (NixOS's kmod searches /run/booted-system/kernel-modules
@@ -47,7 +54,7 @@ in
   # busybox (devmem) + i2c-tools are used by the scripts and by hand on
   # the serial console; gemcli is the in-progress native replacement for
   # the device CLIs (the scripts stay in the closure until migrated).
-  environment.systemPackages = [ utils pkgs.busybox pkgs.i2c-tools gemcli gemdemo ];
+  environment.systemPackages = [ utils pkgs.busybox pkgs.i2c-tools gemcli gemdemo gemini-exodus ];
 
   # Load the out-of-tree A72 module at boot (systemd-modules-load, via
   # the NixOS-wrapped modprobe that searches the store module tree).

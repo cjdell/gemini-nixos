@@ -1,0 +1,38 @@
+# GEMINI: EXODUS (Director's Cut) — cinematic spacesynth + GPU stress test
+# for the Planet Computers Gemini PDA.
+#
+# This is the 0.2.0 demo engine (the one that held 60 fps on glass) restored
+# to life as a first-class package, then upgraded: a real stress-test load
+# model, a benchmark harness with per-chapter frametime percentiles, an
+# A72-aware stats HUD, a Gemini-constellation / twin-star visual motif and
+# a richer score. Rendering stays DIRECT single-pass (no FBOs, no bloom
+# chain, no SSAA) — the whole reason 0.2.0 hit 60 fps after the 0.1.0
+# "AETHER" multipass/raymarch landed at single-digit fps.
+#
+# Dependency policy (lockfile-pinned, all small pure-Rust crates):
+#   winit 0.29  wayland windowing/input (client of gemwl/labwc/gnome)
+#   egl 0.2     EGL loader (dlopens libEGL.so.1 — glvnd client lib)
+#   gl 0.14     GLES bindings (gles3 list; the context is 3.1)
+#   cpal 0.15   audio output — ALSA backend (always on in 0.15)
+#   libc 0.2    A72 render-thread affinity (cpu.rs)
+# No other runtime deps. See docs/gemini-exodus.md for the design/receipts.
+[package]
+name = "gemini-exodus"
+version = "1.0.0"
+edition = "2021"
+description = "GEMINI: EXODUS — cinematic spacesynth + GPU stress test for the Gemini PDA (Mali-T880 panfrost, GLES 3.1, real-time synth)"
+license = "MIT"
+
+[dependencies]
+winit = "0.29"
+egl = "0.2.7"
+gl = "0.14"
+cpal = "0.15"
+libc = "0.2"
+
+# The GPU does the heavy lifting; keep the CPU build lean + fast for the
+# on-device aarch64 build (device-rebuild.sh). No LTO (slow on the PDA).
+[profile.release]
+opt-level = "s"
+strip = true
+panic = "abort"
