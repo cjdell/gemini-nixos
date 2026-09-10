@@ -47,10 +47,11 @@ conflict.
 with `nix path-info --store https://cache.nixos.org`). No big local
 compiles added.
 
-**Build receipt (rule 0 — commit `60c5716`):** flake eval green; aarch64
-toplevel built via `sudo nix build --store local --option builders
-@/etc/nix/machines --fallback .#packages.aarch64-linux.toplevel` →
-`/nix/store/49w619rac5h0nlwl0ix7lmc4y44acmck-nixos-system-gemini-26.11pre-git`
+**Build receipt (rule 0 — feature commit `b318569`):** flake eval green;
+aarch64 toplevel built via `sudo nix build --store local --option
+builders @/etc/nix/machines --fallback
+.#packages.aarch64-linux.toplevel` →
+`/nix/store/shsjkxqa3x9nidbbbpmsdyv4lvvpwn1m-nixos-system-gemini-26.11pre-git`
 (the 192.168.49.191 builder; a clean-tree rebuild). Inspected the
 generated units:
 `display-manager.service` carries `ConditionPathExists=!/run/gemini-console`;
