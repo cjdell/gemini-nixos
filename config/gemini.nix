@@ -22,6 +22,10 @@ let
   # wine/wine64 shell wrappers (thin; the wine-wow64 stack itself is a
   # standalone device GC root — pkgs/wine-cli.nix header).
   wineCli = pkgs.callPackage ../pkgs/wine-cli.nix { };
+
+  # DOSBox-X with the Gemini keyboard fix (UK table + Fn+1..0 -> F1..F10
+  # mapper; docs/desktop-plumbing.md §DOSBox-X).
+  dosboxXGemini = pkgs.callPackage ../pkgs/dosbox-x-gemini.nix { };
 in
 {
   imports = [
@@ -496,6 +500,12 @@ in
     # package — docs/wine-d3d.md §5).
     wineCli.wine
     wineCli.wine64
+  ] ++ [
+    # DOS emulation (2026-09-11): DOSBox-X with the Gemini keyboard fix —
+    # UK keyboard table + an Fn+1..0 -> F1..F10 mapper (the Fn layer is XKB
+    # level 3, invisible to DOSBox-X's scancode-based input).  The wrapper
+    # keeps the upstream .desktop; see docs/desktop-plumbing.md §DOSBox-X.
+    dosboxXGemini
   ];
 
   # The glvnd ICD now comes from hardware.graphics above (the compiled-in

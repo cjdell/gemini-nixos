@@ -5,6 +5,61 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — DOSBox-X installed with a Gemini keyboard fix (UK table + Fn mapper; build-level)
+
+User asked why DOSBox-X's key mappings are wrong and the Fn keys are
+completely missing, then to set it up on the device with a solution.
+
+- **Diagnosis.** DOSBox-X's SDL2 input path keys off
+  `SDL_KeyboardEvent.keysym.scancode` (physical position), not the
+  level-resolved `keysym.sym` (`src/gui/sdl_mapper.cpp`
+  `CKeyBindGroup::CreateEventBind/CheckEvent`; `MakeDefaultBind()` maps
+  `SDL_SCANCODE_*` → PC key; `useScanCode()` is `false` for SDL2, so the
+  `usescancodes=` knob is a no-op). It therefore ignores the host `gemini`
+  XKB layout and uses its own `[dos] keyboardlayout` (default US) — that
+  is the wrong `£`/`@`/`;` etc. And Fn is XKB **level 3** only (kernel
+  `KEY_RIGHTALT` → `ISO_Level3_Shift`), so Fn+1..0 is the same scancode
+  as plain `1` with RALT held: there is no Fn/F1/XF86 scancode for it to
+  translate, hence "completely missing". Same class of bug as mutter's
+  `<Mod5>XF86…` keysyms (`services/gnome.nix:278‑311`).
+- **Added.** `pkgs/dosbox-x-gemini.nix` + `pkgs/dosbox-x-gemini.sh`
+  (wrapper: forces `-set "dos keyboardlayout=uk"` and seeds a complete
+  mapper into `~/.config/dosbox-x/mapper-dosbox-x.map`),
+  `config/dosbox-x/mapper-dosbox-x.map` (generated) and
+  `bin/gen-dosbox-x-mapper.sh` (regenerator from the pinned dosbox-x
+  `DefaultKeys[]` + SDL scancode enum); wired into
+  `config/gemini.nix` systemPackages. Doc: `docs/desktop-plumbing.md`
+  §DOSBox-X.
+- **Receipts.** dosbox-x pinned `2026.08.02` (nixpkgs `dc5d91f84032`),
+  aarch64 output `0qcvjf0xh6z2r83kyl7hcky5jga92zsb` **substituted from
+  cache.nixos.org** (rule 9). Mapper validated by running the x86_64
+  binary under `SDL_VIDEODRIVER=dummy`: strace shows the file opened,
+  and the log shows `DOS keyboard layout loaded with main language code
+  UK for layout uk`. Full aarch64 toplevel built via `bin/deploy.sh
+  build` (20 s, remote Pi builder):
+  `69ixww27wwj5qcc2arpq9y1qc5hbsjf1-nixos-system-gemini-26.11pre-git`,
+  `sw/bin/dosbox-x` → `67x55vma46qkgw2qqm8m9p8m35yqcpd9-dosbox-x-gemini`,
+  `.desktop` wired. **Deployed to the device (LAN 192.168.49.166):**
+  `bin/deploy.sh deploy` → **gen 18** (`system-18-link` →
+  `69ixww27wwj5qcc2arpq9y1qc5hbsjf1-...`); on-glass headless run as
+  `cjdell` logs `DOS keyboard layout loaded with main language code UK
+  for layout uk` and seeds `~/.config/dosbox-x/mapper-dosbox-x.map`
+  (0644, 10 `mod2` Fn binds). `systemctl is-system-running` → running,
+  0 failed units. No kernel/boot.img change (profile-only switch; para
+  untouched).
+- **Gotchas found.** (1) The mapper section must be `[SDL2]`, NOT `[sdl]`
+  (`SDL_STRING` = `"SDL2"`, `include/shell.h:27`) — a wrong section name
+  makes `MAPPER_LoadBinds()` silently drop every line and use the
+  built-in defaults; caught only by actually loading the file. (2) The
+  seeded copy must be `chmod 644` (the store file is 0444) or the mapper
+  GUI cannot save. (3) Fn is also the only Alt, so Fn+1 reaches the guest
+  as Alt+F1 — deliberate trade. Media keys are not DOS scancodes and are
+  not covered.
+- **Pending.** ⬜ interactive on-glass test: launch DOSBox-X from the
+  GNOME app grid and confirm Fn+1 ⇒ F1 in a DOS program and Shift+3 ⇒
+  `£`. (Root cause + load path verified; the Fn bind needs a human at
+  the keyboard or an evdev-injection harness.)
+
 ## 2026-09-11 — Headphones selection still played the speakers: gemini-speakerd's wpctl parse was dead (fixed + on glass, gen 17)
 
 User report: "when i select headphones i still get sound coming through

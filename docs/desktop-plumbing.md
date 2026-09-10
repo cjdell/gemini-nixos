@@ -10,6 +10,11 @@ and **deployed on glass (gen 15)** — timezone/locale verified, and the
 Fn transport keys verified against a live Chromium MPRIS player. On
 first deploy they appeared dead: the cause was the **session-variable
 re-login gotcha** (see §Volume).
+**2026-09-11 (DOSBox-X):** installed DOSBox-X with a Gemini keyboard fix
+(UK table + Fn+1..0 ⇒ F1..F10 via a seeded mapper, since its SDL2 input
+is scancode-based and cannot see XKB level 3) — §DOSBox-X; deployed to
+the device as **gen 18** and headless-verified (UK table + mapper seed);
+the interactive Fn-key test is owed.
 **2026-09-10q:** internal-speaker L/R swap fixed by a virtual sink +
 `gemini-speakerd` couples the speaker amp to the selected output device
 (§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
@@ -301,6 +306,94 @@ GNOME Shell). With GNOME as the default desktop the standard
 shell+gsd path exists; the keycode bindings are the only
 gemini-specific part.
 
+### DOSBox-X: scancode apps never see the Fn layer [2026-09-11]
+
+Symptom: in DOSBox-X the gemini-specific keys come out wrong and every
+Fn combination (Fn+1..0 = F1..F10, Fn+C/V/T volume, …) does nothing.
+
+Cause — two halves of the same design fact, already documented above
+for mutter: the host's whole keyboard contract lives in the `gemini`
+XKB layout's **symbol levels**, and DOSBox-X does not consume an XKB
+layout at all:
+
+1. **DOSBox-X is scancode/position based.** Its SDL2 mapper keys off
+   `SDL_KeyboardEvent.keysym.scancode` (physical position), not
+   `keysym.sym` (the level-resolved symbol):
+   `src/gui/sdl_mapper.cpp` `CKeyBindGroup::CreateEventBind/CheckEvent`
+   use `event->key.keysym.scancode`, and `MakeDefaultBind()` maps the
+   physical `SDL_SCANCODE_*` straight to the emulated PC key. So the
+   `gemini` layout is irrelevant; DOSBox-X translates positions through
+   **its own** `[dos] keyboardlayout` table (default **US**) and picks
+   the character itself. That is why the UK silkscreen (`£` on Shift+3,
+   `@` under Fn+K, `;` under Fn+L, the `'`/`.` keys) is wrong.
+2. **Fn is XKB level 3 only.** Fn is kernel `KEY_RIGHTALT`, used as
+   `ISO_Level3_Shift` (`config/xkb/symbols/gemini:11‑12,28`), so
+   Fn+1..0 is *the same scancode as plain `1`* with RALT held — there is
+   no Fn scancode and no F1/XF86 scancode to translate. This is the
+   exact failure mutter had with `<Mod5>XF86…` keysyms
+   (`services/gnome.nix:278‑311`): a keysym that only exists at level 3
+   cannot be matched from a (keycode, modifier) event. The SDL2 binary
+   ignores `usescancodes` (`useScanCode()` returns false), so that knob
+   is not a way out either.
+
+Fix (app-local, no host-XKB change) — `pkgs/dosbox-x-gemini.nix` wraps
+the upstream package and replaces `bin/dosbox-x` with
+`pkgs/dosbox-x-gemini.sh`; the upstream `share/` (`.desktop`, metainfo)
+is symlink-joined through. The wrapper does two things:
+
+- forces DOSBox-X's own **UK** table (`-set "dos keyboardlayout=uk"`,
+  applied after the user config so it wins; overridable with a later
+  user `-set`, or `DOSBOX_X_GEMINI_NO_UK=1`) so the base/Shift layer
+  matches the UK silkscreen;
+- seeds a **complete** mapper file (`config/dosbox-x/
+  mapper-dosbox-x.map`) into the user config dir on first run. DOSBox-X
+  loads any mapper file it finds **instead of** its built-in defaults
+  (`MAPPER_Init()` → `if (!MAPPER_LoadBinds()) CreateDefaultBinds();`),
+  so the file must reproduce the whole default binding set, not just the
+  additions. It adds a second binding to each F-key event:
+  `key_f1 "key 58" "key 30 mod2"` — i.e. **mod2 (RALT = Fn) + the
+  number scancode → F1**, so Fn+1..0 produce real DOS F1..F10 while an
+  external keyboard's F-keys still work.
+
+Regenerate the mapper when the flake's dosbox-x pin moves:
+`bin/gen-dosbox-x-mapper.sh <src>/src/gui/sdl_mapper.cpp \
+  <SDL2-dev>/include/SDL2/SDL_scancode.h config/dosbox-x/mapper-dosbox-x.map`
+(it derives the `DefaultKeys[]` SDL2 table + scancode values).
+
+Receipts / gotchas (2026-09-11):
+- The mapper **section name is `[SDL2]`**, not `[sdl]` — `SDL_STRING` is
+  `"SDL2"` for SDL2 builds (`include/shell.h:27`). A wrong section makes
+  `MAPPER_LoadBinds()` silently discard every line and fall back to
+  defaults (no warning at default log level). The first generated file
+  had this bug; caught by running the mapper through the x86_64 binary
+  under `SDL_VIDEODRIVER=dummy`.
+- Verified build-level: the x86_64 dosbox-x 2026.08.02 loads the file
+  (strace shows `~/.config/dosbox-x/mapper-dosbox-x.map` opened twice)
+  and logs `DOS keyboard layout loaded with main language code UK for
+  layout uk`. The wrapper seeds the file 0644 (the store copy is 0444,
+  so `chmod` matters — the mapper GUI must be able to save).
+  `DOSBOX_X_GEMINI_MAPPER_RESET=1` re-seeds (backing up the old file);
+  an existing mapper without the Fn binds prints a one-line warning.
+- Fn also *is* Alt (RALT is bound to mapper `mod2` and to the guest's
+  right-Alt in the default map), so Fn+1 reaches the guest as Alt+F1.
+  The Gemini has no separate Alt, so this is the deliberate trade — DOS
+  games keep an Alt key; drop the `key_ralt`/`mod_2` binds if a game
+  objects.
+- The XF86 media layer (Fn+C/V/T/B/N/Q/W/E) is **not** covered: DOS has
+  no media-key scancodes. F-keys are the DOS-relevant part; media keys
+  would have to be bound to DOSBox-X's own mixer/handler events.
+- Still unwrappable by DOSBox-X: symbols the Gemini puts only on level 3
+  (Fn+K=`@`, Fn+L=`;`) cannot be expressed because DOSBox-X never sees
+  the level.
+
+Status: 🟡 deployed to glass as **gen 18** (2026-09-11) — the wrapper
++ `.desktop` are live and a headless run as the desktop user logs the UK
+layout and seeds the mapper. The mapper *load* path was verified with the
+x86_64 binary (strace + UK log).
+⬜ interactive on-glass test owed: launch from the app grid, confirm Fn+1
+gives F1 in a DOS program and Shift+3 gives `£` (needs a human at the
+keyboard or an evdev-injection harness).
+
 ### Speakers: L/R swap + amp/headphone toggle (2026-09-10)
 
 Two reported problems, one mechanism each:
@@ -560,6 +653,10 @@ and dconf reports both keys locked (`gsettings writable` = false).
   speakers.conf`) and `gemini-speakerd` (default-sink → amp pads).
 - `services/scripts/audio-output` — the CLI half of the output mode
   (amp pads + the matching PipeWire default sink).
+- `pkgs/dosbox-x-gemini.{nix,sh}` — the DOSBox-X wrapper (§DOSBox-X): UK
+  table + mapper seeding; the mapper is
+  `config/dosbox-x/mapper-dosbox-x.map`, regenerated by
+  `bin/gen-dosbox-x-mapper.sh`.
 - `config/gemini.nix` — imports + the existing NM polkit/group wiring.
 
 Phosh itself needed no changes: its wifi page speaks NM, its BT page
