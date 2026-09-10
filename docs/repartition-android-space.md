@@ -1,10 +1,11 @@
-# Repurposing the Android partition space for the NixOS rootfs (dual-boot with Debian)
+# Repartitioning the Gemini PDA: TWRP + NixOS only (was: Android space → NixOS rootfs, dual-boot with Debian)
 
-**Status:** ✅ DECIDED + IMPLEMENTED (repo-side) 2026-09-07 — §10 decisions
-made (below), §9 change list landed, images rebuilt. Nothing flashed yet:
-the p32/userdata flash + first on-glass boot is the next session's
-milestone (see `docs/session-log.md`).
-**Last updated:** 2026-09-07.
+**Status:** ✅ DECIDED, IMPLEMENTED + ON GLASS (2026-09-10) — the final
+repartition (§12) replaced Android + Debian + the dual-boot selector with
+a single ~58 GiB `linux` partition: **TWRP (p1 recovery) and NixOS (p27)
+are now the only bootable systems**. The 2026-09-07 §9/§10 dual-boot plan
+(below) is *historical* — see §12.
+**Last updated:** 2026-09-10.
 > **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
 > knowledge repo (AGENTS.md); the sibling GeminiPDA project is legacy
 > and being folded in. The "ground truth" receipts cited below keep
@@ -300,3 +301,113 @@ Implementation record (2026-09-07, §9 change list):
   `platform/mt6797/env.h:36-44`, `app/mt_boot/decompressor.c`).
 - Mobile NixOS `modules/rootfs.nix` (by-label root, growfs, store
   re-hydration — partition-agnostic).
+
+## 12. Final repartition — TWRP + NixOS only (2026-09-10)
+
+> **Supersedes §4, §5, §6, §9 and §10.** The user asked (2026-09-10)
+> for a *clean install*: no user data needed, TWRP + NixOS the only
+> bootable systems, NixOS owning all flash not needed by the boot chain.
+> Android (`system`/`cache`/`userdata`) and the Debian rootfs on p29 are
+> gone; the dual-boot para selector no longer has anything to select.
+
+### 12.1 Layout (verified on glass 2026-09-10)
+
+One large ext4 partition named `linux` (**p27, 0xE000000 = 224 MiB,
+121651167 sectors = 58.006 GiB**) replaces Android's
+`system`(p27)/`cache`(p28)/`userdata`(p32), the Debian `linux`(p29) and
+`boot2`(p30)/`boot3`(p31). Every partition the boot chain or hardware
+needs keeps its **exact** offset, GUID and name; `flashinfo` (was p33)
+is preserved and renumbered p28.
+
+| part | name | start (sector) | size (sector) | note |
+|---|---|---|---|---|
+| p1 | `recovery` | 64 | 32768 | TWRP — bootable (LK on `boot-recovery`) |
+| p2 | `para` | 32832 | 1024 | boot-mode selector (still used: TWRP vs NixOS) |
+| p3..p26 | `expdb frp nvcfg nvdata metadata protect1 protect2 seccfg oemkeystore proinfo md1img md1dsp md1arm7 md3img scp1 scp2 nvram lk lk2` (p22 `boot`), `logo tee1 tee2 keystore` | (unchanged) | (unchanged) | all boot-critical/hardware — every offset/GUID/name preserved; p22 `boot` at 362496 |
+| p27 | **`linux`** | **458752** | **121651167** | **NixOS rootfs — the only writable system partition** (p26 `keystore` ends 458751; p27 ends 122109918) |
+| p28 | `flashinfo` | 122109919 | 32768 | preserved (was p33); ends at `last-lba` 122142686 |
+
+The exact table lives in `stock-dump/repartition-20260910/gpt-new.txt`
+(sgdisk reference) with `gpt-primary-new.bin` / `gpt-backup-new.bin`.
+The new layout is contiguous: `linux` 458752..122109918 then
+`flashinfo` 122109919..122142686, immediately before the 33-sector backup
+GPT (122142687..122142719).
+
+### 12.2 Tooling (new: `bin/repartition-nixos.sh`)
+
+| verb | what |
+|---|---|
+| `plan` | print the layout + verify the host GPT blobs (`sgdisk --verify`) — no device I/O |
+| `backup` | converge to TWRP, pull the live GPT + `recovery para proinfo nvram lk lk2 boot` into `stock-dump/repartition-20260910/` |
+| `apply --yes` | **DESTRUCTIVE**: unmount TWRP's data/cache, write + **byte-verify** the new GPT, stream `system.img` to the raw partition offset `0xE000000` (the ~8 GB image no longer fits TWRP's ~1.9 GiB `/tmp`), flash `boot.img`, verify. Leaves para sticky (TWRP), does **not** boot |
+| `verify` | full read-back md5 of the rootfs region + boot.img |
+| `boot` | clear para + reboot → NixOS |
+
+`converge_twrp` in this script is state-aware (linux→para+WDT EXRST,
+android→`boot-switch.sh twrp`, POC→press power), so `apply` works from
+any state. It streams with `dd of=<raw disk> seek=224 conv=fsync`, so it
+does not depend on the kernel re-reading the GPT mid-session.
+
+### 12.3 What was run + receipts (2026-09-10)
+
+```
+nix build .#packages.aarch64-linux.default        # fresh rootfs + boot.img
+bash bin/repartition-nixos.sh plan                # GPT blobs sgdisk-verified
+bash bin/repartition-nixos.sh backup              # live GPT + boot-critical parts
+bash bin/repartition-nixos.sh apply --yes         # write GPT, stream rootfs, flash boot
+bash bin/repartition-nixos.sh verify              # full 7.94 GB read-back md5
+bash bin/repartition-nixos.sh boot                # para clear + reboot -> NixOS
+```
+
+- `boot.img` sha256 `0b176d934de6e97bda3b9089b9dda30ed105f0a0ca3748497e7ef725e1e7c0c6`
+  (md5 `f6881750b7c115e2a0f8eb5e4fe1bf17`, 9986048 bytes; GNOME-default build).
+- `system.img` sha256 `ccd15c492dac7b69df317cb7d8af1922c5209cc2bda127d787dfae69d83630da`
+  (7940786782 bytes; ext4 `NIXOS_SYSTEM`, mke2fs geometry, grows on first boot).
+  ⚠️ this first clean-install image embedded **uid 1000** store files
+  (no WiFi — §12.6); rebuilt the same day from the fixed shim with
+  sha256 `db1d85e2d9d49f27572f5d59b958143fa66ab08fc3a52595e1d9b56e71fc5477`
+  (root-owned; `boot.img` unchanged, sha256 `0b176d93…`).
+- new GPT: primary sha256 `cbdd72fc6603a826e307ca9eff9bf91d5e859a4234552c5f21f47ba26bd9b6f2`,
+  backup sha256 `ce27b641ff14309368f91fca787bd637e68c45ead9b220793c0425941c7575b3`
+  (`gpt-new.txt` sha256 `540496ca1fcff84f261bf9b51473c85f5274d275d370608b4210d5222fcce5a7`).
+- the on-device `linux` fs auto-grew to fill the partition (systemd-growfs)
+  → **58.0 GiB** usable; see the session-log entry for the on-glass check.
+
+### 12.4 Rollback / disaster recovery
+
+The pre-repartition GPT is in `stock-dump/repartition-20260910/`:
+`gpt-primary-live.bin` + `gpt-backup-live.bin` (and the byte-identical
+`gpt-{primary,backup}-current.bin` pulled from NixOS before the
+TWRP cycle)
+plus `recovery.bin para.bin proinfo.bin nvram.bin lk.bin lk2.bin boot.bin`.
+Restore the GPT from TWRP with `dd` (34 sectors at 0; 33 sectors at
+`last-lba-32`) or via mtkclient. **The old Android/Debian data is
+unrecoverable and was intentionally discarded** (user confirmed
+no user data was needed) — this is a one-way repartition.
+
+### 12.5 Consequences (historical parts of this doc)
+
+- §5/§6 (dual-boot para selector + Debian handoff): the initrd code is
+  still present and harmless (para is only ever zeros or `boot-recovery`,
+  which the initrd treats as the NixOS default), but there is no Debian
+  target any more.
+- `bin/flash-nixos.sh`: `rootfs` now streams to `by-name/linux` (was
+  `userdata`); the `debian` verb + `twrp_para` helper are removed.
+- `bin/boot-switch.sh`: `debian` verb removed; `android` is now just
+  "clear para → boot NixOS".
+- `devices/planet-geminipda/default.nix`:
+  `system_partition_destination = "linux"` (was `"userdata"`).
+- DR inventory/playbook updated: `docs/disaster-recovery/inventory.md`
+  (new partition layout) + `docs/disaster-recovery/README.md`.
+
+### 12.6 Follow-up bug found by the clean install (2026-09-10)
+
+The fresh image booted with **no WiFi** (`wlan0` unmanaged, GNOME wifi
+menu empty) and `logrotate` failing. Both were the same root cause: the
+whole `/nix/store` in the image was owned `1000:100`, and
+NetworkManager/logrotate refuse files not owned by root. The image
+builder shim (`pkgs/make-ext4fs-shim.nix`, R13) runs `mke2fs -d`, which
+copies the source uid/gid verbatim from the uid-1000 build sandbox. Fixed
+by re-execing the shim under `fakeroot` + `chown -R 0:0` before mke2fs
+(details + receipts: session log 2026-09-10o). The running device was
+repaired in place with a one-time store chown; future images are correct.

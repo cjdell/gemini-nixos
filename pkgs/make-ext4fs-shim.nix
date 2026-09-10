@@ -29,8 +29,28 @@
 # byte-aligned multiples of 4096). The builder runs this under faketime
 # (1970) for reproducible mtimes and follows with an e2fsprogs fsck
 # checkPhase against the result.
-{ writeShellScriptBin, e2fsprogs }:
+#
+# [2026-09-10] ROOT OWNERSHIP FIX. `mke2fs -d` copies the uid/gid of the
+# source tree verbatim, and inside a Nix build sandbox the tree is owned
+# by the unprivileged build user (uid 1000 on the aarch64 builder). The
+# resulting image therefore had EVERY store file owned by 1000:100, which
+# NetworkManager ("file has invalid owner (should be root)" -> it skips
+# libnm-device-plugin-wifi.so, so a freshly-imaged system has NO WiFi)
+# and logrotate both reject. Received on glass 2026-09-10 after a clean
+# install; fixed by running mke2fs inside `fakeroot` after a fake
+# `chown -R 0:0` of the tree (nixpkgs' make-ext4-fs does the same). The
+# outer `faketime` LD_PRELOAD survives (fakeroot appends), so image mtimes
+# stay deterministic; only the inode uid/gid change. Verified: debugfs
+# shows User: 0 Group: 0 (was 1000/100) and a re-run keeps the fake mtime.
+{ writeShellScriptBin, e2fsprogs, fakeroot }:
 writeShellScriptBin "make_ext4fs" ''
+  # Re-exec once inside fakeroot so the chown below is *apparent* to
+  # mke2fs (which then writes root-owned inodes) without needing real
+  # privileges; the guard stops the recursion.
+  if [ -z "''${_MAKE_EXT4FS_IN_FAKEROOT:-}" ]; then
+    export _MAKE_EXT4FS_IN_FAKEROOT=1
+    exec ${fakeroot}/bin/fakeroot "$0" "$@"
+  fi
   # make_ext4fs (mke2fs shim) — growable ext4 image builder.
   bs=4096
   size=""
@@ -68,6 +88,10 @@ writeShellScriptBin "make_ext4fs" ''
   [ -n "$dir" ] || dir="."
 
   blocks=$(( size / bs ))
+
+  # Root ownership (see the header): fakeroot makes this chown apparent
+  # to mke2fs without touching the real (build-user-owned) tree.
+  chown -R 0:0 "$dir" 2>/dev/null || true
 
   set -- -t ext4 -b "$bs" -m 0
   [ -n "$uuid" ] && set -- "$@" -U "$uuid"

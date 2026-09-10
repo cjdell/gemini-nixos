@@ -30,6 +30,15 @@
 ## Partition map and dump status (GPT: `stock-dump/gpt-2026-08-30.txt`,
 sha `7b4e3615…`)
 
+> ⚠️ **This table is the PRE-repartition map** (stock GPT as of
+> 2026-08-30). On **2026-09-10** the device was repartitioned one-way to
+> **TWRP + NixOS only**: p27 `system` + p28 `cache` + p29 Debian `linux`
+> + p30 `boot2` + p31 `boot3` + p32 `userdata` were replaced by a single
+> **p27 `linux` (58.0 GiB)** partition; `flashinfo` moved p33→p28. The
+> pre/post GPT + boot-critical partitions were archived in
+> `stock-dump/repartition-20260910/` — see the post-repartition table
+> below and `docs/repartition-android-space.md` §12.
+
 Byte offsets are partition starts from the GPT dump. **Copy status**
 column: `here` = file present in THIS repo's `stock-dump/` (copied
 2026-09-07) · `legacy` = still only in `GeminiPDA/stock-dump/` (M3
@@ -71,6 +80,31 @@ pending — rsync command in the footer).
 | p32 | userdata | 27.3 GiB | 0x7b970000 | ❌ not dumped — FDE dm-crypt ciphertext, useless as restore | — | |
 | p33 | flashinfo | 16 MiB | 0xe8e7fbe00 | `android/flashinfo.img` | legacy | |
 
+### Post-repartition map (2026-09-10 — CURRENT)
+
+Archived in **`stock-dump/repartition-20260910/`** (all pulled/flashed
+2026-09-10; see `SHA256SUMS` there and `docs/repartition-android-space.md` §12):
+
+| file | what | sha256 |
+|---|---|---|
+| `gpt-primary-live.bin` | pre-repartition primary GPT (live TWRP read; = `gpt-primary-current.bin` from NixOS) | `675a455c…` |
+| `gpt-backup-live.bin` | pre-repartition backup GPT | `a12d752c…` |
+| `gpt-primary-new.bin` | **new** primary GPT | `cbdd72fc…` |
+| `gpt-backup-new.bin` | **new** backup GPT | `ce27b641…` |
+| `gpt-new.txt` / `gpt-current.txt` | sgdisk text forms (new / pre) | `540496ca…` |
+| `recovery.bin para.bin proinfo.bin nvram.bin lk.bin lk2.bin boot.bin` | boot-critical TWRP pulls | in `SHA256SUMS` |
+
+Current GPT: only p27 differs from the pre-repartition map above.
+
+| p# | name | start (sector) | size (sector) | note |
+|---|---|---|---|---|
+| p1..p26 | (unchanged) | — | — | every offset/GUID/name preserved |
+| p27 | **`linux`** | 458752 (0xE000000, 224 MiB) | 121651167 (58.0 GiB) | **NixOS rootfs — ext4 `NIXOS_SYSTEM`** |
+| p28 | `flashinfo` | 122109919 | 32768 | preserved (was p33); ends at last-lba 122142686 |
+
+Removed: p27 `system`, p28 `cache`, p29 Debian `linux`, p30 `boot2`,
+p31 `boot3`, p32 `userdata`, p33 `flashinfo` (→p28).
+
 Outside the GPT (eMMC hardware areas):
 - **preloader** in **BOOT1** (`mmcblk?boot0`): ❌ **MISSING — the critical
   gap.** Only proxy: the stock firmware zip's `preloader_k97v1_64_bsp.bin`
@@ -99,6 +133,14 @@ c1d5d87386eaf2115f7b475dd742ad6a88f077cc4c1a676826cabbbc64fda179  nvram.bin     
 28ae68008155cf26e99ab07ea1190217b70d9cb66d5a021ae9fe1a6c09fe6e97  boot-20260907-013541.img  (pre-#329 current)
 959eded5d34cfeac8c0b8e95728f91948105558297c15946bb5641ef452e67e9  boot-20260910-134318.img  (last nested-desktop boot; KMS/GNOME rollback)
 7b4e3615d7be37e4bb311dcbf72e751449d752b31906e1d09e904b5aae576c4b  gpt-2026-08-30.txt
+675a455cfa670baac9650924d392901744a391b5566135934ecc355d991d51cf  gpt-primary-live.bin   (pre-repartition, 2026-09-10)
+a12d752c595b89670f5fa425a8ce403a060ae790225c7217880d0d8f2feadbed  gpt-backup-live.bin
+cbdd72fc6603a826e307ca9eff9bf91d5e859a4234552c5f21f47ba26bd9b6f2  gpt-primary-new.bin    (current layout)
+ce27b641ff14309368f91fca787bd637e68c45ead9b220793c0425941c7575b3  gpt-backup-new.bin
+540496ca1fcff84f261bf9b51473c85f5274d275d370608b4210d5222fcce5a7  gpt-new.txt
+0b176d934de6e97bda3b9089b9dda30ed105f0a0ca3748497e7ef725e1e7c0c6  boot.img (GNOME-default, flashed 2026-09-10; md5 f6881750…)
+ccd15c492dac7b69df317cb7d8af1922c5209cc2bda127d787dfae69d83630da  system.img (2026-09-10 first clean install — had uid-1000 store, no WiFi)
+db1d85e2d9d49f27572f5d59b958143fa66ab08fc3a52595e1d9b56e71fc5477  system.img (2026-09-10 REBUILD from the fixed make_ext4fs shim — root-owned; flashed)
 ```
 
 Legacy-only (M3 pending — hash the copy after the rsync):
@@ -150,8 +192,12 @@ Planet "Gemini_WIFI_17052019" release. Contents that matter for DR:
 
 1. **Preloader (BOOT1 area) dump** — the only boot stage with no on-disk
    dump. ← most important
-2. **Raw GPT binaries** (primary + backup) — only the text map exists.
-3. **lk2** (p21), **scp1/scp2** (p17/p18), **cache** (p28) dumps.
+2. ~~**Raw GPT binaries** (primary + backup)~~ — ✅ done 2026-09-10
+   (`stock-dump/repartition-20260910/gpt-*-{live,new}.bin`: both the
+   pre-repartition and the new layouts).
+3. **lk2** (p21), **scp1/scp2** (p17/p18) dumps. (`cache`/p28 is gone —
+   reclaimed into p27 `linux`; the stock zip's `cache.img` is the only
+   copy, and `system`/`userdata` were reclaimed too.)
 4. **BOOT2 area** dump (raw, for completeness).
 5. **BROM-mode entry verification** (read-only experiment) — Level 2
    depends on it.

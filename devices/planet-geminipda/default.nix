@@ -55,13 +55,13 @@ in
     # output to boot.img + system.img only.
     has_recovery_partition = false;
 
-    # The NixOS rootfs goes on Android's `userdata` partition (p32,
-    # 27.3 GiB — the Android FDE data is erased by the flash). The
-    # GeminiPDA Debian rootfs STAYS on p29 `linux`, untouched: the
-    # dual-boot initrd (initrd.nix) picks the OS from the para command
-    # (boot-debian -> p29, zeros -> p32 NixOS default). Android `system`
-    # (p27) is spare. See docs/repartition-android-space.md.
-    system_partition_destination = "userdata";
+    # The NixOS rootfs goes on the big `linux` partition (p27, ~58 GiB).
+    # Since the 2026-09-10 repartition TWRP (p1 recovery) + NixOS are the
+    # ONLY systems: Android's system/cache/userdata + the Debian `linux`
+    # rootfs + boot2/boot3 were reclaimed into this single partition, every
+    # boot-critical/hardware partition (p1..p26 + flashinfo) kept at its
+    # exact offset. See docs/repartition-android-space.md §12.
+    system_partition_destination = "linux";
 
     bootimg.flash = {
       offset_base    = "0x40000000";

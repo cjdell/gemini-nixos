@@ -49,9 +49,12 @@ entirely on the PDA from a repo clone at `/root/gemini-nixos`;
 package), so the STOCK loop works from the device clone too —
 `cd /root/gemini-nixos && nixos-rebuild switch --flake .` (the Python
 nixos-rebuild-ng; in the device closure by default; nixpkgs dropped
-the bash nixos-rebuild at this pin).** Rootfs target (2026-09-07): NixOS → p32
-`userdata` with a dual-boot boot.img, Debian stays on p29 (see
-`docs/repartition-android-space.md` §10 decisions).
+the bash nixos-rebuild at this pin).** **2026-09-10: the unit was
+repartitioned one-way to TWRP + NixOS only** — the old Android + Debian
++ p32 `userdata` layout is gone; the NixOS rootfs now lives on ONE
+**58.0 GiB p27 `linux`** partition (ext4 label `NIXOS_SYSTEM`), with p1
+`recovery` (TWRP) the only other bootable partition
+(`bin/repartition-nixos.sh`; `docs/repartition-android-space.md` §12).
 
 ⚠️ **Boot.img cmdline field: KEEP `bootopt=64S3,32N2,64N2` in it** — LK
 consumes it via `platform_parse_bootopt`; without it the boot hangs on
@@ -172,7 +175,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | Feasibility study + the phased plan (phase table = roadmap) | `docs/mobile-nixos-port-feasibility.md` |
 | Plain-language boot explainer (receipt pointers) | `docs/boot-process.md` |
 | **Phase-2 on-glass knowledge + TODO** (2026-09-07 milestone: bootopt discovery, recovery receipts, not-quite-working list) | `docs/phase-2-on-glass.md` |
-| **NixOS-on-p32 + dual-boot design** (decided + implemented repo-side 2026-09-07; §10 choices, §9 change list) | `docs/repartition-android-space.md` |
+| **NixOS rootfs layout** — TWRP + NixOS only since 2026-09-10 (single 58 GiB p27 `linux`; supersedes the 2026-09-07 dual-boot plan §9/§10) | `docs/repartition-android-space.md` (§12) |
 | "Published base + in-repo delta" pattern (mesa done; kernel next) | `docs/library-deltas.md` |
 | **What was actually tried / happened** (dated entries; golden log) | `docs/session-log.md` |
 | **Disaster recovery** — full-flash-erase → TWRP playbook (levels 0–2), image ledger + sha256, gather checklist, drills | `docs/disaster-recovery/` (README · inventory · gather · drills) |
@@ -201,11 +204,13 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | Kernel source: published v6.6 base (fetch-pinned) + tracked delta + lean config | `devices/planet-geminipda/kernel/` (`default.nix`, `delta/`, `config`, `config.full-329`) + `kernel/base` submodule pointer |
 | **DRM/KMS driver for the LK framebuffer** (the standard-device enabler; GNOME prerequisite) | `devices/planet-geminipda/kernel/delta/drivers/gpu/drm/tiny/geminipda-drm.c` |
 | Kernel config pruning + delta sync tools | `bin/prune-kernel-config.sh`, `bin/sync-kernel-delta.sh` (replaces the retired `bin/snapshot-kernel.sh`) |
+| **Rootfs ext4 image builder shim** (R13: growable mke2fs geometry; **2026-09-10: re-execs under fakeroot + `chown -R 0:0` so the image gets root-owned inodes — without it a fresh install has NO WiFi (NM rejects non-root plugin files) and logrotate fails**) | `pkgs/make-ext4fs-shim.nix` (wired via `config/gemini.nix` nixpkgs overlay) |
 | boot.img header inspection | `bin/dump-bootimg-header.sh` |
 | **Recovery tooling** — patched-mtkclient launcher (preloader/BROM), USB-state watcher | `bin/run-mtk.sh`, `bin/usb-watch.sh` (+ devshell `mtkclient` = store pkg + DAs) |
 | **g_ether net-up / SSH / WDT-EXRST reboot** (host side) | `bin/net-up.sh`, `bin/device-ssh.sh`, `bin/device-reboot.sh` |
-| **Boot-target switching + boot-partition flash** (adb/TWRP; twrp/android/debian/flash/restore) | `bin/boot-switch.sh` |
-| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + p32 userdata rootfs; Debian p29 preserved) | `bin/flash-nixos.sh` (verbs incl. `grow-rootfs` — offline p32 fs growth from TWRP, R13) |
+| **Boot-target switching + boot-partition flash** (adb/TWRP; twrp/android/flash/restore; the `debian` verb was removed 2026-09-10) | `bin/boot-switch.sh` |
+| **Full NixOS flash orchestration** (converge-to-TWRP from any state, boot + stream rootfs → p27 `linux`) | `bin/flash-nixos.sh` (verbs incl. `grow-rootfs` — offline p27 fs growth from TWRP, R13) |
+| **One-way repartition to TWRP + NixOS only** (2026-09-10; plan/backup/apply/verify/boot; byte-verified GPT + streamed rootfs) | `bin/repartition-nixos.sh` |
 | **Build/switch/rollback generations like a workstation** (native-aarch64 distributed build → delta `nix copy` → device profile switch + activate; NO reflash) | `bin/deploy.sh` (status/build/deploy/rollback) |
 | **Same loop, run ON the PDA** (2026-09-08, gen30): build straight into the device store (cache substitutes; custom drvs compile locally when changed) + profile switch/activate, from a repo clone at `/root/gemini-nixos`; `channels` pins the `nix-shell -p` nixpkgs to the flake rev. **2026-09-09: the flake's `nixosConfigurations.gemini` makes the stock `nixos-rebuild switch --flake .` work from the clone — the script is now the convenience wrapper (dirty gate, status/rollback, channels)** | `bin/device-rebuild.sh` (status/build/switch/rollback/channels/gc); clone sync: `bin/device-repo.sh` (seed/push/pull over g_ether as a git bundle) |
 | **GC-pin builds** (host `nix-collect-garbage` protection — every deploy pins itself; list/unpin) | `bin/gc-pin.sh` |
@@ -254,19 +259,21 @@ self-boots: `busybox devmem 0x10007004 32 0x48` (2 s WDT). From the host:
 **Boot targets** (adb state machine in `bin/boot-switch.sh`; para = p2
 of the largest mmcblk, 32-byte command at offset 0):
 - `boot-recovery\0` + 18 zero bytes → **TWRP on every power-on (sticky —
-  TWRP does not clear it)**; `boot-debian\0` + 20 zero bytes → NORMAL
-  boots the boot image's **Debian branch (p29)**; 32 zero bytes → NORMAL
-  boots the boot image's **NixOS branch (p32 — the default)** [dual-boot
-  selector 2026-09-07, docs/repartition-android-space.md]. Only `para`
-  and `boot` are ever written; never nvram/proinfo/protect*.
-- `bash bin/boot-switch.sh status|twrp|android|debian|flash [img]|restore`.
-  NOTE: `android`/`boot-nixos` = para-clear + reboot → NORMAL → boots the
-  NixOS p32 default with the dual-boot boot.img installed; `debian` =
-  para=boot-debian. "Linux" is not a separate slot: our kernel goes in
-  `boot` itself (boot2/boot3 are legacy reference slots, untouched).
+  TWRP does not clear it)**; 32 zero bytes → NORMAL boots the `boot`
+  image's **NixOS branch (p27 `linux` — the default)**. Since the
+  2026-09-10 repartition TWRP + NixOS are the only systems, so
+  `boot-debian` is gone (the initrd still treats it as non-NixOS and
+  falls back). Only `para` and `boot` are ever written; never
+  nvram/proinfo/protect*.
+- `bash bin/boot-switch.sh status|twrp|android|flash [img]|restore`.
+  NOTE: `android` = para-clear + reboot → NORMAL → boots the NixOS p27
+  default (the historical name is kept). "Linux" is not a separate slot:
+  our kernel goes in
+  `boot` itself (boot2/boot3 are gone).
 - Device running Linux (no adbd — the current real state): converge via
-  `bin/flash-nixos.sh` (para write over ssh + WDT EXRST → TWRP); OS
-  switching over ssh = `flash-nixos.sh debian|boot-nixos`.
+  `bin/flash-nixos.sh` (para write over ssh + WDT EXRST → TWRP); a fresh
+  System is flashed with `flash-nixos.sh rootfs` (p27), or the whole
+  layout redone with `bin/repartition-nixos.sh`.
 - A hung boot image has NO software path back (para cleared = normal
   boot) → recovery = mtkclient preloader mode (`bin/run-mtk.sh`;
   full playbook `docs/disaster-recovery/drills.md`) — this is why the
@@ -276,13 +283,13 @@ of the largest mmcblk, 32-byte command at offset 0):
 
 **Flash pipeline (no fastboot on this device):** images go to partitions
 from the patched no-swipe TWRP (root adbd) by-name paths:
-`/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/{boot,linux,userdata,para}`.
-NixOS rootfs → p32 `userdata` (27.3 GiB, ext4 label `NIXOS_SYSTEM` —
-**destroys Android's FDE userdata only**; the Debian rootfs on p29
-`linux` is never written and stays bootable via the `boot-debian`
-marker). Boot image (dual-boot boot.img) → p22 `boot` (16 MiB).
+`/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name/{boot,linux,para}`
+(and `recovery`).
+NixOS rootfs → p27 `linux` (58.0 GiB, ext4 label `NIXOS_SYSTEM` — the
+single system partition since 2026-09-10). Boot image → p22 `boot`
+(16 MiB).
 Orchestrated by `bin/flash-nixos.sh
-status|boot|rootfs|all|boot-nixos|debian` (see its header for the safety
+status|boot|rootfs|all|boot-nixos|grow-rootfs` (see its header for the safety
 model + run-job usage).
 
 **Battery/charger truth** (OS-dependent; verified live on the legacy

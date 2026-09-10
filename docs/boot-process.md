@@ -8,7 +8,15 @@ receipts live in the legacy `GeminiPDA/docs/boot-chain.md` and in
 `docs/repartition-android-space.md` for the dual-boot proposal (port to
 this repo is migration item M1 — see `AGENTS.md`). This doc is the
 "how it fits together" layer.
-**Last updated:** 2026-09-07.
+**Last updated:** 2026-09-10.
+
+> ⚠️ **2026-09-10 — the dual-boot selector described below is
+> HISTORICAL.** The unit was repartitioned to **TWRP + NixOS only**: the
+> NixOS rootfs is now the single 58 GiB p27 `linux` partition and there
+> is no Debian/p29 target (see `docs/repartition-android-space.md` §12).
+> The initrd's `boot-debian`/p29 branch still exists and is harmless
+> (para is only ever zeros or `boot-recovery`, which select the NixOS
+> default), but the "two OSes" framing below no longer matches the disk.
 
 > **GOLDEN-REPO note [2026-09-07]:** gemini-nixos is now the primary
 > knowledge repo; the sibling GeminiPDA project is the legacy source

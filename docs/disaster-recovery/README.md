@@ -7,7 +7,7 @@
 > `printgpt`, readbacks, idempotent `w para`). The BROM-mode (Level 2)
 > path is 🔴 **unverified on this unit** — BROM entry (`0e8d:0003`) must
 > be validated while the device is healthy (`gather.md` step 5).
-> **Last updated:** 2026-09-07
+> **Last updated:** 2026-09-10
 
 ## Purpose
 
@@ -39,6 +39,11 @@ BootROM (in-SoC, unerasable)
   RECOVERY even with para cleared (checked before the POC path).
 - POC trap: USB attached + no power-key press at LK → charging kernel
   (`0e8d:2008`), not a console. Hold the power key to force NORMAL.
+- **2026-09-10:** the repartition left **TWRP (p1) + NixOS (p27 `linux`)**
+  as the only systems; `boot2`/`boot3` and the Android/Debian rootfs are
+  gone, so "NORMAL" now always means the NixOS `boot` image. GPT backups
+  for both the pre- and post-repartition layouts are in
+  `stock-dump/repartition-20260910/` (`inventory.md`).
 
 ## Failure levels
 
@@ -88,6 +93,9 @@ BootROM (in-SoC, unerasable)
 
 ## Where the restore images come from
 
+- GPT (raw primary + backup, both the pre- and the post-2026-09-10
+  layouts): `stock-dump/repartition-20260910/gpt-*.bin` — see
+  `inventory.md` "Post-repartition map".
 - Boot-critical dumps: **`stock-dump/` in this repo** (gitignored;
   boot-critical set copied from the legacy repo 2026-09-07 — ledger +
   copy status in `inventory.md`). Bulk blobs (android images, the

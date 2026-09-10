@@ -5,6 +5,145 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10o — fresh rootfs had NO WiFi: image embedded uid 1000 (make_ext4fs shim fixed)
+
+Follow-up to 2026-09-10n (clean install). After the fresh image booted,
+GNOME showed no WiFi — and the `logrotate` failures recorded in 09-10n
+were the SAME root cause, not unrelated.
+
+### Root cause (in the IMAGE, not the NM config)
+
+- `nmcli device` → `wlan0:wifi:unmanaged`; NM journal:
+  `plugin: skip invalid file …/libnm-device-plugin-wifi.so: file has
+  invalid owner (should be root)`. NM refuses to load a plugin not owned
+  by root, so the WiFi device type never registers.
+- `ls -ln` showed the **whole store owned `1000:100`** (logrotate's check
+  is the identical "file owner is wrong" rule).
+- `debugfs -R 'stat <path>' system.img` → `User: 1000 Group: 100`: the
+  ownership is baked into the ext4 image, not a boot-time artifact.
+- Cause: the R13 shim `pkgs/make-ext4fs-shim.nix` builds the image with
+  `mke2fs -d DIR`, and **`mke2fs` copies the source uid/gid verbatim**.
+  In a Nix build sandbox the tree is owned by the build user (uid 1000 on
+  the aarch64 builder), so every image from the shim had uid-1000 store
+  files. (The pre-repartition install had been repaired in place by a
+  `nix copy`/rebuild that rewrote ownership; a clean image reintroduced it.)
+
+### Fix (image build — the durable one)
+
+`pkgs/make-ext4fs-shim.nix` now re-execs itself once under `fakeroot`
+(guarded by `_MAKE_EXT4FS_IN_FAKEROOT`) and runs `chown -R 0:0 "$dir"`
+before `mke2fs`, so mke2fs writes **root-owned** inodes (nixpkgs'
+`make-ext4-fs` does the same). Verified standalone on a uid-1000 tree:
+debugfs shows `User: 0 Group: 0` (was 1000/100) and the outer `faketime`
+mtime (`0xfffff1f1`) is preserved, so fakeroot appends to `LD_PRELOAD`
+and image determinism is unchanged. Inputs: `fakeroot` added.
+
+### Runtime repair of the running device (no reflash needed)
+
+```
+mount -o remount,rw /nix/store
+chown -R root:root /nix/store /nix/var   # ~40 s
+systemctl restart NetworkManager
+```
+→ `wlan0:wifi:connected:The Lab`, `nmcli device wifi list` populated,
+`logrotate-checkconf.service` active. (The final `remount,ro` is refused
+while the fs is busy; harmless — the boot mount unit restores ro.)
+
+### On-glass validation (same day)
+
+Rebuilt `.#packages.aarch64-linux.default` from the fixed shim, then
+reflashed (`bin/repartition-nixos.sh apply --yes` + `boot`) and cold-booted:
+
+- store is **natively root-owned** (wifi plugin `0:0`) — **NO runtime
+  chown needed**;
+- NetworkManager journal has **no `plugin: skip … invalid owner`** lines;
+- `wlan0:wifi:connected:The Lab`; profiles `The Lab` +
+  `The Lab 2.4GHz` present; `display-manager.service` active,
+  gnome-shell running, 0 restarts;
+- `systemctl --failed` is **empty** — the `logrotate` pair from 09-10n
+  now passes;
+- `/` on p27 grew to 50.3 G free; rule-5 display gate still clean
+  (0 hits for mediatek-drm/mtk-mmsys/tps65132/phy-mtk).
+- new `system.img` sha256 `db1d85e2…` (root-owned); `boot.img` unchanged
+  (`0b176d93…`). The device is left running NixOS with para cleared.
+
+### Receipts
+
+- NM journal: `file has invalid owner (should be root)` (wifi +
+  bluetooth + adsl plugins).
+- `debugfs` image inode: `User: 1000 Group: 100` before, `0:0` after.
+- Host reproduction: `mke2fs -d <uid-1000 tree>` → debugfs `User: 1000`;
+  under `faketime … fakeroot` + `chown -R 0:0` → `User: 0`.
+- Fix commit: `pkgs/make-ext4fs-shim.nix` (2026-09-10).
+
+## 2026-09-10n — ONE-WAY REPARTITION: TWRP + NixOS only (58 GiB p27 `linux`), clean install on glass
+
+User request: repartition so **TWRP + NixOS are the only bootable
+systems**, NixOS owns all flash not needed by TWRP/the boot partitions,
+and **no existing user data is needed (clean install)**. Done, flashed
+and verified on glass.
+
+### What changed (GPT — verified against `stock-dump/repartition-20260910/`)
+
+- p27 `system` (2.5 GiB) + p28 `cache` + p29 Debian `linux` (27.7 GiB)
+  + p30 `boot2` + p31 `boot3` + p32 `userdata` (27.3 GiB) → ONE partition
+  **p27 `linux`, start 458752 (0xE000000 = 224 MiB), size 121651167 =
+  58.006 GiB**.
+- `flashinfo` preserved (was p33) and renumbered **p28**
+  (122109919..122142686 = up to last-lba); p1..p26 keep their **exact**
+  offset/GUID/name (p22 `boot` at 362496, p26 `keystore` ends 458751).
+- Result: **p1 `recovery` (TWRP) + p22 `boot` (NixOS) + p27 `linux`
+  (rootfs) are the only system partitions.**
+
+### Tooling
+
+- **New `bin/repartition-nixos.sh`** (`plan|backup|apply --yes|verify|boot`):
+  builds/【uses】sgdisk-verified GPT blobs, **byte-verifies** the GPT
+  read-back *before* the destructive write, streams the rootfs to the
+  **raw disk offset** (the ~8 GB image does not fit TWRP's ~1.9 GiB
+  `/tmp`), leaves para sticky (TWRP) and makes `boot` explicit.
+  `converge_twrp` is state-aware (Linux→para+WDT EXRST, Android→
+  `boot-switch.sh twrp`, POC→power key).
+- `bin/flash-nixos.sh`: `rootfs` now **streams to `by-name/linux`** (was
+  `userdata`); the `debian` verb + `twrp_para` helper removed; the build
+  comment fixed to `.#packages.aarch64-linux.default`.
+- `bin/boot-switch.sh`: `debian` verb removed; `android` is now just
+  "clear para → boot NixOS".
+- `devices/planet-geminipda/default.nix`:
+  `system_partition_destination = "linux"`.
+
+### Receipts (2026-09-10)
+
+- `boot.img` sha256 `0b176d93…` (9986048 B); `system.img` sha256
+  `ccd15c49…` (7940786782 B, ext4 `NIXOS_SYSTEM`, mke2fs geometry).
+- New GPT primary sha256 `cbdd72fc…`, backup `ce27b641…`; pre-repartition
+  GPT `675a455c…`/`a12d752c…`; + `recovery para proinfo nvram lk lk2
+  boot` pulls — all in `stock-dump/repartition-20260910/` (gitignored).
+- `apply`: GPT read-back **byte-identical**; rootfs **full 7.94 GB
+  read-back md5 identical** (`cf8ebc65d932b703869845c1b1b12c1c`);
+  `boot.img` exact-length md5 identical (`f6881750…`).
+- `boot`: NixOS came up on **/dev/mmcblk0p27** (by-label
+  `NIXOS_SYSTEM`), fs auto-grew to **58.0 GiB** (57G size / 50G free),
+  GNOME up (`display-manager.service` active, gnome-shell present),
+  p28 = `flashinfo`, p30–p33 gone. **Rule-5 gate clean**: dmesg shows
+  only `geminipda-drm` + panfrost — no mediatek-drm/mtk-mmsys/phy-mtk/
+  tps65132.
+- Pre-existing + unrelated: `logrotate.service` +
+  `logrotate-checkconf.service` fail ("Ignoring …-logrotate.conf
+  because the file owner is wrong") — present before this work.
+  **[corrected 2026-09-10o — NOT unrelated: same image-uid-1000 cause
+  as the missing WiFi; fixed with the make_ext4fs shim.]**
+
+### Follow-ups
+
+- `gemini-boot-debian` (CLI + unit) is now a dead marker (the initrd
+  falls back to NixOS) — remove from `services/gemini-pda.nix` on the
+  next config pass.
+- Docs updated: `docs/repartition-android-space.md` §12, README, AGENTS,
+  `docs/disaster-recovery/{README,inventory}.md`.
+- Device left running NixOS (para cleared = boots p27); no reflash
+  needed for normal iteration.
+
 ## 2026-09-10m — keyboard REALLY fixed (gemini was not in the xkb *registry*) + touch 180
 
 Follow-up to 2026-09-10l, which was necessary but not sufficient.

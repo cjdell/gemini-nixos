@@ -22,24 +22,17 @@
 #       `boot`. STAYS in TWRP (para untouched): the unverified image is
 #       never booted unattended. Next step = `boot-nixos` when ready.
 #   bash bin/flash-nixos.sh rootfs [rootfs.img] [--yes]
-#       Converge to TWRP → flash the image into Android's `userdata`
-#       partition (p32, by-name). DESTROYS the Android FDE userdata —
-#       prompts unless --yes. The GeminiPDA Debian rootfs on p29
-#       (`linux`) is NOT touched (docs/repartition-android-space.md).
+#       Converge to TWRP → stream the image into the big `linux`
+#       partition (p27, by-name; ~58 GiB). DESTROYS the current NixOS
+#       rootfs; prompts unless --yes (docs/repartition-android-space.md §12).
 #   bash bin/flash-nixos.sh all [--yes]
 #       boot + rootfs, skipping the interactive prompts.
 #   bash bin/flash-nixos.sh boot-nixos
 #       Clear para + reboot from TWRP → NORMAL boots the `boot` partition
-#       (the flashed dual-boot boot.img; para zeros = NixOS p32 default).
-#       Rollback of `boot` from TWRP: bin/boot-switch.sh restore. Debian
-#       stays bootable any time via para=boot-debian (bin/boot-switch.sh
-#       debian / this script's `debian` / on-device gemini-boot-debian).
-#   bash bin/flash-nixos.sh debian
-#       Switch to the Debian rootfs on p29: para=boot-debian + reboot
-#       (from running Linux: WDT EXRST self-boot; from TWRP: adb reboot).
-#       Reverse (back to NixOS): boot-nixos (or clear para + reboot).
+#       (the flashed boot.img; para zeros = NixOS `linux` default).
+#       Rollback of `boot` from TWRP: bin/boot-switch.sh restore.
 #   bash bin/flash-nixos.sh grow-rootfs
-#       Converge to TWRP → OFFLINE-grow the p32 rootfs filesystem to the
+#       Converge to TWRP → OFFLINE-grow the `linux` rootfs filesystem to the
 #       full partition size (e2fsck -fy + resize2fs with a pushed static
 #       e2fsprogs). This is the recovery path for make_ext4fs-geometry
 #       images whose fs the kernel can only online-grow to 2x (R13 —
@@ -50,7 +43,7 @@
 #
 # Default images: result/boot.img + result/system.img (the `default`
 # flake output's android-fastboot-images layout). Built with:
-#   nix build .#packages.x86_64-linux.default
+#   nix build .#packages.aarch64-linux.default
 #
 # LONG OPERATION: the rootfs push+dd can take 5-20 min over USB. Run it
 # under the detached job runner so a session never stalls:
@@ -64,9 +57,9 @@
 #   see the DR playbook docs/disaster-recovery/). So: flash while
 #   para=boot-recovery (every power-on = TWRP), verify your images, and
 #   only then `boot-nixos` (para-clear + reboot). Keep the boot backups in
-#   stock-dump/ — restore is one adb command. The p29 Debian rootfs is
-#   never written by this script; it stays bootable via the `boot-debian`
-#   marker even after the NixOS boot.img is installed.
+#   stock-dump/ — restore is one adb command. Since the 2026-09-10
+#   repartition TWRP + NixOS are the only systems (Android and the
+#   Debian `linux` rootfs were reclaimed — docs/repartition-android-space.md §12).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -91,6 +84,10 @@ BOOT_IMG_DEFAULT="$ROOT/result/boot.img"
 ROOTFS_IMG_DEFAULT="$ROOT/result/system.img"
 # TWRP by-name partition directory (verified path on this unit)
 P=/dev/block/platform/mtk-msdc.0/11230000.msdc0/by-name
+# The single NixOS rootfs partition (2026-09-10 repartition): the old
+# Android system/cache/userdata + Debian linux + boot2/boot3 collapsed
+# into one ~58 GiB `linux` (p27). See bin/repartition-nixos.sh.
+TARGET_PART=linux
 BACKUP_DIR="$ROOT/stock-dump"
 # Static (musl) aarch64 e2fsprogs for offline rootfs growth from TWRP
 # (grow-rootfs verb). Rebuild + pin if GC'd:
@@ -250,34 +247,28 @@ cmd_rootfs() {
   local img="${1:-$ROOTFS_IMG_DEFAULT}"
   need_img "$img" "rootfs image"
   converge_twrp
-  # sanity: the target partition exists and is big (>= 20 GiB = p32
-  # userdata). TWRP has no blockdev — resolve the by-name symlink and
-  # read the size from /proc/partitions (column 3, KiB units) on the HOST.
+  # sanity: the target partition exists and is big (>= 20 GiB). TWRP has
+  # no blockdev; resolve the by-name symlink and read the size from
+  # /proc/partitions (column 3, KiB units) on the device.
   local tgt base kb
-  tgt=$(adb_sh "readlink -f $P/userdata" | tr -d '\r' || true)
+  tgt=$(adb_sh "readlink -f $P/$TARGET_PART" | tr -d '\r' || true)
   base=$(basename "$tgt")
   kb=$(adb_sh 'cat /proc/partitions' | tr -d '\r' | awk -v b="$base" '$4==b{print $3}')
   if [ -z "$tgt" ] || [ -z "$kb" ] || [ "$kb" -lt $((20 * 1024 * 1024)) ]; then
-    die "p32 (by-name/userdata) missing or too small (readlink=$tgt, blocks=$kb) — refusing. Partition list: $(adb_sh 'ls '$P | tr '\n' ' ')"
+    die "by-name/$TARGET_PART missing or too small (readlink=$tgt, blocks=$kb) — refusing. Partition list: $(adb_sh 'ls '$P | tr '\n' ' ')"
   fi
-  echo ">> target: $P/userdata -> $tgt = $((kb / 1024 / 1024)) GiB (p32)"
+  echo ">> target: $P/$TARGET_PART -> $tgt = $((kb / 1024 / 1024)) GiB"
   if [ "$YES" != 1 ]; then
-    echo "!! This DESTROYS Android's userdata on p32 (factory FDE data) —"
-    echo "   the NixOS rootfs replaces it. The Debian rootfs on p29 is untouched."
-    read -r -p "Type 'wipe android' to continue: " ans
-    [ "$ans" = "wipe android" ] || { echo "aborted."; exit 1; }
+    echo "!! This DESTROYS the current NixOS rootfs on $TARGET_PART."
+    read -r -p "Type 'wipe rootfs' to continue: " ans
+    [ "$ans" = "wipe rootfs" ] || { echo "aborted."; exit 1; }
   fi
-  say "pushing rootfs image to the device (~1.5 GiB — allow several minutes)..."
-  adb_push push "$img" /tmp/rootfs.img >/dev/null
-  # belt: confirm the pushed copy is complete before the destructive dd
-  # (TWRP's busybox stat has no -c — wc -c works everywhere)
-  local got want
-  got=$(adb_sh "wc -c < /tmp/rootfs.img 2>/dev/null" | tr -d '\r' || true)
-  want=$(stat -c %s "$img")
-  [ "$got" = "$want" ] || die "push incomplete (device $got vs host $want bytes) — re-run"
-  say "push verified ($got bytes on device)"
-  say "flashing -> $P/userdata (ext4, label NIXOS_SYSTEM; first boot auto-resizes to fill p32 + rehydrates the store)"
-  twrp_dd_part /tmp/rootfs.img userdata
+  # Stream the image STRAIGHT to the partition: the rootfs image is now
+  # ~8 GB (GNOME closure) and does NOT fit TWRP's ~1.9 GiB /tmp tmpfs.
+  # Unmount first so TWRP cannot flush stale data over the image.
+  adb_sh "umount /data 2>/dev/null; umount /sdcard 2>/dev/null; umount /cache 2>/dev/null; umount $P/$TARGET_PART 2>/dev/null; sync; true" >/dev/null
+  say "streaming rootfs -> $P/$TARGET_PART ($(stat -c%s "$img") bytes; several minutes)..."
+  timeout 3600 adb shell "dd of=$P/$TARGET_PART bs=1M conv=fsync" < "$img"
   say "rootfs flashed. Device is in TWRP (para sticky)."
 }
 
@@ -293,7 +284,7 @@ cmd_boot_nixos() {
     *) converge_twrp ;;
   esac
   say "clearing para + rebooting → NORMAL boots the \`boot\` partition"
-  say "  (dual-boot boot.img; para zeros = NixOS p32 default)"
+  say "  (para zeros = NixOS on the linux partition)"
   adb_sh "dd if=/dev/zero of=$P/para bs=32 count=1 conv=fsync" >/dev/null
   adb_q reboot >/dev/null 2>&1 || true
   say "reboot sent. First NixOS boot: watch the serial console (ttyS0,921600) or fbcon."
@@ -305,15 +296,15 @@ cmd_grow_rootfs() {
   converge_twrp
   [ -d "$E2FS_STATIC/bin" ] || die "static e2fsprogs not present: $E2FS_STATIC (rebuild + gc-pin, see header)"
   local tgt base kb
-  tgt=$(adb_sh "readlink -f $P/userdata" | tr -d '\r' || true)
+  tgt=$(adb_sh "readlink -f $P/$TARGET_PART" | tr -d '\r' || true)
   base=$(basename "$tgt")
   kb=$(adb_sh 'cat /proc/partitions' | tr -d '\r' | awk -v b="$base" '$4==b{print $3}')
   if [ -z "$tgt" ] || [ -z "$kb" ] || [ "$kb" -lt $((20 * 1024 * 1024)) ]; then
-    die "p32 (by-name/userdata) missing or too small (readlink=$tgt, blocks=$kb) — refusing"
+    die "by-name/$TARGET_PART missing or too small (readlink=$tgt, blocks=$kb) — refusing"
   fi
-  say "target: $P/userdata -> $tgt = $((kb / 1024 / 1024)) GiB (p32)"
-  # TWRP auto-mounts userdata as /data; offline growth needs it unmounted.
-  adb_sh "umount /data 2>/dev/null; umount $tgt 2>/dev/null; umount $P/userdata 2>/dev/null; true" >/dev/null
+  say "target: $P/$TARGET_PART -> $tgt = $((kb / 1024 / 1024)) GiB"
+  # TWRP may auto-mount the partition; offline growth needs it unmounted.
+  adb_sh "umount /data 2>/dev/null; umount $tgt 2>/dev/null; umount $P/$TARGET_PART 2>/dev/null; true" >/dev/null
   say "pushing static e2fsprogs (e2fsck + resize2fs)..."
   adb_push push "$E2FS_STATIC/bin/e2fsck" /tmp/e2fsck >/dev/null
   adb_push push "$E2FS_STATIC/sbin/resize2fs" /tmp/resize2fs >/dev/null
@@ -321,57 +312,17 @@ cmd_grow_rootfs() {
   say "e2fsck -fy (journal replay + health check — offline, no online-resize limits)"
   # e2fsck exits 1 when it MODIFIED the fs (journal replay / repairs) —
   # that is success here; don't let set -euo pipefail kill the run.
-  adb_sh "/tmp/e2fsck -fy $P/userdata" 2>&1 | tail -3 || true
+  adb_sh "/tmp/e2fsck -fy $P/$TARGET_PART" 2>&1 | tail -3 || true
   say "resize2fs -> full partition size"
-  adb_sh "/tmp/resize2fs $P/userdata" 2>&1 | tail -3
+  adb_sh "/tmp/resize2fs $P/$TARGET_PART" 2>&1 | tail -3
   say "verify: fs state + free space"
-  adb_sh "/tmp/e2fsck -fn $P/userdata" 2>&1 | tail -3 || true
+  adb_sh "/tmp/e2fsck -fn $P/$TARGET_PART" 2>&1 | tail -3 || true
   say "grow done. Device is in TWRP. Boot the grown rootfs when ready:"
   say "  bash bin/flash-nixos.sh boot-nixos"
 }
 
-# ---- para helpers ------------------------------------------------------------
-# Write a 32-byte boot command to the para partition (offset 0) from TWRP:
-# "" clears (zeros = NixOS default), otherwise "<marker>\0" + zero padding to
-# 32 bytes — the exact layout the dual-boot initrd compares against
-# (initrd.nix; boot-debian = 11 chars + NUL + 20 zeros).
-twrp_para() { # [marker] — "" clears
-  local marker="${1:-}" cmd=/tmp/para-cmd.bin
-  if [ -n "$marker" ]; then
-    { printf '%s\0' "$marker"; head -c $((31 - ${#marker})) /dev/zero; } > "$cmd"
-  else
-    dd if=/dev/zero of="$cmd" bs=32 count=1 2>/dev/null
-  fi
-  adb_q push "$cmd" "$cmd" >/dev/null
-  adb_sh "dd if=$cmd of=$P/para bs=32 count=1 conv=fsync" >/dev/null
-}
-
-cmd_debian() {
-  case "$(state)" in
-    linux)
-      say "Linux up over g_ether (no adb) — para=boot-debian + WDT EXRST self-boot"
-      # largest-mmcblk rule + read-back verify (same as converge_twrp)
-      devssh 'best=""; bs=0; for D in $(lsblk -dn -o NAME | grep -E "^mmcblk[0-9]+$"); do S=$(blockdev --getsize64 /dev/$D 2>/dev/null || echo 0); if [ "$S" -gt "$bs" ]; then bs=$S; best=$D; fi; done; [ -b /dev/${best}p2 ] || { echo "no para partition (largest mmcblk=$best)"; exit 1; }; { printf "boot-debian\0"; head -c 20 /dev/zero; } > /tmp/bootcmd.bin; dd if=/tmp/bootcmd.bin of=/dev/${best}p2 bs=32 count=1 conv=fsync 2>/dev/null && dd if=/dev/${best}p2 bs=32 count=1 2>/dev/null | grep -qa "boot-debian" && echo "PARA=debian (verified on $best)" || { echo "!! para write/verify FAILED"; exit 1; }' \
-        || die "para write over ssh failed"
-      say "arming WDT for EXRST self-boot (MODE=0x2200005D restore + 0x10007004=0x48)"
-      wdt_exrst
-      say "device resetting — Debian should come up on g_ether ($DEV) in ~40-90 s;"
-      say "then: bash bin/device-ssh.sh 'uname -a' to confirm (or bin/net-up.sh first)"
-      ;;
-    twrp)
-      say "in TWRP — para=boot-debian, rebooting into Debian"
-      twrp_para "boot-debian"
-      adb_q reboot >/dev/null 2>&1 || true
-      say "Debian has no adbd — expect g_ether at $DEV (ssh) in ~30-60 s"
-      ;;
-    *)
-      converge_twrp
-      twrp_para "boot-debian"
-      adb_q reboot >/dev/null 2>&1 || true
-      say "Debian has no adbd — expect g_ether at $DEV (ssh) in ~30-60 s"
-      ;;
-  esac
-}
+# (Debian/dual-boot para marker helpers removed 2026-09-10: after the
+# repartition TWRP + NixOS are the only systems — see bin/repartition-nixos.sh.)
 
 # ---- main --------------------------------------------------------------------
 args=()
@@ -390,7 +341,6 @@ case "${1:-}" in
   all)         cmd_all "${2:-$BOOT_IMG_DEFAULT}" "${3:-$ROOTFS_IMG_DEFAULT}" ;;
   boot-nixos)  cmd_boot_nixos ;;
   grow-rootfs) cmd_grow_rootfs ;;
-  debian)      cmd_debian ;;
   -h|--help|help|"") usage ;;
   *) echo "!! unknown command: ${1:-}" >&2; usage; exit 1 ;;
 esac

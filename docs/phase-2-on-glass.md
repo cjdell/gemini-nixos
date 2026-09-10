@@ -5,7 +5,13 @@
 > booted system is NOT yet fully working: the TODO list at the bottom is
 > the on-glass debt. This doc is the knowledge capture from the milestone
 > session; the dated play-by-play lives in `docs/session-log.md`.
-> **Last updated:** 2026-09-07.
+> **Last updated:** 2026-09-10.
+>
+> ⚠️ **2026-09-10 update:** the layout recorded below (NixOS on p32
+> `userdata`, Debian on p29, dual-boot boot.img) is HISTORICAL. The unit
+> was later repartitioned to **TWRP + NixOS only** — the NixOS rootfs now
+> lives on a single 58 GiB **p27 `linux`** partition (clean install). See
+> `docs/repartition-android-space.md` §12 and the session log 2026-09-10n.
 
 ## 1. What boots (version lines — rule 0)
 
