@@ -32,6 +32,7 @@
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
@@ -182,6 +183,7 @@ static int mt6797_power_probe(struct platform_device *pdev)
 	struct mt6797_power *p;
 	struct platform_device *pmic_pdev;
 	struct device_node *np;
+	struct resource *res;
 	int ret;
 
 	p = devm_kzalloc(&pdev->dev, sizeof(*p), GFP_KERNEL);
@@ -189,9 +191,24 @@ static int mt6797_power_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	p->dev = &pdev->dev;
-	p->wdt_base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(p->wdt_base))
-		return PTR_ERR(p->wdt_base);
+
+	/*
+	 * Do NOT use devm_platform_ioremap_resource(): the TOPRGU/WDT block
+	 * at 0x10007000 is shared with the mainline mtk_wdt driver (bound
+	 * through the watchdog@10007000 node). devm_ioremap_resource()
+	 * calls devm_request_mem_region(), so whichever driver probes first
+	 * would make the other fail with -EBUSY — and if mtk_wdt loses, the
+	 * LK-armed watchdog is never kicked and the SoC resets a few
+	 * seconds into every boot (observed on glass 2026-09-10). Map the
+	 * resource without claiming it.
+	 */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -ENODEV;
+	p->wdt_base = devm_ioremap(&pdev->dev, res->start,
+				   resource_size(res));
+	if (!p->wdt_base)
+		return -ENOMEM;
 
 	np = of_parse_phandle(pdev->dev.of_node, "mediatek,pmic", 0);
 	if (!np) {
