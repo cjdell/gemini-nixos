@@ -60,6 +60,12 @@ in
     # fork-mesa chain as LXQt. The DEFAULT desktop since 2026-09-09
     # (services.phoshDesktop.enable defaults true; LXQt off).
     ../services/phosh.nix
+    # DE-agnostic desktop plumbing (2026-09-10): UPower battery/AC
+    # status, brightness sysfs access + standard control CLIs
+    # (brightnessctl; volume is wpctl via audio.nix) — the services
+    # layer so ANY desktop's own controls work (phosh today, LXQt/
+    # gemwl later). docs/desktop-plumbing.md.
+    ../services/plumbing.nix
   ];
 
   system.stateVersion = "26.11";
@@ -336,6 +342,9 @@ in
 
   # Static link only — no DHCP client needed.
   networking.dhcpcd.enable = false;
+  # Nameservers for the g_ether host link (fed to resolvconf as the
+  # "static" interface; NetworkManager's DHCP nameservers merge in
+  # front when a wifi network is up — wifi.nix, NM mode).
 
   # ---- Graphics (phase 4 preview) ------------------------------------
   # The forked Mesa provides the glvnd ICD (libEGL_mesa.so + 50_mesa.json);

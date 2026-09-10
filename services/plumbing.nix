@@ -13,11 +13,15 @@
 #     ("bq25890-battery-N") the kernel driver now registers next to the
 #     BQ25896 charger (no fuel-gauge IC on this board — capacity is
 #     voltage-derived; kernel delta bq25890_charger.c, 2026-09-10).
-#   - Brightness: /sys/class/backlight attrs are world-writable (0666)
-#     kernel-side (delta backlight.c) because the desktop sessions are
-#     systemd SYSTEM services — they have no logind session, so the
-#     standard logind SetBrightness path rejects them and uaccess never
-#     tags their devices. cjdell is already in the video group for DRI.
+#   - Brightness: /sys/class/backlight/*/brightness gets world-writable
+#     (0666) via a udev RUN rule below. Kernel sysfs attrs are compiled
+#     0644 (VERIFY_OCTAL_PERMISSIONS rejects wider modes at build time)
+#     and the desktop sessions are systemd SYSTEM services — they have
+#     no logind session, so the standard logind SetBrightness route
+#     rejects them and uaccess never tags their devices. chmod from udev
+#     is the standard runtime answer (same trick Android/others use on
+#     sysfs); phosh's brightness manager (backlight-sysfs backend) and
+#     brightnessctl both write the file directly.
 #   - brightnessctl on PATH (the standard sysfs backlight CLI; volume
 #     side is wpctl — shipped with wireplumber, services/audio.nix).
 #
@@ -64,6 +68,18 @@ in
       criticalPowerAction = "Ignore";
       ignoreLid = true;
     };
+
+    services.udev.extraRules = ''
+      # Gemini backlight access for the session-less desktop (2026-09-10):
+      # phosh/LXQt run as systemd system services as cjdell — no logind
+      # session exists, so uaccess tagging never applies and the logind
+      # SetBrightness D-Bus route is unavailable. chmod the sysfs attrs
+      # on add (sysfs honours the inode mode on open; the kernel cannot
+      # express 0666 at build time — VERIFY_OCTAL_PERMISSIONS). 0666
+      # matches the trust model of cjdell's passwordless sudo on this
+      # single-user PDA.
+      SUBSYSTEM=="backlight", ACTION=="add", RUN+="${pkgs.coreutils}/bin/chmod 0666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"
+    '';
 
     environment.systemPackages = [
       # Standard sysfs backlight control (works because the kernel delta
