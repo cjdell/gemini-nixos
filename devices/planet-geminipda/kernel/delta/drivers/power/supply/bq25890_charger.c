@@ -109,8 +109,11 @@ struct bq25890_device {
 	struct device *dev;
 	struct power_supply *charger;
 	struct power_supply *secondary_chrg;
+	struct power_supply *battery; /* voltage-derived Battery supply (upower/DEs) */
 	struct power_supply_desc desc;
+	struct power_supply_desc battery_desc;
 	char name[28]; /* "bq25890-charger-%d" */
+	char battery_name[28]; /* "bq25890-battery-%d" */
 	int id;
 
 	struct usb_phy *usb_phy;
@@ -740,6 +743,20 @@ static int bq25890_charger_get_scaled_iinlim_regval(struct bq25890_device *bq,
 	return bq25890_find_idx(iinlim_ua, TBL_IINLIM);
 }
 
+/*
+ * Notify every supply this driver owns that chip state changed. The
+ * battery supply (registered in bq25890_power_supply_init) mirrors the
+ * charger's state; without the explicit change notification upower /
+ * the DEs would only see it update on their own poll tick. Guarded:
+ * the usb notifier / resume paths can run before registration.
+ */
+static void bq25890_supplies_changed(struct bq25890_device *bq)
+{
+	power_supply_changed(bq->charger);
+	if (bq->battery)
+		power_supply_changed(bq->battery);
+}
+
 /* On the BQ25892 try to get charger-type info from our supplier */
 static void bq25890_charger_external_power_changed(struct power_supply *psy)
 {
@@ -775,7 +792,7 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 	}
 
 	bq25890_field_write(bq, F_IINLIM, input_current_limit);
-	power_supply_changed(psy);
+	bq25890_supplies_changed(bq);
 }
 
 static int bq25890_get_chip_state(struct bq25890_device *bq,
@@ -849,7 +866,7 @@ static irqreturn_t __bq25890_handle_irq(struct bq25890_device *bq)
 	}
 
 	bq->state = new_state;
-	power_supply_changed(bq->charger);
+	bq25890_supplies_changed(bq);
 
 	return IRQ_HANDLED;
 error:
@@ -1019,6 +1036,185 @@ static const struct power_supply_desc bq25890_power_supply_desc = {
 	.external_power_changed	= bq25890_charger_external_power_changed,
 };
 
+/*
+ * Gemini PDA battery supply (desktop plumbing, 2026-09-10). This board
+ * has NO fuel-gauge IC — the BQ25896 is charger-only and no coulomb
+ * counter exists on any i2c bus (verified during bring-up; the vendor
+ * Android stack ran an MTK pseudo-FG on the same voltage data). The
+ * desktop shells (phosh, LXQt, GNOME, …) all read battery state from
+ * org.freedesktop.UPower, which only reports a battery when a
+ * Battery-type power_supply exists; without one the DE battery icon
+ * stays absent. This supply is registered NEXT TO the charger supply
+ * (same chip, same regmap, same lock) and reports:
+ *
+ *   - capacity: interpolated from the live VBAT ADC against the Li-ion
+ *     1S discharge curve below. Calibrated to this unit's own safety
+ *     thresholds (battery-guard: 3.65 V = WARN, 3.50 V = CRIT/
+ *     poweroff; charger regulation 4.208 V from DT). While the charger
+ *     is actively sourcing (pre/fast charge) the estimate is clamped
+ *     to <= 90 % — a cell under charge sits near regulation voltage
+ *     while its true SoC is lower; 100 % is only claimed at charge
+ *     termination (the chip's own criterion). The curve is voltage-
+ *     only, so it is load-dependent by nature; honest enough for a
+ *     status icon, deliberately NOT fed to any poweroff logic (see
+ *     services/plumbing.nix: upower CriticalPowerAction = Ignore;
+ *     battery-guard owns the real poweroff at 3.50 V).
+ *   - status: from the charger's PG/CHG_STAT registers via the shared
+ *     bq25890_update_state() (live — the driver keeps the chip's
+ *     continuous-conversion mode on while online, so sysfs reads see
+ *     fresh VBAT without a one-shot ADC kick).
+ *   - voltage_now/temp/health: mirrored from the charger supply.
+ */
+static const struct bq25890_ocv_point {
+	u32 vbat_uv; /* VBAT ADC voltage (microvolt) */
+	int pct;     /* estimated state of charge (%) */
+} bq25890_ocv[] = {
+	{ 4200000, 100 }, { 4150000, 98 }, { 4100000, 95 }, { 4050000, 91 },
+	{ 4000000, 86 }, { 3950000, 79 }, { 3900000, 71 }, { 3850000, 61 },
+	{ 3800000, 49 }, { 3750000, 37 }, { 3700000, 26 }, { 3650000, 17 },
+	{ 3600000, 11 }, { 3550000, 6 }, { 3500000, 2 }, { 3450000, 0 },
+};
+
+static int bq25890_read_vbat_uv(struct bq25890_device *bq)
+{
+	int ret;
+
+	ret = bq25890_field_read(bq, F_BATV);
+	if (ret < 0)
+		return ret;
+
+	/* converted_val = 2.304V + ADC_val * 20mV (table 10.3.15) */
+	return 2304000 + ret * 20000;
+}
+
+/* Piecewise-linear interpolation of the OCV table (0..100). */
+static int bq25890_capacity_from_vbat(u32 vbat_uv)
+{
+	int i;
+
+	if (vbat_uv >= bq25890_ocv[0].vbat_uv)
+		return bq25890_ocv[0].pct;
+	for (i = 0; i < ARRAY_SIZE(bq25890_ocv) - 1; i++) {
+		u32 hi = bq25890_ocv[i].vbat_uv;
+		u32 lo = bq25890_ocv[i + 1].vbat_uv;
+		int hi_pct = bq25890_ocv[i].pct;
+		int lo_pct = bq25890_ocv[i + 1].pct;
+
+		if (vbat_uv <= hi && vbat_uv >= lo)
+			return lo_pct +
+				(int)(((u64)(hi_pct - lo_pct) *
+				       (vbat_uv - lo)) / (hi - lo));
+	}
+	return bq25890_ocv[ARRAY_SIZE(bq25890_ocv) - 1].pct;
+}
+
+static enum power_supply_property bq25890_battery_supply_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+};
+
+static int bq25890_battery_supply_get_property(struct power_supply *psy,
+					       enum power_supply_property psp,
+					       union power_supply_propval *val)
+{
+	struct bq25890_device *bq = power_supply_get_drvdata(psy);
+	struct bq25890_state state;
+	int vbat, ret;
+
+	bq25890_update_state(bq, psp, &state);
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_STATUS:
+		if (!state.online || state.hiz)
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		else if (state.chrg_status == STATUS_NOT_CHARGING)
+			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		else if (state.chrg_status == STATUS_PRE_CHARGING ||
+			 state.chrg_status == STATUS_FAST_CHARGING)
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (state.chrg_status == STATUS_TERMINATION_DONE)
+			val->intval = POWER_SUPPLY_STATUS_FULL;
+		else
+			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
+		break;
+
+	case POWER_SUPPLY_PROP_PRESENT:
+		val->intval = 1;
+		break;
+
+	case POWER_SUPPLY_PROP_TECHNOLOGY:
+		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
+		break;
+
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+		vbat = bq25890_read_vbat_uv(bq);
+		if (vbat < 0)
+			return vbat;
+		val->intval = vbat;
+		break;
+
+	case POWER_SUPPLY_PROP_CAPACITY:
+		vbat = bq25890_read_vbat_uv(bq);
+		if (vbat < 0)
+			return vbat;
+		val->intval = bq25890_capacity_from_vbat(vbat);
+		if (state.chrg_status == STATUS_PRE_CHARGING ||
+		    state.chrg_status == STATUS_FAST_CHARGING) {
+			/* under charge the cell sits near regulation voltage;
+			 * don't claim near-full until the chip terminates */
+			if (val->intval > 90)
+				val->intval = 90;
+		} else if (state.chrg_status == STATUS_TERMINATION_DONE) {
+			val->intval = 100;
+		}
+		break;
+
+	case POWER_SUPPLY_PROP_TEMP:
+		ret = bq25890_field_read(bq, F_TSPCT);
+		if (ret < 0)
+			return ret;
+
+		/* convert TS percentage into rough temperature */
+		val->intval = bq25890_find_val(ret, TBL_TSPCT);
+		break;
+
+	case POWER_SUPPLY_PROP_HEALTH:
+		if (!state.chrg_fault && !state.bat_fault && !state.boost_fault)
+			val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		else if (state.bat_fault)
+			val->intval = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+		else if (state.chrg_fault == CHRG_FAULT_TIMER_EXPIRED)
+			val->intval = POWER_SUPPLY_HEALTH_SAFETY_TIMER_EXPIRE;
+		else if (state.chrg_fault == CHRG_FAULT_THERMAL_SHUTDOWN)
+			val->intval = POWER_SUPPLY_HEALTH_OVERHEAT;
+		else
+			val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
+		break;
+
+	case POWER_SUPPLY_PROP_MODEL_NAME:
+		val->strval = "gemini-battery (voltage-derived)";
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct power_supply_desc bq25890_battery_supply_desc = {
+	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.properties = bq25890_battery_supply_props,
+	.num_properties = ARRAY_SIZE(bq25890_battery_supply_props),
+	.get_property = bq25890_battery_supply_get_property,
+};
+
 static int bq25890_power_supply_init(struct bq25890_device *bq)
 {
 	struct power_supply_config psy_cfg = { .drv_data = bq, };
@@ -1038,8 +1234,25 @@ static int bq25890_power_supply_init(struct bq25890_device *bq)
 	psy_cfg.num_supplicants = ARRAY_SIZE(bq25890_charger_supplied_to);
 
 	bq->charger = devm_power_supply_register(bq->dev, &bq->desc, &psy_cfg);
+	if (IS_ERR(bq->charger))
+		return PTR_ERR(bq->charger);
 
-	return PTR_ERR_OR_ZERO(bq->charger);
+	/* Battery-type supply for upower/DEs (same chip data; the charger
+	 * desc above is TYPE_USB). Registered after the charger so the
+	 * framework links it as a consumer of the charger's "supplied_to"
+	 * only if a future fuel gauge appears; today bq25890_supplies_changed
+	 * keeps it in sync explicitly. */
+	snprintf(bq->battery_name, sizeof(bq->battery_name),
+		 "bq25890-battery-%d", bq->id);
+	bq->battery_desc = bq25890_battery_supply_desc;
+	bq->battery_desc.name = bq->battery_name;
+
+	psy_cfg.supplied_to = NULL;
+	psy_cfg.num_supplicants = 0;
+	bq->battery = devm_power_supply_register(bq->dev, &bq->battery_desc,
+						 &psy_cfg);
+
+	return PTR_ERR_OR_ZERO(bq->battery);
 }
 
 static int bq25890_set_otg_cfg(struct bq25890_device *bq, u8 val)
@@ -1107,7 +1320,7 @@ static void bq25890_pump_express_work(struct work_struct *data)
 	dev_info(bq->dev, "Hi-voltage charging requested, input voltage is %d mV\n",
 		 voltage);
 
-	power_supply_changed(bq->charger);
+	bq25890_supplies_changed(bq);
 
 	return;
 error_print:
@@ -1131,7 +1344,7 @@ static void bq25890_usb_work(struct work_struct *data)
 		/* Disable boost mode */
 		ret = bq25890_set_otg_cfg(bq, 0);
 		if (ret == 0)
-			power_supply_changed(bq->charger);
+			bq25890_supplies_changed(bq);
 		break;
 	}
 }
@@ -1628,7 +1841,7 @@ static int bq25890_resume(struct device *dev)
 	}
 
 	/* signal userspace, maybe state changed while suspended */
-	power_supply_changed(bq->charger);
+	bq25890_supplies_changed(bq);
 
 unlock:
 	mutex_unlock(&bq->lock);
