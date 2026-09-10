@@ -5,6 +5,53 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — wine + `nix-shell -p` restored on the device (post-repartition fallout)
+
+Two device-side breakages reported after the 2026-09-10 one-way
+repartition. Both are fallout from the wiped `/root` — the ad-hoc wow64
+deploy and the `/root/gemini-nixos` clone were never re-created:
+
+- **`wine` → `Permission denied`** for the desktop user `cjdell` (as
+  root: `ENOENT`). The closure wrapper (`pkgs/wine-cli.nix`, gen36)
+  exec'd `/root/wine-x86/wine-wow`: `/root` is `0700`, so `cjdell`
+  cannot traverse it, and the wow64 stack had never been re-deployed
+  after the repartition (the committed deploy script shipped the 1.8 GB
+  64-bit-only `wine64` stack with a `/root` launcher, not the wow64
+  launcher the wrapper targets).
+- **`nix-shell -p` → `error: file 'nixpkgs' was not found in the Nix
+  search path`**. `NIX_PATH` points at
+  `/nix/var/nix/profiles/per-user/root/channels/nixpkgs`, which
+  `device-rebuild.sh channels` creates; the clone that verb reads the
+  flake rev from was gone.
+
+Fixes:
+
+- **nixpkgs channel**: `bash bin/device-repo.sh seed` (device clone @
+  `2cd9b6f`) then `device-rebuild.sh channels` → `<nixpkgs>` →
+  `/nix/store/byjzdjpvrh042l85fmnvrd3c9hlqaygf-source` (rev
+  `dc5d91f84032`). `nix-shell -p hello` verified on the device.
+- **wine** (commit `70d0c16`): `pkgs/wine-x86.nix` exposes `wineWow64`
+  (`wineWow64Packages.full`, the 32- **and** 64-bit stack the
+  `wine`/`wine64` wrappers already targeted); `bin/wine-x86-deploy.sh`
+  rewritten to deploy wow64+box64+mesa+grim and install a world-readable
+  launcher at `/var/lib/wine-x86/wine-wow` (per-user prefix
+  `$HOME/.wine-x86`, user-targeted `init`/`run`); `pkgs/wine-cli.nix`
+  wrapper path moved `/root/wine-x86` → `/var/lib/wine-x86`.
+- **System gen 13** deployed (`/nix/store/ygrdq1cja80d99dxfax5nnqs25y3sjn8-nixos-system-gemini-26.11pre-git`,
+  `system-13-link`) via `bin/deploy.sh deploy` (job `sys-deploy`, 60 s).
+  Stack copy = job `wine-deploy` (117 s, ~1 GB); prefix init = job
+  `wine-init` (272 s; `wineboot` exits nonzero but `drive_c` +
+  `system.reg` are created).
+- **Verified as `cjdell`**: `wine --version` → `wine-11.0`;
+  `wine cmd /c echo HELLO-WINE` → `HELLO-WINE` (rc 0). box64 prints
+  non-fatal `Error initializing native lib…` lines when it cannot
+  dlopen an aarch64 build of a wrapped library; it falls back to
+  emulation (cosmetic).
+
+No flash; `boot`/`para` untouched; glass never at risk. Next: on-glass
+GUI run of a real PE from the GNOME session (the launcher inherits the
+session `WAYLAND_DISPLAY` — the old gemwl hardcode is gone).
+
 ## 2026-09-11 — GEMINI: EXODUS revived as a first-class demo + GPU stress test
 
 **Deployed to the device as generation 12 (no flash, no boot.img
