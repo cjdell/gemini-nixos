@@ -147,6 +147,13 @@ in
     isNormalUser = true;
     uid = 1000; # gemini's old uid (the account replaces it; home is new)
     description = "Default Gemini PDA user (desktop + console)";
+    # [added 2026-09-10] phosh's lockscreen PAM-authenticates the session
+    # user — a locked (passwordless) account can never unlock (phosh
+    # gen59 on glass showed the passcode pad against a locked account).
+    # Passcode chosen by the user: 0000 (same hash the device has since
+    # 2026-09-10; yescrypt). Single-user trusted PDA — the ssh key below
+    # and passwordless sudo are the real admin paths.
+    hashedPassword = "$y$j9T$rN7mlRnmUJwGrMTOei0xE.$yjjac4vlLlZKFC1MHpXmJYFvy80knuKN7q5a3ZEptE1";
     extraGroups = [
       "wheel" # passwordless sudo (security.sudo.wheelNeedsPassword = false)
       "video" # /dev/dri/card0 (uaccess does not cover the systemd-

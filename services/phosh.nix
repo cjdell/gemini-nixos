@@ -103,6 +103,30 @@ let
     [output:WL-1]
     scale = ${toString cfg.scale}
   '';
+
+  # GSettings schema dirs. NixOS gsettings packages install schemas at
+  # share/gsettings-schemas/<pkgname>/glib-2.0/schemas (the nixpkgs
+  # gsettings-schemas hook layout), NOT the upstream
+  # share/glib-2.0/schemas. wrapGAppsHook4 rewrites XDG_DATA_DIRS to
+  # point at them for WRAPPED binaries — but libexec/phosh is unwrapped
+  # (started by phoc -E), so the unit must carry them itself.
+  # [2026-09-09 receipt — gen59 crash]: without them gio's default
+  # GSettings schema source is empty and the first g_settings_new
+  # aborts the whole shell: g_settings_set_property
+  # (gsettings.c:676) g_error 'No GSettings schemas are installed on
+  # the system' → SIGABRT (backtraced via a btpreload LD_PRELOAD).
+  # With them phosh logs 'Phosh ready after 3.39s'. gnome-shell +
+  # gsettings-desktop-schemas = the org.gnome.Shell/desktop schemas
+  # phosh reads; gnome-settings-daemon = the power plugin schema.
+  schemaPkgs = [
+    phosh
+    pkgs.gnome-shell
+    pkgs.squeekboard
+    pkgs.gnome-console
+    pkgs.gsettings-desktop-schemas
+    pkgs.gnome-settings-daemon
+  ];
+  gsettingsSchemaDirs = map (p: "${p}/share/gsettings-schemas/${p.name}") schemaPkgs;
 in
 {
   options.services.phoshDesktop = {
@@ -234,8 +258,11 @@ in
           # by gnome-session in the real flow, so the module must carry
           # the dir here), the icon/font themes, and the system profile
           # (systemPackages' applications — chrome/firefox/.desktop
-          # files in the grid).
-          "XDG_DATA_DIRS=${lib.makeSearchPath "share" [ phosh pkgs.gnome-shell pkgs.adwaita-icon-theme pkgs.squeekboard pkgs.gnome-console pkgs.dejavu_fonts pkgs.cantarell-fonts ]}:/run/current-system/sw/share"
+          # files in the grid). The gsettingsSchemaDirs prefix is the
+          # 2026-09-09 fix: without those XDG entries gio sees NO
+          # schemas at all and g_settings_new aborts phosh (receipt
+          # above).
+          "XDG_DATA_DIRS=${lib.concatStringsSep ":" gsettingsSchemaDirs}:${lib.makeSearchPath "share" [ phosh pkgs.gnome-shell pkgs.adwaita-icon-theme pkgs.squeekboard pkgs.gnome-console pkgs.dejavu_fonts pkgs.cantarell-fonts ]}:/run/current-system/sw/share"
           # Session identity (OnlyShowIn=Phosh desktop entries; phosh's
           # GSettings schemas; xdg-desktop-portal config).
           "XDG_CURRENT_DESKTOP=Phosh:GNOME"
