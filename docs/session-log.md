@@ -5,6 +5,94 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10w — COSMIC vs GNOME re-measured: `NoSupportedPlaneFormat` is a false lead, and the "COSMIC ~20 fps" was the already-fixed dual-Mesa bug
+
+User asked (a) whether the `NoSupportedPlaneFormat` noise is easy/worth
+fixing and (b) whether COSMIC can be made faster easily. Measured on
+glass with `gemdemo` 0.3.0 (fullscreen 2160×1080, Panfrost, one Mesa
+26.2.2) across a real COSMIC boot and a real GNOME boot on the current
+kernel. No flash; no boot.img change.
+
+**Correction (rule 2).** 2026-09-10v's "COSMIC is still ~17–23 fps" and
+the handover's "next lead: smithay format/render-selection" are retired.
+That figure was the dual-Mesa CPU-composition defect fixed by gen10 —
+this boot had **0** `import for wrong devices` and **0** `swiotlb buffer
+is full`, and COSMIC is still ~27 fps, so the import failures are not the
+cause either. The format warnings are **benign**:
+`NoSupportedPlaneFormat` is smithay's per-candidate `warn!` inside
+`GbmBufferedSurface::new`'s fallback loop (`backend/drm/surface/gbm.rs`
+71–108), emitted for each candidate that fails before one succeeds.
+cosmic-comp's list is `[Fourcc::Abgr2101010, Argb2101010, Abgr8888,
+Argb8888]` (`src/backend/kms/device.rs:779`). Our plane advertises only
+XRGB8888 (`drm_fb_build_fourcc_list` strips alpha from ARGB8888), so the
+first three (AB30/AR30/AB24) fail and **AR24 succeeds via
+`get_opaque(AR24) == XR24`** with `use_opaque=true` — the intended
+no-alpha path. On-glass receipt: `/sys/kernel/debug/dri/0/framebuffer` →
+`format=XR24`, 1080×2160. "Fixing" the warnings would mean advertising
+10-bit / padded-24-bit ABGR formats the 8-bit panel can't use, adding a
+down-convert to the commit-worker blit — not worth it. Doc noise only.
+
+**Measured (same kernel, same `gemdemo` fullscreen, fresh boots).**
+
+| compositor | sustained | early/burst | hot tasks |
+|---|---|---|---|
+| COSMIC (`cosmic-comp`) | **24–31 fps** (≈27) | ~28 | cosmic-comp ~16 %, DRM commit kworker ~63 % |
+| GNOME (`gnome-shell`) | ~35–47 fps | 65–84 (first ~6 s, then decays) | gnome-shell ~70 %, kworker ~74 % |
+
+So COSMIC is **~1.5–2× slower, not 3–4×**; neither is CPU-bound. A
+*windowed* gemdemo under COSMIC was **slower** (~20 fps), i.e. the cost
+is per-frame / per-full-screen work in cosmic's DRM submit path, not
+just the client rect.
+
+**Root cause (hypothesis, with receipts).** The hot kernel task under
+both is `geminipda_drm_primary_plane_helper_atomic_update` →
+`drm_fb_blit` (the required XRGB→ARGB shadow blit, 2026-09-10k).
+cosmic-comp's `redraw()` does `elem.sync.wait()` then `queue_frame`, so
+GPU render and the CPU blit serialise; mutter overlaps / damage-limits
+them. The driver also has **no vblank** (`geminipda-drm.c` is a
+`DRM_GEM_SHMEM_DRIVER_OPS` module and never calls `drm_vblank_init` or
+`drm_crtc_handle_vblank`), which additionally misprices cosmic's frame
+pacing (`next_presentation_time`). Both are platform-level, not COSMIC
+settings.
+
+**Cheap COSMIC knobs (present, likely no-ops here).**
+`COSMIC_DISABLE_DIRECT_SCANOUT`, `COSMIC_DISABLE_OVERLAY_SCANOUT`,
+`COSMIC_DISABLE_SYNCOBJ` (`src/backend/kms/{mod,surface/mod}.rs`).
+Syncobj is already effectively off — `geminipda-drm` sets no
+`DRIVER_SYNCOBJ`, so smithay's `supports_fencing=false` and CPU-waits.
+There are no overlay planes to scan out either. Not A/B'd on glass this
+session.
+
+**Real levers (kernel delta; would also help GNOME).** (1) cheaper
+shadow blit — driver-local single-pass blit (cached shadow → OR
+`0xff000000` → `writel` to the WC scanout) instead of the generic
+helper's per-row line buffer (2026-09-10k already flagged ~2×); (2)
+overlap render/blit — advertise `DRIVER_SYNCOBJ` + honour `IN_FENCE_FD`
+so compositors submit a fence instead of CPU-waiting; (3) add vblank
+timing (`drm_vblank_init` + a refresh-rate timer →
+`drm_crtc_handle_vblank`) so pacing has real timestamps. None is a
+config toggle; each needs build + deploy + reboot and an A/B against the
+commit-worker CPU.
+
+**Gotcha found.** `bin/device-reboot.sh` is an **unsynced** WDT EXRST:
+a `gemcli session set <mode>` immediately before it is **lost** (the
+marker reverts to the on-disk value). A "cosmic" reboot therefore came
+up GNOME and I briefly mis-read GNOME's fps curve as COSMIC's. Run
+`sync` after writing the marker before the hard reset. Separately,
+`gemcli session set <mode> --apply && systemctl restart display-manager`
+lands on the **GDM greeter** when a session is still active; a clean
+reboot autologins fine (autologin confirmed in `/etc/gdm/custom.conf`).
+
+**State left.** Device on **COSMIC** (marker `cosmic`, AccountsService
+`cosmic (wayland)`, `cosmic-comp` running); no flash, no boot.img change,
+`para`/`boot` untouched; glass never at risk (rule 5). Also annotated the
+corrected claims in 2026-09-10v and
+`docs/handover-2026-09-10-gnome-perf-touch.md`.
+
+**Next.** If pursued, do lever (1) first (self-contained, lowest risk);
+A/B with gemdemo fps + commit-worker CPU before/after. Levers (2)/(3)
+are larger and should be separate sessions.
+
 ## 2026-09-10v — ONE MESA: 25.0.7 fork retired, delta rebased to nixpkgs 26.2.2 (dual-vendor fix, on glass gen10)
 
 User asked whether COSMIC was really hardware-accelerated (it felt slow).
@@ -68,6 +156,13 @@ because `geminipda-drm` deliberately strips alpha
 single-plane shadow framebuffer. Next lead: smithay's format/render-selection
 path (and possibly advertising ARGB8888) — investigate separately without
 regressing the verified GNOME path.
+
+> **[corrected 2026-09-10w]** The "~17–23 fps" here was the dual-Mesa
+> CPU-composition defect fixed by gen10, not a smithay-vs-driver format
+> problem; `NoSupportedPlaneFormat` is a benign per-candidate probe
+> message (AR24 succeeds via its opaque XR24 variant). See 2026-09-10w
+> for corrected measurements (~27 fps COSMIC vs ~35–47 fps GNOME) and
+> the real platform levers.
 
 Also committed this session: docs/library-deltas.md mesa update,
 handover-2026-09-10-gnome-perf-touch.md Issue-1 update.

@@ -83,6 +83,15 @@ yet** — the device is left exactly as the user just saw it.
 > unavailable) and is a follow-up, not an acceleration failure. Details:
 > `docs/library-deltas.md` (Mesa instance update), `docs/session-log.md`
 > 2026-09-10p.
+>
+> **[corrected 2026-09-10w]** The "COSMIC 17–23 fps" above was the
+> dual-Mesa CPU-composition defect (fixed by gen10), not the
+> format-selection path; `NoSupportedPlaneFormat` is benign (AR24
+> succeeds via its opaque XR24 counterpart). Re-measured on glass:
+> COSMIC ~27 fps vs GNOME ~35–47 fps on the same kernel — a ~1.5–2×
+> gap from cosmic's render/blit serialisation plus the driver's absent
+> vblank, not an acceleration or format failure. See
+> `docs/session-log.md` 2026-09-10w.
 
 ---
 
