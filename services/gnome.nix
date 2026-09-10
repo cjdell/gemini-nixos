@@ -112,7 +112,12 @@ in
     services.xserver.enable = true;
     services.desktopManager.gnome.enable = true;
     services.displayManager.gdm.enable = true;
-    services.displayManager.defaultSession = "gnome";
+    # defaultSession is deliberately left UNSET (null): GDM persists the
+    # pre-selected session in AccountsService (set-session), and the
+    # desktop/session selector (services/desktop-select.nix) sets that
+    # at boot from /var/lib/gemini/desktop so `gemcli session set` is
+    # authoritative. Setting it here would emit a GDM preStart call
+    # that OVERWRITES the marker on every display-manager start.
     services.displayManager.autoLogin.enable = true;
     services.displayManager.autoLogin.user = cfg.user;
 

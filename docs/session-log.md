@@ -5,6 +5,76 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10t — DESKTOP/SESSION SELECTOR: COSMIC co-installed with GNOME + console mode; `gemcli session` (build-level; nothing flashed)
+
+User ask: try the COSMIC desktop without breaking GNOME — can they
+co-exist, can `gemcli` switch / set the startup default, and can there
+be a third no-desktop (framebuffer console) mode. Answer + implementation:
+**`docs/desktop-selection.md`**.
+
+**Yes, they co-exist.** GNOME and COSMIC are ordinary GDM Wayland
+*sessions*: `services.desktopManager.gnome.enable` and
+`services.desktopManager.cosmic.enable` are independent and each append
+their session to `services.displayManager.sessionPackages` (eval:
+`sessionNames = ["gnome","cosmic"]`; portal `configPackages` merges to
+`gnome-session + xdg-desktop-portal-cosmic`). Only one compositor owns
+the `geminipda-drm` KMS CRTC at a time — a runtime fact, not a build
+conflict.
+
+**Runtime selection (new):**
+- `services/desktop-select.nix` (`services.geminiDesktop.*`): a oneshot
+  `gemini-desktop-apply.service` runs `Before=display-manager.service`
+  and resolves `/var/lib/gemini/desktop` (persistent marker).
+- `gnome`/`cosmic` → the applier sets the AccountsService session for
+  `cjdell` (`SetSession` + `SetSessionType=wayland` via `busctl` — the
+  exact mechanism nixpkgs' `set-session.py` uses for
+  `displayManager.defaultSession`) and removes the console sentinel.
+- `console` → creates `/run/gemini-console`, which suppresses GDM via
+  `ConditionPathExists=!/run/gemini-console` (added by the module), and
+  starts `getty@tty1` (autologin cjdell) so the fbcon console stays.
+- `services/gnome.nix` no longer sets `displayManager.defaultSession`
+  (it was emitted as a GDM preStart `set-session` call that would
+  overwrite the marker every start); eval now reports `null`.
+- `pkgs/gemcli/src/session.rs` (new): `gemcli session
+  status|list|set <gnome|cosmic|console> [--apply|--reboot]|apply`. 12th
+  unit test (`modes_are_the_three_known`); `cargo test` green.
+
+**COSMIC build facts (rule 9, 2026-09-10):** pinned nixpkgs
+`dc5d91f84032` has the `cosmic` module + cosmic-session 1.6.0
+(`providedSessions=["cosmic"]`); aarch64 `cosmic-session`,
+`cosmic-comp`, `cosmic-panel`, `cosmic-settings`,
+`xdg-desktop-portal-cosmic` all **CACHED** on cache.nixos.org (checked
+with `nix path-info --store https://cache.nixos.org`). No big local
+compiles added.
+
+**Build receipt (rule 0 — commit `60c5716`):** flake eval green; aarch64
+toplevel built via `sudo nix build --store local --option builders
+@/etc/nix/machines --fallback .#packages.aarch64-linux.toplevel` →
+`/nix/store/49w619rac5h0nlwl0ix7lmc4y44acmck-nixos-system-gemini-26.11pre-git`
+(the 192.168.49.191 builder; a clean-tree rebuild). Inspected the
+generated units:
+`display-manager.service` carries `ConditionPathExists=!/run/gemini-console`;
+`gemini-desktop-apply.service` runs the packaged script with
+`GEMINI_DESKTOP_DEFAULT=gnome` / `GEMINI_DESKTOP_USER=cjdell`; both
+`gemini-desktop-apply` and `gemcli` are on `sw/bin`.
+
+**Nothing flashed / deployed** — a plain `bin/deploy.sh` profile switch
+would install this (no boot.img change needed: the KMS driver is
+unchanged). On-glass COSMIC is **unverified**; the checklist (session
+switch each way, journal + panel eyes-on per rule 5) is in
+`docs/desktop-selection.md`. GNOME + the console path ride the already
+verified GNOME/KMS stack; COSMIC's `cosmic-comp`/smithay capability
+against `geminipda-drm` is the open question.
+
+Files: `services/desktop-select.nix`,
+`services/scripts/gemini-desktop-apply`, `pkgs/gemcli/src/session.rs`,
+`pkgs/gemcli/src/main.rs`, `config/gemini.nix`, `services/gnome.nix`,
+`docs/desktop-selection.md`, README + AGENTS rows.
+
+Next: `bin/deploy.sh` (device on the g_ether link) then step through
+the checklist; if COSMIC fails to bring up the output, capture the
+journal before touching `geminipda-drm` (shared with verified GNOME).
+
 ## 2026-09-10s — GNOME on-screen keyboard permanently suppressed (mutter `touch_mode` root cause; shell extension + locked dconf)
 
 User ask: stop GNOME ever showing the OSK — "this device has a real

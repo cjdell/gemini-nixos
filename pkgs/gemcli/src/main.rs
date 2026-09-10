@@ -29,6 +29,7 @@ mod guard;
 mod i2c;
 mod power;
 mod profile;
+mod session;
 mod sleep;
 mod speaker;
 mod status;
@@ -128,6 +129,13 @@ enum Cmd {
     Profile {
         #[command(subcommand)]
         cmd: ProfileCmd,
+    },
+    /// Desktop/session selection (GNOME / COSMIC / console) — the
+    /// persistent boot marker read by gemini-desktop-apply.service.
+    /// See services/desktop-select.nix + docs/desktop-selection.md.
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
     },
     /// One-shot aggregate device status (best-effort)
     Status,
@@ -277,6 +285,28 @@ enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+enum SessionCmd {
+    /// Show the marker, the console sentinel and the AccountsService
+    /// session GDM would use
+    Status,
+    /// List the selectable modes
+    List,
+    /// Persist the boot session (gnome|cosmic|console)
+    Set {
+        #[arg(value_parser = ["gnome", "cosmic", "console"])]
+        mode: String,
+        /// Apply now (AccountsService / console sentinel) without rebooting
+        #[arg(long)]
+        apply: bool,
+        /// Reboot after writing the marker (clean switch)
+        #[arg(long)]
+        reboot: bool,
+    },
+    /// Re-run the applier for the current marker (no marker change)
+    Apply,
+}
+
+#[derive(Subcommand)]
 enum SpkCmd {
     /// Enable the built-in speaker amps (pads 243/244 high)
     On,
@@ -320,6 +350,17 @@ fn main() {
             ProfileCmd::Watch => profile::watch(),
             ProfileCmd::Status => profile::status(),
             ProfileCmd::Set { profile } => run(|| profile::set(&profile)),
+        },
+        Cmd::Session { cmd } => match cmd {
+            SessionCmd::Status => run(session::status),
+            SessionCmd::List => {
+                session::list();
+                0
+            }
+            SessionCmd::Set { mode, apply, reboot } => {
+                run(|| session::set(&mode, apply, reboot))
+            }
+            SessionCmd::Apply => run(session::apply),
         },
         Cmd::Status => {
             status::status_cmd();

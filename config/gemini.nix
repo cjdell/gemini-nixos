@@ -83,6 +83,12 @@ in
     # kernel driver (/dev/dri/card0). Mutually exclusive with gemwl/phosh/
     # LXQt, which it force-disables. docs/gnome-feasibility.md.
     ../services/gnome.nix
+    # Desktop/session selector (2026-09-10): a persistent marker
+    # (/var/lib/gemini/desktop) picks which GDM session auto-logs in
+    # (gnome or cosmic) or whether to stay on the fbcon console. GNOME
+    # and COSMIC are BOTH co-installed; only one owns the panel per boot.
+    # `gemcli session set gnome|cosmic|console`. docs/desktop-selection.md.
+    ../services/desktop-select.nix
   ];
 
   system.stateVersion = "26.11";
@@ -96,6 +102,22 @@ in
   # gemwl/phosh/LXQt stack, so exactly one desktop owns the panel.
   # Evidence + on-glass receipts: docs/gnome-feasibility.md.
   services.gnomeDesktop.enable = true;
+
+  # ---- COSMIC: co-installed session, selected at boot (2026-09-10) ----
+  # COSMIC 1.6 registers its Wayland session with the display manager
+  # (services.displayManager.sessionPackages), so GDM offers it next to
+  # GNOME. This does NOT replace GNOME and does not auto-start: the
+  # desktop-select marker chooses which one GDM auto-logs into (default
+  # gnome). Both render on the same geminipda-drm KMS device via Mesa
+  # kmsro -> panfrost. COSMIC is unverified on glass; see
+  # docs/desktop-selection.md. Disable with
+  # services.desktopManager.cosmic.enable = false.
+  services.desktopManager.cosmic.enable = true;
+
+  # Selector fallback when /var/lib/gemini/desktop is absent (fresh
+  # install); `gemcli session set` overrides it persistently.
+  services.geminiDesktop.enable = true;
+  services.geminiDesktop.mode = "gnome";
 
   # ---- Console --------------------------------------------------------
   # The kernel config bakes the console setup
