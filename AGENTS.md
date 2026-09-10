@@ -194,6 +194,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | **Keyboard/keybinding verification tool** (2026-09-10p): `bin/kb-inject.c` — writes raw EV_KEY chords (`fn+c`, `fn+v`, `fn+b`, `fn+n`, …) to the keyboard's evdev node, so the Fn media-key bindings can be exercised over ssh (v6.6 `evdev_write` DOES reach libinput/mutter) | `bin/kb-inject.c` (+ `docs/desktop-plumbing.md` §Volume) |
 | **Keyboard verification tool** (2026-09-10m): `bin/wl-keymap-dump.c` — binds wl_seat→wl_keyboard and prints the xkb keymap the compositor actually ships clients (proved GNOME was sending plain US despite correct gsettings/env; `--grep` for one key). Build: `gcc $(pkg-config --cflags --libs wayland-client) bin/wl-keymap-dump.c` | `bin/wl-keymap-dump.c` |
 | **Bluetooth bring-up + tools** (MT6630 CONSYS BT half: hci_stp port of the vendor 3.18 drv_bt → 6.6, WAK-line wake fix, rx-stall root cause; **persistent service + GUI/CLI on glass 2026-09-09m** — bluetoothd on the system bus auto-powered at boot, bluetoothctl/btmgmt CLIs, blueman-manager + SNI tray applet) | **`docs/bluetooth-bringup.md`** (+ `docs/session-log.md` 2026-09-09k/l/m; driver in the kernel delta `drv_bt/`; service module `services/bluetooth.nix`) |
+| **A2DP audio — stutter + after-playback crackle FIXED (2026-09-10r)** — stutter = the **STP PSM**: its deep-idle backend is an unimplemented stub (`NULL function pointer`, −1), so it saved no power but gated STP TX past `MTKSTP_TX_TIMEOUT` (180 ms) → `0x7f` resync → BTIF desync ~every 1.5 s (measured: 12 resyncs + 41 TX timeouts / 20 s idle; PSM off = 0/0 and 1×577 B/80 ms ≈57 kbps → full ~265 kbps). Delta `wmt_lib.c` forces `gPsEnable=0` + `wmt_lib_ps_ctrl()` always-disables (runtime: `/proc/driver/wmt_dbg` `0 0`). Wi-Fi unaffected. The **crackle also needs the sink to idle** (`node.pause-on-idle=false` + GNOME volume-control monitor stream) — follow-up pending | **`docs/bluetooth-a2dp.md`** (receipts + measurement table); code `common_main/core/wmt_lib.c` (+ `psm_core.c`, `stp_core.c`) |
 | Keyboard layouts — VT console map + desktop xkb: console `console.keyMap` (config/gemini.nix); desktop layout "gemini" packaged as an xkbcommon include dir for the gemwl/lxqt-nested units via `XKB_CONFIG_EXTRA_PATH` (+ `XKB_DEFAULT_LAYOUT=gemini`). **GNOME needs more** (2026-09-10m): gnome-shell validates the input source against the **xkb registry**, so it also needs `pkgs/gemini-xkeyboard-config.nix` (xkeyboard-config copy + `symbols/gemini` + a `<layout>` entry in `rules/evdev.xml`) selected via `XKB_CONFIG_ROOT` — see the GNOME row | `config/keymaps/gemini-uk.map`, `config/xkb/symbols/gemini`, `pkgs/gemini-xkb.nix`, `pkgs/gemini-xkeyboard-config.nix` |
 | **Rust device-control CLI** (backlight/battery/guard/a72/wdt/boot/gpu/speaker; script-parity; units NOT flipped until the on-glass `selfcheck` pass) | `pkgs/gemcli.nix` + `pkgs/gemcli/`; migration plan + parity recipe: `docs/gemcli.md` |
 | Mesa 25.0.7+geminipda fork / wlroots 0.18.2 pin / gemwl pkgs / **labwc 0.8.3 pin** / **phoc 0.54.0 (fork-gbm wlroots 0.19 override)** | `pkgs/{mesa-geminipda,wlroots-geminipda,gemwl,labwc-geminipda,phoc-geminipda}.nix` + `patches/` |
@@ -318,9 +319,11 @@ MANDATORY (kernel driver claims 0x6b).
   byte-identical to the fork). To fold new fork commits in, point
   `bin/sync-kernel-delta.sh` at the new fork rev (it now defaults to
   `06fd13e11`) and update the rev in the derivation header. **Since
-  2026-09-10k the delta deliberately DIVERGES from the fork** in four
+  2026-09-10k the delta deliberately DIVERGES from the fork** in five
   files (the delta-only `drivers/gpu/drm/tiny/{geminipda-drm.c,Kconfig,
-  Makefile}` and the modified `mt6797-gemini-pda.dts` DRM node), so the
+  Makefile}`, the modified `mt6797-gemini-pda.dts` DRM node, and
+  `common_main/core/wmt_lib.c` — STP PSM forced off, the A2DP fix, see
+  `docs/bluetooth-a2dp.md`), so the
   script now ABORTS and lists them instead of clobbering — pass `FORCE=1`
   only if you have folded the local work into the fork. Do not hand-edit
   the delta and then blindly sync. The old `bin/snapshot-kernel.sh` +

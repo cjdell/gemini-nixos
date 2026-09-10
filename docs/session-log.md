@@ -5,6 +5,67 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-10r — A2DP stutter + after-playback crackle: ROOT CAUSE = the STP PSM (fixed in the delta, verified on glass)
+
+User report: A2DP headphones stutter **predictably** even at idle, plus a
+regular crackle **after playback** ("ring buffer not purged"). Both
+**root-caused and fixed** — kernel delta + a rootfs deploy, no boot.img
+change. New doc **`docs/bluetooth-a2dp.md`** carries the full receipts.
+
+**Symptom, at the transport level.** `dmesg` showed periodic
+`[STP] MTKSTP_SYNC: go to MTKSTP_RESYNC2, buff = 7f` →
+`mtkstp_process_packet: expected_rxseq = X, parser.seq = Y` →
+`stp_do_tx_timeout` (`Resend STP packet`), with HCI-STP TX stalls of exactly
+**1.052 s**. `btmon` + the ACL sizes showed the A2DP transport stuck at
+**one 577-byte frame per 80 ms (~57 kbps)** while SBC needed ~265 kbps — a
+~2× source underrun, i.e. the predictable stutter. `MTKSTP_TX_TIMEOUT` is
+180 ms (`stp_core.h:112`); sweeping `btif_wak_hb_ms` (0–100) and the idle
+time did **not** change the ~1.5 s resync period, and the resyncs happened
+with **no audio traffic at all** → not load-driven, not the WAK heartbeat.
+
+**Root cause — the STP power-save mode (PSM).** Its sleep action is
+`mt_combo_plt_enter_deep_idle(COMBO_IF_BTIF)`, whose Android combo-stub
+backend is **not wired on this port**: it logs `NULL function pointer` and
+returns −1, so the chip never enters deep idle. The PSM therefore saved no
+power, but it still gated STP TX past `MTKSTP_TX_TIMEOUT`, injecting the
+`0x7f` resync. Decisive A/B via the debug proc
+(`echo "0 0" > /proc/driver/wmt_dbg` — commands are hex `<id> <arg>`, id
+`0x0` = PSM ctrl):
+
+| PSM | `RESYNC2` | `stp_do_tx_timeout` | `deep idle fail` | per 20 s idle |
+|---|---|---|---|---|
+| on (default) | 12 | 41 | 198 | |
+| **off** | **0** | **0** | **0** | |
+
+With PSM off during playback: 0/0, and the ACL stream became
+**237 frames / ~6 s at 818–887 B** ≈ **~265 kbps** — the correct SBC rate.
+
+**Fix (kernel delta, `common_main/core/wmt_lib.c`)**: `gPsEnable` defaults
+to 0 and **`wmt_lib_ps_ctrl()` always disables** (never sets `gPsEnable=1`),
+because both `mt6630_sw_init()` and `mtk_wcn_wmt_func_off(BT)` (`wmt_exp.c`)
+ask to re-enable it — a one-shot init disable would not survive a BT
+off/on. `wmt_lib_ps_enable()` is documented as intentionally off. (PSM
+starts disabled anyway: `stp_psm_init()` ends with `_stp_psm_disable()`.)
+
+**Deployed + verified on glass 2026-09-10.** Toplevel
+`94bw47dh6bhr1rk4jafva9nimz3avwjb` built (`deploy build`, 386 s) and
+deployed (`deploy deploy`, gen7); a WDT EXRST reboot loaded the new
+`mtk_wcn`. Module hot-reload is NOT viable — after `rmmod`/`modprobe` the
+CONSYS stayed `POWER_OFF` and wlan0/hci0 never came back; reboot required.
+After the reboot, with the PSM default (no proc write): **idle 12 s = 0
+resyncs / 0 timeouts / 0 deep-idle-fails**; **30 s playback = 0/0**;
+**25 s idle after stop = 0 A2DP frames** (sink `state: "suspended"`, so the
+after-playback crackle source is gone too); **wlan0 stayed associated on
+5 GHz and pinged**; MDR-ZX330BT reconnected and is the default sink.
+
+**Not a regression / no power cost:** the PSM's deep-idle backend is absent
+(`NULL function pointer`), so disabling it saves nothing; Wi-Fi is
+unaffected. Re-enable only if a real MT6630 deep-idle backend is written.
+
+**Kernel-delta hygiene updated:** the delta now diverges from the fork in
+**five** files (three `geminipda-drm` files, the DT DRM node, and
+`wmt_lib.c`); `bin/sync-kernel-delta.sh` will list `wmt_lib.c` and abort.
+
 ## 2026-09-10q — Power modes (GNOME performance → A72) + sleep turns the A72 off + speaker L/R fix & amp toggle
 
 Four user asks this session: (1) silver-button sleep must also power

@@ -83,7 +83,8 @@ static const WMT_IC_PIN_STATE cmb_aif2pin_stat[] = {
 
 #if CFG_WMT_PS_SUPPORT
 static UINT32 gPsIdleTime = STP_PSM_IDLE_TIME_SLEEP;
-static UINT32 gPsEnable = 1;
+/* Gemini PDA port: the STP PSM is OFF by default.  See wmt_lib_ps_enable(). */
+static UINT32 gPsEnable;
 static PF_WMT_SDIO_PSOP sdio_own_ctrl;
 #endif
 
@@ -629,21 +630,36 @@ INT32 wmt_lib_ps_set_idle_time(UINT32 psIdleTime)
 
 INT32 wmt_lib_ps_ctrl(UINT32 state)
 {
-	if (0 == state) {
-		wmt_lib_ps_disable();
-		gPsEnable = 0;
-	} else {
-		gPsEnable = 1;
-		wmt_lib_ps_enable();
-	}
+	/* Gemini PDA port: never re-enable the STP PSM (see wmt_lib_ps_enable()).
+	 * Both mt6630_sw_init() and mtk_wcn_wmt_func_off(BT) ask for it, so the
+	 * force-off has to live here or the audio fix would last one session. */
+	(void)state;
+	wmt_lib_ps_disable();
+	gPsEnable = 0;
 	return 0;
 }
 
 
 INT32 wmt_lib_ps_enable(VOID)
 {
+	/* Gemini PDA port — the STP PSM is intentionally kept OFF.
+	 *
+	 * The PSM's sleep action is mt_combo_plt_enter_deep_idle(COMBO_IF_BTIF),
+	 * whose Android combo-stub backend is not wired on this port: it logs
+	 * "NULL function pointer" and returns -1, so the chip never enters deep
+	 * idle.  The PSM therefore saves no power, yet it still gates STP TX,
+	 * which stalls the link past MTKSTP_TX_TIMEOUT (180 ms) and makes the
+	 * host inject a 0x7f resync — the peer follows and the BTIF link desyncs
+	 * ~every 1.5 s, underruning A2DP (stutter) and leaving the idle sink
+	 * garbled (crackle).
+	 *
+	 * Measured on glass 2026-09-10 (MDR-ZX330BT, SBC): PSM on = 12 resyncs +
+	 * 41 stp_do_tx_timeout per 20 s idle; PSM off = 0/0, A2DP transport goes
+	 * from 1x577 B/80 ms (~57 kbps) to the full ~265 kbps, and wlan0 (5 GHz)
+	 * still associates/pings.  /proc/driver/wmt_dbg "0 0" is the runtime
+	 * equivalent.  Re-enable only with a real MT6630 deep-idle backend. */
 	if (gPsEnable)
-		mtk_wcn_stp_psm_enable(gPsIdleTime);
+		mtk_wcn_stp_psm_disable();
 
 	return 0;
 }

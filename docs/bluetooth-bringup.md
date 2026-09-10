@@ -9,6 +9,13 @@
 > PATH, blueman-manager window + SNI tray applet in the LXQt session.
 > Remaining: the LE event-mask acceptance-range quirk, an RF/pairing
 > test with a device close by, PAN tethering (no CONFIG_BT_BNEP).
+>
+> **A2DP (audio) is a separate layer, now FIXED** (2026-09-10r) — the
+> HCI link above inits and connects, but streaming used to stutter-stall.
+> Root cause was the **STP PSM**, whose deep-idle backend is an
+> unimplemented stub; it desynced the BTIF link every ~1.5 s. The delta now
+> forces it off (`wmt_lib.c`). See **`docs/bluetooth-a2dp.md`** for the
+> measurement table and on-glass verification.
 
 ## TL;DR
 
