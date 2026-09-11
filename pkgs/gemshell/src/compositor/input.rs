@@ -182,25 +182,40 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
     for e in rd.flatten() {
         let base = e.path();
         let name = util::read_to_string(&base.join("name")).map(|s| s.trim().to_string());
-        let dev = util::read_to_string(&base.join("dev")).map(|s| s.trim().to_string());
-        let (Some(name), Some(dev)) = (name, dev) else { continue };
-        let Ok(minor) = dev.rsplitn(2, ':').next().unwrap_or("").parse::<u32>() else {
-            continue;
-        };
+        let Some(name) = name else { continue };
+        // The minor: inputN/eventM/dev = "13:66" — NOTE: inputN/dev is
+        // NOT exported by this kernel (verified on glass 2026-09-11),
+        // but the event subdir carries it.
+        let minor = (|| -> Option<u32> {
+            let Ok(evs) = std::fs::read_dir(&base) else {
+                return None;
+            };
+            for ev in evs.flatten() {
+                if let Some(d) = util::read_to_string(&ev.path().join("dev")) {
+                    if let Some(m) = d.trim().rsplitn(2, ':').next() {
+                        return m.parse().ok();
+                    }
+                }
+            }
+            None
+        })();
+        let Some(minor) = minor else { continue };
         let path = format!("/dev/input/event{minor}");
-        let Ok(fd) = open_ro(&path) else {
-            continue; // not readable (group) — skip
+        // Capabilities from sysfs (the capabilities/ dir; no ioctl
+        // needed): ev = type bits, abs/key = the per-type code bitmaps.
+        let hex = |f: &std::path::Path| -> u64 {
+            util::read_to_string(f).map(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0)).unwrap_or(0)
         };
-        let keybit = evbit(fd, 0x01); // EV_KEY
-        let absbit = evbit(fd, 0x03); // EV_ABS
-        let is_touch = absbit
-            .iter()
-            .enumerate()
-            .any(|(bit, b)| *b != 0 && bit == 0x2f); // ABS_MT_SLOT
+        let ev = hex(&base.join("capabilities/ev"));
+        let abs = hex(&base.join("capabilities/abs"));
+        let key = hex(&base.join("capabilities/key"));
+        let has_abs = ev & (1 << 0x03) != 0;
+        let has_key = ev & (1 << 0x01) != 0;
+        let is_touch = has_abs && abs & (1 << 0x2f) != 0; // ABS_MT_SLOT
         let lower = name.to_lowercase();
         if is_touch {
             touch = Some((path.clone(), name.clone()));
-        } else if keybit.iter().any(|b| *b != 0) {
+        } else if has_key && key != 0 {
             // EV_KEY device: prefer the AW9523 main keyboard by name.
             let pref = lower.contains("aw9523") || lower == "keyboard";
             if pref && kbd.is_none() {
@@ -209,7 +224,6 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
                 kbd_fallback = Some((path.clone(), name.clone()));
             }
         }
-        unsafe { libc::close(fd) };
     }
     let kbd = kbd.or(kbd_fallback);
     match (kbd, touch) {
@@ -225,26 +239,6 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
 
 /// The EVIOCGBIT(type) capability bitmap (64 bits) for an evdev fd.
 /// EVIOCGBIT = _IOW('E', 0x20, int[32]) = 0x80084500.
-fn evbit(fd: std::os::raw::c_int, ty: u16) -> [u8; 8] {
-    #[repr(C)]
-    struct Kb {
-        _type: u16,
-        size: u32,
-        bit: [u8; 8],
-    }
-    let mut k = Kb {
-        _type: ty,
-        size: 8,
-        bit: [0u8; 8],
-    };
-    let rc = unsafe { libc::ioctl(fd, 0x8008_4500u64 as _, &mut k as *mut Kb) };
-    if rc != 0 {
-        [0u8; 8]
-    } else {
-        k.bit
-    }
-}
-
 fn open_ro(path: &str) -> Result<std::os::raw::c_int, String> {
     use std::os::unix::ffi::OsStrExt;
     let fd = unsafe {
