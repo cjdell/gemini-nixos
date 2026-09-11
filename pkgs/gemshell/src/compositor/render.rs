@@ -442,6 +442,8 @@ pub struct Renderer {
     /// The LK fb is a PORTRAIT 1080x2160 buffer while the product is a
     /// landscape clamshell; gemwl uses WL_OUTPUT_TRANSFORM_90 for the
     /// same reason (geminipda-drm defaults to panel-orientation LEFT_UP).
+    /// Default 270 (changed from 90 on glass 2026-09-12: 90 rendered the
+    /// scene 180° out). MUST match `GEMSHELL_TOUCH_ROTATE` in input.rs.
     /// Override with GEMSHELL_ROTATE for on-glass calibration.
     rotation: i32,
     eglCreateImageKHR: EglCreateImageFn,
@@ -727,7 +729,7 @@ impl Renderer {
             rotation: std::env::var("GEMSHELL_ROTATE")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(90),
+                .unwrap_or(270),
             eglCreateImageKHR,
             glEGLImageTargetTexture2DOES,
             egui_prog,

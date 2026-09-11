@@ -254,12 +254,18 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
 /// Open an evdev node read-only.
 /// (EVIOCGBIT(ev,len) = _IOC(_IOC_READ, 'E', 0x20+ev, len); we classify
 /// devices from the sysfs capabilities/ files instead, see find_nodes.)
+///
+/// **O_NONBLOCK is load-bearing (fixed 2026-09-12):** `read_keyboard` /
+/// `read_touch` drain their node with `loop { read; if short { break } }`.
+/// Without O_NONBLOCK the read after the queue drains BLOCKS, and the
+/// whole compositor freezes on the first input event (observed on glass:
+/// the main thread sat in `evdev_read` on fd 3 → "touch unresponsive").
 fn open_ro(path: &str) -> Result<std::os::raw::c_int, String> {
     use std::os::unix::ffi::OsStrExt;
     let fd = unsafe {
         libc::open(
             path.as_ptr() as *const std::os::raw::c_char,
-            libc::O_RDONLY | libc::O_CLOEXEC,
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
         )
     };
     if fd < 0 {
@@ -607,7 +613,7 @@ impl Input {
     /// coordinates, applying the panel counter-rotation. The LK fb (and
     /// therefore the NT36772 evdev range) is PORTRAIT 1080x2160 while the
     /// logical scene is landscape; `rotate` mirrors the display present
-    /// rotation (`GEMSHELL_TOUCH_ROTATE`, default 90). See
+    /// rotation (`GEMSHELL_TOUCH_ROTATE`, default 270). See
     /// docs/gemshell.md "Orientation".
     fn touch_to_scene(&self, slot: usize, scene_w: f32, scene_h: f32) -> (f32, f32) {
         let nx = self.slot_x[slot].clamp(0.0, 1.0);
@@ -688,7 +694,7 @@ fn touch_rotate_env() -> i32 {
     std::env::var("GEMSHELL_ROTATE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(90)
+        .unwrap_or(270)
 }
 
 /// Build an xkb keymap from RMLVO (`XKB_DEFAULT_RULES`/`_OPTIONS` env +
