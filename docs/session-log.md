@@ -5,6 +5,51 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 (c) — gemshell: no app padding, fill work area, drag by client title bar, app-level scaling
+
+Third report from the glass, same day. Deployed (gen51) and verified
+with a real GTK4 app (gnome-calculator) on the device.
+
+**"Still padding on apps; they need to be draggable by their own title
+bars; scaling should apply to apps, not just gemshell."**
+
+1. **Padding.** New toplevels now open **maximized to the work area**
+   (`Compositor::work_area`, below the status bar / above the taskbar)
+   instead of a fixed inset 1000×700 box; transient dialogs (a toplevel
+   that sends `xdg_toplevel.set_parent`) open as a centered floating box
+   instead. `Window::buffer_rect` no longer letterboxes a near-matching
+   buffer: GTK CSD surfaces reserve a transparent shadow margin, so a
+   "maximized" window's buffer is smaller than the configure we sent
+   (measured 2062×939 vs the configured 2160×948), and centring it left a
+   visible strip of window background around every app. It now stretches
+   to fill when the aspect mismatch is under ~13% (imperceptible) and
+   letterboxes only for larger mismatches. Device receipt:
+   gnome-calculator's light background spans the **full 2160 px width**
+   (was 49..2111) and the window-bg colour appears **0** times.
+2. **Drag by the client's own title bar.** With CSD the app's header bar
+   is the drag handle, but `xdg_toplevel.move` was turned into a bare
+   `Gesture::Move`, which stopped forwarding touch to the client (motion
+   and up included) — so the client's own gesture never completed. Now
+   `client_move = (win, finger, dx, dy)` moves the window while the touch
+   is **still forwarded**; the first move un-maximizes to a floating size
+   (78%×82% of the work area) so the drag is visible.
+3. **Scaling now applies to apps.** `wl_output.scale` is
+   `ceil(ui_scale)` (integer — 100%→1, 150%→2 supersampled, 200%→2 1:1),
+   broadcast to every bound output on a scale change along with a fresh
+   configure for every toplevel. Before this only gemshell's own chrome
+   scaled; app buffers were upscaled.
+
+Also in this batch: `set_brightness` runs **inline** on the UI thread
+(it is a devmem + sysfs write; the worker may be mid-`nmcli`) and the data
+worker drains pending mutations between each slow provider call, so a
+mutation waits at most one provider call rather than a whole ~1–2 s
+snapshot (the "brightness slider extremely unresponsive / taps from 30 s
+ago" report). `spawn_cmd` logs the spawn outcome + pid.
+
+Verified on device: SSD titlebar pixels 0, window-bg pixels 0, app spans
+the full width; gnome-calculator runs. Installed service active, transient
+stopped, idle CPU ~0.2–1.2 %.
+
 ## 2026-09-11 (b) — gemshell: apps launch, settings responsive, single chrome, UI scale (+ Fn keys verified)
 
 Second glass-report batch, same day. Six user-visible fixes + one

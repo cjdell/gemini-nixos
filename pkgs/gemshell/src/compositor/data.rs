@@ -53,6 +53,29 @@ pub struct CachedData {
     pending: Arc<Mutex<Vec<(&'static str, Mutation)>>>,
     /// A snapshot has been requested; the worker clears it when it runs.
     refresh_pending: Arc<AtomicBool>,
+    /// The provider itself, for mutations that are cheap enough to run on
+    /// the caller's thread. `set_brightness` is a devmem + sysfs write
+    /// (microseconds), so running it inline makes the Settings slider
+    /// track the finger exactly instead of waiting for the worker thread
+    /// (which may be mid-`nmcli`). Report: "brightness slider extremely
+    /// unresponsive" (2026-09-11).
+    direct: Arc<dyn DataProvider>,
+}
+
+/// Run every pending mutation (they are cheap; the snapshot below is not).
+fn run_pending(
+    pending: &Arc<Mutex<Vec<(&'static str, Mutation)>>>,
+    inner: &dyn DataProvider,
+) {
+    let batch: Vec<(&'static str, Mutation)> = {
+        let mut p = pending.lock().unwrap();
+        std::mem::take(&mut *p)
+    };
+    for (_kind, f) in batch {
+        if let Err(e) = f(inner) {
+            log::warn!("data mutation failed: {e}");
+        }
+    }
 }
 
 impl CachedData {
@@ -69,6 +92,7 @@ impl CachedData {
         let worker_cache = cache.clone();
         let worker_pending = pending.clone();
         let worker_refresh = refresh_pending.clone();
+        let worker_inner = inner.clone();
         std::thread::Builder::new()
             .name("gemshell-data".into())
             .spawn(move || loop {
@@ -81,32 +105,34 @@ impl CachedData {
                 while rx.try_recv().is_ok() {}
                 // Run the pending mutations first: they are cheap, and a
                 // fast one must not wait behind the snapshot below.
-                let batch: Vec<(&'static str, Mutation)> = {
-                    let mut p = worker_pending.lock().unwrap();
-                    std::mem::take(&mut *p)
-                };
-                for (_kind, f) in batch {
-                    if let Err(e) = f(&*inner) {
-                        log::warn!("data mutation failed: {e}");
-                    }
-                }
-                // Publish at most one snapshot per wake.
+                run_pending(&worker_pending, &*worker_inner);
+                // Publish at most one snapshot per wake. Drain mutations
+                // between the slow provider calls too, so a mutation that
+                // arrives mid-snapshot waits at most one call (~250-750 ms)
+                // rather than the whole ~1-2 s snapshot.
                 if worker_refresh.swap(false, Ordering::SeqCst) {
-                    let snap = Snapshot {
-                        status: inner.status(),
-                        wifi: inner.wifi(),
-                        bt: inner.bluetooth(),
-                        audio: inner.audio(),
-                    };
+                    let status = worker_inner.status();
+                    run_pending(&worker_pending, &*worker_inner);
+                    let wifi = worker_inner.wifi();
+                    run_pending(&worker_pending, &*worker_inner);
+                    let bt = worker_inner.bluetooth();
+                    run_pending(&worker_pending, &*worker_inner);
+                    let audio = worker_inner.audio();
                     if let Ok(mut c) = worker_cache.lock() {
-                        *c = snap;
+                        *c = Snapshot { status, wifi, bt, audio };
                     }
                     let _ = notify_tx.send(());
                 }
             })
             .ok();
         (
-            Arc::new(CachedData { cache, tx, pending, refresh_pending }),
+            Arc::new(CachedData {
+                cache,
+                tx,
+                pending,
+                refresh_pending,
+                direct: inner,
+            }),
             notify_rx,
         )
     }
@@ -206,6 +232,10 @@ impl DataProvider for CachedData {
     }
 
     fn set_brightness(&self, percent: i32) -> DataResult<()> {
-        self.mutate("brightness", false, move |d| d.set_brightness(percent))
+        // Direct: a devmem + sysfs write, cheap enough for the UI thread,
+        // and it must track a slider drag without queueing behind a slow
+        // snapshot. (Queued brightness mutations would also race an older
+        // value onto the panel.)
+        self.direct.set_brightness(percent)
     }
 }

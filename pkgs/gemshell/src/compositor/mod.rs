@@ -124,6 +124,15 @@ pub struct Window {
 }
 
 impl Window {
+    /// The compositor-drawn titlebar height for this window (0 with CSD).
+    pub fn chrome_h(&self) -> f32 {
+        if self.csd {
+            0.0
+        } else {
+            TITLEBAR_H
+        }
+    }
+
     /// The client area (below the titlebar), in scene coords. With CSD
     /// there is no compositor titlebar, so the content fills the window.
     pub fn content_rect(&self) -> (f32, f32, f32, f32) {
@@ -145,7 +154,22 @@ impl Window {
         if bw <= 0.0 || bh <= 0.0 {
             return (cx, cy, cw, ch);
         }
-        let scale = (cw / bw).min(ch / bh);
+        let sx = cw / bw;
+        let sy = ch / bh;
+        // GTK/GNOME CSD buffers reserve a transparent shadow margin, so a
+        // maximized window's buffer is slightly smaller than the configure
+        // we sent (e.g. 2062x939 vs 2160x948 at 100%). Centring that buffer
+        // left a visible strip of window background around every app — the
+        // "padding on apps" report (2026-09-11). When the aspect mismatch
+        // is small, stretch to fill: the distortion is sub-pixel-ish and
+        // the app actually reaches the screen edges. Larger mismatches
+        // (video, a portrait dialog) still letterbox so content is not
+        // cropped or badly stretched.
+        let aspect = sx / sy;
+        if (0.87..=1.15).contains(&aspect) {
+            return (cx, cy, cw, ch);
+        }
+        let scale = sx.min(sy);
         let dw = bw * scale;
         let dh = bh * scale;
         (cx + (cw - dw) / 2.0, cy + (ch - dh) / 2.0, dw, dh)
@@ -222,6 +246,13 @@ pub struct Compositor {
     pub lh: f32,
     /// UI scale (1.0 / 1.5 / 2.0), changed from Settings > Display.
     pub ui_scale: f32,
+    /// Bound `wl_output` resources (for `wl_output.scale` broadcasts).
+    outputs: Vec<WlOutput>,
+    /// An in-progress client-requested window move (`xdg_toplevel.move`
+    /// from a CSD header-bar drag). We keep forwarding the touch to the
+    /// client AND move the window, so the client's gesture completes
+    /// normally (2026-09-11).
+    client_move: Option<(u32, u32, f32, f32)>,
     pub snap_preview: Snap,
     pub snap_win: Option<u32>,
     present_time_ms: u64,
@@ -386,6 +417,8 @@ impl Compositor {
                 lw: W as f32 / ui_scale,
                 lh: H as f32 / ui_scale,
                 ui_scale,
+                outputs: Vec::new(),
+                client_move: None,
                 snap_preview: Snap::None,
                 snap_win: None,
                 present_time_ms: util::now_ms(),
@@ -1189,6 +1222,21 @@ impl Compositor {
         f.x = x;
         f.y = y;
 
+        // Client-requested move (a CSD header-bar drag): move the window
+        // with this finger while STILL forwarding the touch below, so the
+        // client's drag gesture keeps receiving motion/up.
+        if let Some((win, finger, off_dx, off_dy)) = self.client_move {
+            if finger == id {
+                let (lw, lh) = (self.lw, self.lh);
+                if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+                    w.x = (x - off_dx).clamp(0.0, (lw - w.w).max(0.0));
+                    w.y = (y - off_dy).clamp(STATUS_H, (lh - TASKBAR_H - 40.0).max(STATUS_H));
+                }
+                self.snap_preview = self.snap_zone(x, y);
+                self.dirty = true;
+            }
+        }
+
         // clone the gesture: the arms below mutably borrow self
         match self.gesture.clone() {
             Gesture::Move { win, finger, off_dx, off_dy } if finger == id => {
@@ -1276,6 +1324,10 @@ impl Compositor {
         let was_moved = self.fingers.get(&id).map(|f| f.moved).unwrap_or(false);
         let pos = self.fingers.get(&id).map(|f| (f.x, f.y));
         self.fingers.remove(&id);
+        // End a client-requested move with the finger that started it.
+        if self.client_move.map(|(_, f, _, _)| f) == Some(id) {
+            self.client_move = None;
+        }
 
         match self.gesture.clone() {
             Gesture::None => {
@@ -1642,9 +1694,11 @@ impl Compositor {
             return None;
         }
         let id = self.next_id();
-        let n = self.windows.len();
-        let x = 40.0 + (n % 4) as f32 * 36.0;
-        let y = STATUS_H + 40.0 + (n % 4) as f32 * 36.0;
+        // Fill the work area by default: GNOME/CSD apps are complete
+        // windows with their own header bar, and on a 5.7" screen an
+        // inset 1000x700 window reads as unwanted padding. The taskbar
+        // swipe-snap + titlebar double-tap still work to un-maximize.
+        let (wx, wy, ww, wh) = self.work_area();
         self.windows.push(Window {
             id,
             toplevel: None,
@@ -1652,15 +1706,15 @@ impl Compositor {
             surface,
             title: String::new(),
             app_id: String::new(),
-            x,
-            y,
-            w: 1000.0,
-            h: 700.0,
+            x: wx,
+            y: wy,
+            w: ww,
+            h: wh,
             buffer: None,
             workspace: self.ws_target as u32,
             minimized: false,
-            maximized: false,
-            snap: Snap::None,
+            maximized: true,
+            snap: Snap::Max,
             app: None,
             is_popup: false,
             parent: None,
@@ -1745,7 +1799,32 @@ impl Compositor {
         self.lw = W as f32 / scale;
         self.lh = H as f32 / scale;
         self.renderer.ui_scale = scale;
-        // Windows keep their logical geometry; tell clients to reflow.
+        // Re-fit maximized/snapped windows to the new work area. A client
+        // renders at the output scale (wl_output.scale below), so its
+        // logical size must follow `lw`/`lh`.
+        let (lw, lh) = (self.lw, self.lh);
+        let (wx, wy, ww, wh) = self.work_area();
+        for w in self.windows.iter_mut() {
+            if w.maximized || w.snap == Snap::Max {
+                w.x = wx;
+                w.y = wy;
+                w.w = ww;
+                w.h = wh;
+            } else if w.snap != Snap::None {
+                let (x, y, sw, sh) = snap_rect(w.snap, None, lw, lh);
+                w.x = x;
+                w.y = y;
+                w.w = sw;
+                w.h = sh;
+            } else {
+                w.x = w.x.clamp(0.0, (lw - w.w).max(0.0));
+                w.y = w.y.clamp(STATUS_H, (lh - TASKBAR_H - 40.0).max(STATUS_H));
+            }
+        }
+        // Tell clients the new output scale so they render at 1:1 with the
+        // physical panel (crisp) instead of being upscaled (2026-09-11).
+        self.broadcast_output_scale();
+        // ...and reflow every toplevel.
         let ids: Vec<u32> = self
             .windows
             .iter()
@@ -1758,6 +1837,55 @@ impl Compositor {
         self.save_ui_scale(scale);
         self.dirty = true;
         log::info!("ui scale -> {scale}");
+    }
+
+    /// The usable area (below the status bar, above the taskbar), logical.
+    pub fn work_area(&self) -> (f32, f32, f32, f32) {
+        (0.0, STATUS_H, self.lw, (self.lh - STATUS_H - TASKBAR_H).max(1.0))
+    }
+
+    /// `xdg_toplevel.set_parent`: a toplevel with a parent is a transient
+    /// dialog. New windows are maximized by default (no desktop padding),
+    /// but a dialog should be a centered floating box instead.
+    pub fn set_parent(&mut self, win: u32, has_parent: bool) {
+        if !has_parent {
+            return;
+        }
+        let (lw, lh) = (self.lw, self.lh);
+        let (_, _, ww, wh) = self.work_area();
+        let mut changed = false;
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+            // Only before the first buffer: once mapped, honour the size
+            // the client chose.
+            if w.buffer.is_none() && w.maximized {
+                let nw = (ww * 0.72).clamp(360.0, ww);
+                let nh = (wh * 0.72).clamp(280.0, wh);
+                w.w = nw;
+                w.h = nh;
+                w.x = ((lw - nw) / 2.0).max(0.0);
+                w.y = (STATUS_H + (lh - STATUS_H - TASKBAR_H - nh) / 2.0).max(STATUS_H);
+                w.maximized = false;
+                w.snap = Snap::None;
+                changed = true;
+            }
+        }
+        if changed {
+            self.request_configure(win);
+            self.dirty = true;
+        }
+    }
+
+    /// Re-send `wl_output.scale` (and a `done`) to every bound output, so
+    /// clients render at ceil(ui_scale)x and the compositor never has to
+    /// upscale an app's buffer (scale applies to APP content, not just
+    /// gemshell's own chrome). `wl_output.scale` is an integer: 1.0 -> 1,
+    /// 1.5 -> 2 (supersampled), 2.0 -> 2 (1:1).
+    fn broadcast_output_scale(&self) {
+        let s = self.ui_scale.ceil().max(1.0) as i32;
+        for o in &self.outputs {
+            let _ = o.scale(s);
+            let _ = o.done();
+        }
     }
 
     fn save_ui_scale(&self, scale: f32) {
@@ -1779,12 +1907,21 @@ impl Compositor {
             .unwrap_or(1.0)
     }
 
-    /// `xdg_toplevel.move` from a client (a CSD header-bar drag). We have
-    /// no pointer device, so move with the finger that is currently down.
+    /// `xdg_toplevel.move` from a client (a CSD header-bar drag). We keep
+    /// the touch forwarded to the client and additionally move the window
+    /// with the same finger, so the client's drag gesture still completes
+    /// (a bare `Gesture::Move` would starve it of motion/up events).
     pub fn begin_client_move(&mut self, win: u32) {
-        let finger = self.fingers.keys().next().copied();
-        let (fx, fy) = finger
-            .and_then(|id| self.fingers.get(&id))
+        // Prefer the finger that is currently forwarded to this window.
+        let forwarded = match &self.gesture {
+            Gesture::Forward { win: w, finger } if *w == win => Some(*finger),
+            _ => None,
+        };
+        let finger = forwarded.or_else(|| self.fingers.keys().next().copied());
+        let Some(finger) = finger else { return };
+        let (fx, fy) = self
+            .fingers
+            .get(&finger)
             .map(|f| (f.x, f.y))
             .unwrap_or((0.0, 0.0));
         let (wx, wy) = self
@@ -1794,11 +1931,20 @@ impl Compositor {
             .map(|w| (w.x, w.y))
             .unwrap_or((0.0, 0.0));
         self.raise(win);
-        if let Some(id) = finger {
-            self.gesture = Gesture::Move { win, finger: id, off_dx: fx - wx, off_dy: fy - wy };
-            self.snap_win = Some(win);
-            self.snap_preview = Snap::None;
+        self.client_move = Some((win, finger, fx - wx, fy - wy));
+        // Un-maximize so the window can actually be dragged.
+        let needs_unsnap = self
+            .windows
+            .iter()
+            .find(|w| w.id == win)
+            .map(|w| w.maximized || w.snap != Snap::None)
+            .unwrap_or(false);
+        if needs_unsnap {
+            self.unmaximize(win);
         }
+        self.snap_preview = Snap::None;
+        self.snap_win = Some(win);
+        self.dirty = true;
     }
 
     pub fn new_popup(&mut self, surface: WlSurface, parent: Option<u32>, w: f32, h: f32, x: f32, y: f32) -> Option<u32> {
@@ -1919,12 +2065,26 @@ impl Compositor {
     }
 
     fn unmaximize(&mut self, win: u32) {
+        let (lw, lh) = (self.lw, self.lh);
+        let (_, _, ww, wh) = self.work_area();
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+            // Restore to a floating size instead of keeping the work-area
+            // size: dragging a maximized window must visibly shrink it.
+            if w.maximized || w.snap != Snap::None {
+                let nw = (ww * 0.78).clamp(360.0, ww);
+                let nh = (wh * 0.82).clamp(280.0, wh);
+                w.x = w.x.clamp(0.0, (lw - nw).max(0.0));
+                w.y = w
+                    .y
+                    .clamp(STATUS_H, (lh - TASKBAR_H - nh).max(STATUS_H));
+                w.w = nw;
+                w.h = nh;
+            }
             w.maximized = false;
             w.snap = Snap::None;
-            w.y = w.y.max(STATUS_H);
-            self.request_configure(win);
         }
+        self.request_configure(win);
+        self.dirty = true;
     }
 
     fn toggle_maximize_focused(&mut self) {
@@ -2017,7 +2177,8 @@ impl Compositor {
             Snap::None => Vec::new(),
         };
         let (cw, ch) = if w.maximized || w.snap != Snap::None {
-            (w.w as i32, (w.h - TITLEBAR_H) as i32)
+            let chrome = w.chrome_h();
+            (w.w as i32, (w.h - chrome) as i32)
         } else {
             (0, 0)
         };

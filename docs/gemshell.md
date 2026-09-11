@@ -109,6 +109,40 @@ Settings > Display offers **100% / 150% / 200%**. Design:
   ingest (`x / ui_scale`) so hit-tests line up at every scale.
 - The scale persists to `$HOME/.config/gemshell/scale` and is re-applied
   at boot; changing it re-configures toplevels so clients reflow.
+- **It applies to apps, not just gemshell chrome.** `wl_output.scale` is
+  set to `ceil(ui_scale)` — an integer, so 100%→1, 150%→2 (the client
+  renders a 2× buffer that the compositor maps onto 1.5× physical pixels:
+  supersampled, crisp) and 200%→2 (1:1). Changing the scale broadcasts a
+  new `wl_output.scale` + `done` to every bound output and re-configures
+  every toplevel, so apps reflow at the new scale.
+
+### No desktop padding; apps fill the work area
+
+New toplevels open **maximized to the work area** (below the status bar,
+above the taskbar) instead of an inset 1000×700 box — GNOME/CSD apps are
+complete windows with their own header bar, and on a 5.7" screen the inset
+read as unwanted padding. Transient dialogs (a toplevel that sets
+`xdg_toplevel.set_parent`) open as a centered floating box instead.
+
+`buffer_rect` used to letterbox a client buffer inside the content rect,
+leaving a visible strip of window background around every app: GTK CSD
+buffers reserve a transparent shadow margin, so a maximized window's
+buffer is slightly smaller than the configure we sent (e.g. 2062×939 vs
+2160×948). It now **stretches to fill** when the aspect mismatch is under
+~13% (imperceptible, and the app reaches the screen edges) and only
+letterboxes for larger mismatches (video, portrait dialogs).
+
+### Dragging by the client's own title bar
+
+With CSD the app's header bar is the drag handle. `xdg_toplevel.move` from
+a client now records `client_move = (win, finger, dx, dy)` and the
+compositor moves the window with that finger **while still forwarding**
+the touch events to the client, so the client's own drag gesture still
+completes. Un-maximizing via a drag restores a floating size (78% × 82% of
+the work area) so the movement is visible.
+
+On-device receipt (gnome-calculator): SSD titlebar pixels 0, window-bg
+pixels 0, and the app's background spans the full 2160 px width.
 
 ## Orientation (landscape product / portrait fb)
 

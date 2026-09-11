@@ -277,7 +277,7 @@ impl GlobalDispatch<WlSeat, (), Compositor> for Compositor {
 
 impl GlobalDispatch<WlOutput, OutputData, Compositor> for Compositor {
     fn bind(
-        _state: &mut Compositor,
+        state: &mut Compositor,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: wayland_server::New<WlOutput>,
@@ -285,13 +285,23 @@ impl GlobalDispatch<WlOutput, OutputData, Compositor> for Compositor {
         data_init: &mut DataInit<'_, Compositor>,
     ) {
         let res = data_init.init(resource, OutputData {});
-        use wayland_server::protocol::wl_output::{Mode, Subpixel, Transform, WlOutput};
+        use wayland_server::protocol::wl_output::{Mode, Subpixel, Transform};
         let w = super::W as i32;
         let h = super::H as i32;
-        let _ = res.geometry(0, 0, w, h, Subpixel::Unknown, "gemini".into(), "geminipda".into(), Transform::Normal);
-        let _ = res.scale(1);
-        let _ = res.mode(Mode::Current | Mode::Preferred, super::W as i32, super::H as i32, 60_000);
+        // `geometry` takes millimetres (a 5.7" 1080x2160 panel ≈ 61x122 mm),
+        // not pixels; the pixel mode is advertised below. The logical size
+        // clients should lay out in is mode / scale.
+        let _ = res.geometry(0, 0, 61, 122, Subpixel::Unknown, "gemini".into(), "geminipda".into(), Transform::Normal);
+        // Output scale = ceil(UI scale), so APP content is rendered at >=1x
+        // the physical panel resolution and is never upscaled by gemshell
+        // (2026-09-11). `wl_output.scale` is an integer, so at 150% we
+        // advertise 2: the client renders a 2x buffer that the compositor
+        // maps onto 1.5x physical pixels (supersampled, crisp); at 100% it
+        // is 1 (1:1) and at 200% it is 2 (1:1).
+        let _ = res.scale(state.ui_scale.ceil().max(1.0) as i32);
+        let _ = res.mode(Mode::Current | Mode::Preferred, w, h, 60_000);
         let _ = res.done();
+        state.outputs.push(res);
     }
 }
 
@@ -635,8 +645,8 @@ impl Dispatch<XdgToplevel, XdgToplevelData, Compositor> for Compositor {
                 log::debug!("set_fullscreen (ignored in v1)");
             }
             XdgToplevelRequest::Move { seat: _, serial: _ } => state.begin_client_move(win),
-            XdgToplevelRequest::SetParent { .. }
-            | XdgToplevelRequest::SetMaxSize { .. }
+            XdgToplevelRequest::SetParent { parent } => state.set_parent(win, parent.is_some()),
+            XdgToplevelRequest::SetMaxSize { .. }
             | XdgToplevelRequest::SetMinSize { .. }
             | XdgToplevelRequest::Resize { .. }
             | XdgToplevelRequest::ShowWindowMenu { .. } => {}
