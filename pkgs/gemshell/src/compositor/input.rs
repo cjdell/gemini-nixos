@@ -183,24 +183,27 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
         let base = e.path();
         let name = util::read_to_string(&base.join("name")).map(|s| s.trim().to_string());
         let Some(name) = name else { continue };
-        // The minor: inputN/eventM/dev = "13:66" — NOTE: inputN/dev is
-        // NOT exported by this kernel (verified on glass 2026-09-11),
-        // but the event subdir carries it.
-        let minor = (|| -> Option<u32> {
+        // The evdev node NAME: inputN/eventM/ → /dev/input/eventM.
+        // NOTE (verified on glass 2026-09-11): the node name is the
+        // device INDEX, while the minor in eventM/dev is 64+index —
+        // deriving the name from the minor (event{minor}) pointed at a
+        // non-existent node ("event65" for index 1). Use the subdir
+        // name; inputN/dev is also not exported by this kernel.
+        let event = (|| -> Option<String> {
             let Ok(evs) = std::fs::read_dir(&base) else {
                 return None;
             };
             for ev in evs.flatten() {
-                if let Some(d) = util::read_to_string(&ev.path().join("dev")) {
-                    if let Some(m) = d.trim().rsplitn(2, ':').next() {
-                        return m.parse().ok();
+                if let Some(n) = ev.file_name().to_str() {
+                    if n.starts_with("event") {
+                        return Some(n.to_string());
                     }
                 }
             }
             None
         })();
-        let Some(minor) = minor else { continue };
-        let path = format!("/dev/input/event{minor}");
+        let Some(event) = event else { continue };
+        let path = format!("/dev/input/{event}");
         // Capabilities from sysfs (the capabilities/ dir; no ioctl
         // needed): ev = type bits, abs/key = the per-type code bitmaps.
         // NOTE: the files are space-separated hex WORDS on this kernel
