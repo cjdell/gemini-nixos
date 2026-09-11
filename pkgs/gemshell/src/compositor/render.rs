@@ -42,6 +42,7 @@ extern "C" {
     fn eglMakeCurrent(d: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) -> u32;
     fn eglCreatePbufferSurface(d: EGLDisplay, config: *const c_void, w: c_int, h: c_int) -> EGLSurface;
     fn eglQueryString(d: EGLDisplay, name: u32) -> *const c_char;
+    fn eglGetConfigAttribute(d: EGLDisplay, config: *const c_void, attribute: c_int, value: *mut c_int) -> u32;
     fn eglSwapBuffers(d: EGLDisplay, surface: EGLSurface) -> u32;
     fn eglGetError() -> c_int;
     fn eglDestroySurface(d: EGLDisplay, s: EGLSurface) -> u32;
@@ -58,6 +59,7 @@ const EGL_WINDOW_BIT: u32 = 0x0002;
 const EGL_OPENGL_ES_API: u32 = 0x30A0;
 const EGL_OPENGL_ES3_BIT: c_int = 0x00004000;
 const EGL_RENDERABLE_TYPE: c_int = 0x3095;
+const EGL_RED_SIZE: c_int = 0x3024;
 const EGL_WIDTH: c_int = 0x303D;
 const EGL_HEIGHT: c_int = 0x303E;
 const EGL_CONTEXT_CLIENT_VERSION: c_int = 0x3098;
@@ -392,6 +394,21 @@ impl Renderer {
         log::info!("EGL {maj}.{min}");
         if unsafe { eglBindAPI(EGL_OPENGL_ES_API) } != EGL_TRUE {
             return Err("eglBindAPI(ES) failed".into());
+        }
+        // Diagnostic (added 2026-09-11, the 0x3004 hunt): how many
+        // configs does this display have AT ALL, and what do they say?
+        let mut all: [EGLConfig; 64] = unsafe { std::mem::zeroed() };
+        let mut nall = 0i32;
+        let ok_all = unsafe { eglChooseConfig(display, &[EGL_NONE].as_ptr(), all.as_mut_ptr(), 64, &mut nall) };
+        log::info!("eglChooseConfig(EGL_NONE): {} (n={nall})", if ok_all == EGL_TRUE { "ok" } else { "FAIL" });
+        if ok_all == EGL_TRUE {
+            for (i, cfg) in all.iter().take(nall as usize).enumerate() {
+                let (mut rt, mut st, mut r) = (0i32, 0i32, 0i32);
+                unsafe { eglGetConfigAttribute(display, cfg, EGL_RENDERABLE_TYPE, &mut rt) };
+                unsafe { eglGetConfigAttribute(display, cfg, EGL_SURFACE_TYPE, &mut st) };
+                unsafe { eglGetConfigAttribute(display, cfg, EGL_RED_SIZE, &mut r) };
+                log::info!("  config[{i}]: renderable_type=0x{rt:x} surface_type=0x{st:x} red={r}");
+            }
         }
         let mut config: EGLConfig = unsafe { std::mem::zeroed() };
         let mut nconf = 0i32;
