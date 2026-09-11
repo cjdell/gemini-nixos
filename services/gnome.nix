@@ -264,12 +264,30 @@ in
           "org/gnome/shell" = {
             enabled-extensions = [ "no-osk@gemini-nixos" ];
           };
+          # ---- Power: never route GNOME to logind suspend ----
+          # This unit has NO working suspend/resume (no s2idle wake source;
+          # a suspend locks the system up). The logind key handling in
+          # config/gemini.nix only stops KEY_SLEEP; GNOME's power plugin
+          # calls logind's Suspend() D-Bus method DIRECTLY, which bypasses
+          # HandleSuspendKey. Pin every GNOME-initiated suspend to 'nothing'
+          # and LOCK it so a stale per-user value cannot re-enable it.
+          # Sleep/wake is the silver button + gemcli/gemini-sleepd
+          # (docs/power-sleep.md). [added 2026-09-11; the systemd sleep
+          # targets are also suppressed in config/gemini.nix]
+          "org/gnome/settings-daemon/plugins/power" = {
+            sleep-inactive-ac-type = "nothing";
+            sleep-inactive-battery-type = "nothing";
+            power-button-action = "nothing";
+          };
         };
         locks = [
           "/org/gnome/desktop/input-sources/sources"
           "/org/gnome/desktop/a11y/applications/screen-keyboard-enabled"
           "/org/gnome/shell/enabled-extensions"
           "/system/locale/region"
+          "/org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type"
+          "/org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type"
+          "/org/gnome/settings-daemon/plugins/power/power-button-action"
         ];
       }
     ];

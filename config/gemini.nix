@@ -295,6 +295,35 @@ in
     HandlePowerKey = "ignore";
   };
 
+  # Suspend is ALSO disabled at the unit level (2026-09-11). The logind
+  # key handling above only intercepts the KEY_SLEEP key event; it does
+  # NOT stop anything that calls logind's Suspend() D-Bus method directly
+  # — notably GNOME's power plugin (auto-suspend on idle / the Power
+  # button action) or a bare `systemctl suspend`. On this bring-up unit
+  # s2idle cannot resume (no wake source) and a suspend was observed
+  # LOCKING THE SYSTEM UP. Sleep/wake is owned by gemini-sleepd +
+  # `gemcli sleep` (the light sleep — docs/power-sleep.md).
+  #
+  # NixOS at this pin has no `systemd.mask` option. `suppressedSystemUnits`
+  # drops the generated /etc/systemd/system symlinks for these upstream
+  # units; NixOS generates that whole directory itself (the systemd
+  # package installs no /usr/lib/systemd/system to fall back to), so the
+  # units genuinely no longer exist and every initiate path fails fast
+  # with "Unit … not found" instead of entering a suspend that hangs.
+  # (Verified: `readlink result/etc/systemd/system/suspend.target` -> the
+  # systemd package's example/ tree, i.e. generated, not a builtin.)
+  systemd.suppressedSystemUnits = [
+    "sleep.target"
+    "suspend.target"
+    "hibernate.target"
+    "hybrid-sleep.target"
+    "suspend-then-hibernate.target"
+    "systemd-suspend.service"
+    "systemd-hibernate.service"
+    "systemd-hybrid-sleep.service"
+    "systemd-suspend-then-hibernate.service"
+  ];
+
   # No host firewall on the trusted g_ether link. Beyond that, NixOS's
   # default nftables firewall demands a set of NF_TABLES/NETFILTER_XT_*
   # options as =y, which the (verified) bring-up kernel config ships as

@@ -5,6 +5,67 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — systemd `suspend` disabled; GNOME auto-suspend pinned off (deployed gen 22)
+
+User asked whether `systemctl suspend` is the same thing as `gemcli
+sleep`, and reported that **suspend currently just locks the system up**.
+Answer: they are different layers — `systemctl suspend` is kernel
+`s2idle` (needs a wake source, which this unit lacks), while `gemcli
+sleep` is the userspace light sleep (kernel stays up). Decision: disable
+systemd suspend and keep `gemcli`/`gemini-sleepd` as the only sleep
+path.
+
+- **`config/gemini.nix`** — added `systemd.suppressedSystemUnits =
+  [ sleep.target suspend.target hibernate.target hybrid-sleep.target
+  suspend-then-hibernate.target systemd-{suspend,hibernate,hybrid-sleep,
+  suspend-then-hibernate}.service ]`. Receipt: this nixpkgs pin
+  (`dc5d91f84032`) has **no `systemd.mask` option**; NixOS generates
+  `/etc/systemd/system` itself and the systemd package ships no
+  `/usr/lib/systemd/system` fallback (`readlink result/etc/systemd/
+  system/system-suspend.target` → the systemd package's `example/` tree),
+  so a suppressed unit genuinely no longer exists. Every initiate path
+  now fails fast with "Unit … not found" instead of hanging.
+- **`services/gnome.nix`** — locked three dconf keys under
+  `org.gnome.settings-daemon.plugins.power`:
+  `sleep-inactive-ac-type = nothing`,
+  `sleep-inactive-battery-type = nothing`, `power-button-action =
+  nothing`. Rationale: `HandleSuspendKey=ignore` only stops the KEY_SLEEP
+  evdev event; GNOME's power plugin calls logind's `Suspend()` D-Bus
+  method directly, which bypasses it.
+- **Docs:** `docs/power-sleep.md` gained a TL;DR bullet + a
+  "`systemctl suspend` vs `gemcli sleep`" section with the change list
+  and the planned (post-deep-sleep) unification path.
+- **Build receipt (rule 0):** eval clean (`nix eval
+  .#nixosConfigurations.gemini.config.systemd.suppressedSystemUnits`);
+  toplevel built on the remote Pi builder →
+  `/nix/store/3wk9yg4dly49cpwqvpkldp0cvqpyv2np-nixos-system-gemini-26.11pre-git`.
+  Verified in the built system: no `suspend/hibernate/hybrid-sleep/
+  sleep.target` symlinks in `/etc/systemd/system` (only our
+  `gemini-sleepd.service` + NixOS's `sleep-actions.service`, which is
+  `WantedBy=sleep.target` and so can never start now); the user dconf DB
+  (`hzlaznis5…`) contains the three power keys and the lockfile
+  (`pmzs0y2d…`) locks them.
+- **Deployed (profile switch, no flash): gen 22.** The device is on
+  the LAN, not the USB gadget, so `GEMINI_DEV_IP=192.168.49.166
+  bin/deploy.sh deploy` → active toplevel
+  `3wk9yg4dly49cpwqvpkldp0cvqpyv2np-nixos-system-gemini-26.11pre-git`.
+  **Verified on glass after the switch:** `systemctl cat suspend.target`
+  → "No files found for suspend.target."; `list-unit-files` has no
+  sleep/suspend/hibernate targets (only `gemini-sleepd.service`
+  enabled+active, plus the now-unreachable `sleep-actions.service` and
+  `systemd-hibernate-clear.service`); as `cjdell`, `gsettings get
+  org.gnome.settings-daemon.plugins.power
+  {sleep-inactive-ac-type,sleep-inactive-battery-type,power-button-action}`
+  = `'nothing'` with `writable: false` (locked). Restarted the running
+  session's `org.gnome.SettingsDaemon.Power.target` (the `.service` is
+  RefuseManualStart) to clear any already-armed idle timer — service
+  active, live value `'nothing'`. No deliberate `systemctl suspend`
+  test (that IS the lockup vector). No kernel/boot.img change; `para`
+  untouched.
+- **Pending follow-up:** a reboot should be harmless, but the change is
+  already live; `systemd.suppressedSystemUnits` takes full effect from
+  the next boot too (nothing to re-verify).
+
 ## 2026-09-11 — DOSBox-X installed with a Gemini keyboard fix (UK table + Fn mapper; build-level)
 
 User asked why DOSBox-X's key mappings are wrong and the Fn keys are

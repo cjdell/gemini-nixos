@@ -1,6 +1,6 @@
 # Power sleep on the Gemini PDA — investigation + the silver-button sleep/wake
 
-**Last updated:** 2026-09-10 (sleep/NetworkManager + phosh-nested integration notes)
+**Last updated:** 2026-09-11 (systemd suspend disabled; GNOME auto-suspend pinned off)
 
 Scope: how to make the unit draw as little battery current as possible,
 and the silver side button (KEY_SLEEP, mt6351-keys) as device sleep/wake.
@@ -10,6 +10,18 @@ the desktop.
 
 ## TL;DR (status)
 
+- **`systemctl suspend` is disabled outright (2026-09-11).** It is a
+  different mechanism from `gemcli sleep`: it asks logind/systemd to
+  enter kernel **s2idle**, which this bring-up unit cannot resume — on
+  glass it **locks the system up**. `config/gemini.nix` now suppresses
+  the upstream `{sleep,suspend,hibernate,hybrid-sleep,
+  suspend-then-hibernate}.target` + `systemd-*sleep*.service` units, so
+  every initiate path (a shell command, logind's `Suspend()` D-Bus
+  method) fails fast with "Unit … not found" instead of hanging, and
+  GNOME's power plugin is dconf-locked to `sleep-inactive-*-type =
+  'nothing'` / `power-button-action = 'nothing'` so it never calls
+  logind in the first place. Sleep/wake is **only** the silver button +
+  `gemcli sleep` + `gemini-sleepd`.
 - **There is no suspend/resume path on this unit yet** (no wake source
   for s2idle — the PMIC side keys are *polled* over pwrap, not
   IRQ-driven, and the kernel boots `clk_ignore_unused
@@ -153,6 +165,41 @@ SPM/PMIC low-power), which would target <50 mA.
 - **A53 cluster power-down is unwired**: per-core PSCI offline is safe
   (what sleep does), but powering the A53 *clusters* off needs the
   vendor SPM sequences like the A72's cl2-down teardown — not done.
+
+## `systemctl suspend` vs `gemcli sleep` — why they are not the same
+
+**2026-09-11.** Two different layers; do not conflate them.
+
+| | `systemctl suspend` | `gemcli sleep on` |
+|---|---|---|
+| Layer | kernel/systemd suspend-to-RAM (`s2idle`/`mem` via `/sys/power/state`) | userspace light sleep; kernel stays fully up |
+| Mechanism | logind → `systemd-suspend.service` → every driver's `.suspend` callback → SoC low-power | backlight off, inputs unbound, A53s offline, A72 down, services stopped, wifi parked |
+| Wake | needs a **wake-source IRQ** | the same silver button (`gemini-sleepd` toggles back) |
+| Status here | **disabled** (locks up) | implemented + on glass (2026-09-08) |
+
+`gemcli sleep` deliberately never enters the kernel suspend path. Before
+deep sleep lands (below), `systemctl suspend` must stay disabled: there
+is no `s2idle` wake source, so entering it means the unit never comes
+back.
+
+**What was changed (2026-09-11):**
+- `config/gemini.nix`: `systemd.suppressedSystemUnits` removes the sleep
+  targets + services (this nixpkgs pin has no `systemd.mask` option;
+  NixOS generates `/etc/systemd/system` itself with no
+  `/usr/lib/systemd/system` fallback, so a suppressed unit genuinely
+  no longer exists).
+- `services/gnome.nix`: locked dconf keys under
+  `org.gnome.settings-daemon.plugins.power` (`sleep-inactive-ac-type`,
+  `sleep-inactive-battery-type`, `power-button-action` = `nothing`) so
+  GNOME never asks logind to suspend. `HandleSuspendKey=ignore` alone
+  was **not** enough: it only stops the KEY_SLEEP evdev event, not
+  logind's `Suspend()` D-Bus method.
+
+The planned unification still stands once deep sleep works: drop the
+suppression + `HandleSuspendKey=ignore`, set `systemd.sleep.settings`
+`SuspendState=mem`, and move the light-sleep pieces into
+`systemd-suspend.service` `ExecStartPre/Post` so the silver button and
+logind share one path.
 
 ## Deep sleep (follow-up kernel work — the real <50 mA target)
 
