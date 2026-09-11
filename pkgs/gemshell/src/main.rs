@@ -20,7 +20,22 @@
 mod common;
 mod compositor;
 
+/// Unbind the fbcon consoles (the gemwl receipt): a bound console would
+/// redraw into the same LK framebuffer gemshell composites into. In
+/// gemshell desktop mode there is no tty1 getty (the apply script), but
+/// fbcon may still hold a bind — gemwl does this at startup (gemwl.c
+/// unbind_fbcons). Best-effort; run as the service user (the sysfs files
+/// need root — the service runs with the video group only, so this may
+/// fail harmlessly; the real protection is no console on the panel).
+fn unbind_fbcons() {
+    for i in 0..4 {
+        let p = format!("/sys/class/vtconsole/vtcon{i}/bind");
+        let _ = std::fs::write(&p, "0");
+    }
+}
+
 fn main() {
+    unbind_fbcons();
     let (display, mut comp) = match compositor::Compositor::new() {
         Ok(c) => c,
         Err(e) => {

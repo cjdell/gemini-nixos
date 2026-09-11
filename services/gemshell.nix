@@ -128,6 +128,16 @@ in
       };
     };
 
+    # ---- /dev/gemfb access (the LK-fb dma-buf exporter) --------------
+    # The built-in geminipda-fb driver creates /dev/gemfb 0600 root;
+    # the compositor (User=cjdell) needs it for the GPU-direct present
+    # (GEMFB_IOC_EXPORT). Same region the card0 KMS shadow plane blits
+    # to — only one desktop stack drives the screen at a time (the
+    # mode gate above).
+    services.udev.extraRules = ''
+      SUBSYSTEM=="misc", KERNEL=="gemfb", MODE="0660", GROUP="video"
+    '';
+
     # ---- GPU bring-up (same shape as gnome.nix's panfrost-load) ------
     systemd.services.gemini-gemshell-panfrost-load = {
       description = "Load panfrost for the gemshell session";

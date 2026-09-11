@@ -215,7 +215,12 @@ impl Compositor {
         let input = input::Input::open(&kbd_path, &touch_path, &kbd_name, &touch_name)?;
         let keymap_str = input.keymap_string();
 
-        let gbm_dev = gbm::Gbm::new("/dev/dri/card0")?;
+        // GBM device on the PANFROST RENDER NODE (renderD128) — headless
+        // rendering; the LK panel is driven by the compute blit into the
+        // /dev/gemfb LK framebuffer, NOT by KMS on card0 (the gemwl
+        // chain, gemwl.c header + docs/gemshell.md). card0
+        // (geminipda-drm) is left alone.
+        let gbm_dev = gbm::Gbm::new("/dev/dri/renderD128")?;
         let glyph_size = font.w;
         let renderer = render::Renderer::new(gbm_dev.ptr, W, H, &font.pixels, glyph_size)?;
 
@@ -422,10 +427,22 @@ impl Compositor {
 
             self.step_animation();
 
+            // Frame clock: there is no page flip on this path (the panel
+            // scans the LK fb directly; present() ends with glFinish, so
+            // a presented frame is on glass immediately). Pace at ~60 Hz
+            // like gemwl's frame timer: a frame is "done" 16 ms after it
+            // was presented. (pfd[1] = the gbm render-node fd never
+            // reports flips; it stays in the poll set harmlessly.)
+            if self.in_flight && util::now_ms() - self.present_time_ms >= 16 {
+                self.in_flight = false;
+                self.dirty = true;
+            }
+
             if self.dirty && !self.in_flight {
                 self.render_frame();
                 self.dirty = false;
                 self.in_flight = true;
+                self.present_time_ms = util::now_ms();
                 let _ = display.flush_clients();
             }
         }
@@ -1641,8 +1658,8 @@ impl Compositor {
 
         self.renderer.begin_frame();
         self.renderer.replay(&self.font, &ops);
-        if let Err(e) = self.renderer.swap() {
-            log::error!("swap: {e}");
+        if let Err(e) = self.renderer.present() {
+            log::error!("present: {e}");
         }
         self.send_frame_callbacks();
     }

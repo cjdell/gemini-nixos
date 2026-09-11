@@ -40,6 +40,8 @@ extern "C" {
         attrib_list: *const c_int,
     ) -> EGLContext;
     fn eglMakeCurrent(d: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) -> u32;
+    fn eglCreatePbufferSurface(d: EGLDisplay, config: *const c_void, w: c_int, h: c_int) -> EGLSurface;
+    fn eglQueryString(d: EGLDisplay, name: u32) -> *const c_char;
     fn eglSwapBuffers(d: EGLDisplay, surface: EGLSurface) -> u32;
     fn eglGetError() -> c_int;
     fn eglDestroySurface(d: EGLDisplay, s: EGLSurface) -> u32;
@@ -51,6 +53,7 @@ extern "C" {
 // EGL enums
 const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
 const EGL_SURFACE_TYPE: u32 = 0x3031;
+const EGL_PBUFFER_BIT: u32 = 0x0001;
 const EGL_OPENGL_ES_API: u32 = 0x30A0;
 const EGL_OPENGL_ES3_BIT: c_int = 0x00004000;
 const EGL_RENDERABLE_TYPE: c_int = 0x3095;
@@ -59,6 +62,34 @@ const EGL_HEIGHT: c_int = 0x303E;
 const EGL_CONTEXT_CLIENT_VERSION: c_int = 0x3098;
 const EGL_NONE: c_int = 0;
 const EGL_TRUE: u32 = 1;
+const EGL_EXTENSIONS: u32 = 0x3050;
+// EGL_EXT_image_dma_buf_import (resolved through eglGetProcAddress —
+// libglvnd's libEGL exports no extension entry points, verified
+// 2026-09-11; the mesa-geminipda ICD answers them).
+const EGL_LINUX_DMA_BUF_EXT: u32 = 0x32D5;
+const EGL_LINUX_DRM_FOURCC_EXT: c_int = 0x32D8;
+const EGL_DMA_BUF_PLANE0_FD_EXT: c_int = 0x32D9;
+const EGL_DMA_BUF_PLANE0_OFFSET_EXT: c_int = 0x32DA;
+const EGL_DMA_BUF_PLANE0_PITCH_EXT: c_int = 0x32DB;
+// GL
+const DRM_FORMAT_ABGR8888: u32 = 0x34324241; // 'ABGR'
+const GL_FRAMEBUFFER: u32 = 0x8D40;
+const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
+const GL_TEXTURE0: u32 = 0x84C0;
+const GL_TEXTURE1: u32 = 0x84C1;
+const GL_WRITE_ONLY: u32 = 0x88B9;
+const GL_RGBA8: u32 = 0x8D53;
+const GL_FRAMEBUFFER_BARRIER_BIT: u32 = 0x00000020;
+const GL_COMPUTE_SHADER: u32 = 0x8DA2;
+// The LK framebuffer geometry (geminipda-fb.c receipts, verified on
+// glass 2026-08-31 / gemwl 2026-09-01): 1080x2160 portrait, 1088-px
+// (4352-byte) row pitch — the trailing 8 px/row are never scanned out.
+const FB_W: u32 = 1080;
+const FB_H: u32 = 2160;
+const FB_PITCH: u32 = 1088 * 4;
+// /dev/gemfb ioctl(GEMFB_IOC_EXPORT) -> dma-buf fd of the LK fb region
+// (_IOW('G', 1, int); geminipda-fb.c).
+const GEMFB_IOC_EXPORT: u64 = 0x4004_4701;
 
 // GL enums
 const GL_FLOAT: u32 = 0x1406;
@@ -133,6 +164,8 @@ extern "C" {
     fn glBufferData(t: u32, size: i64, data: *const c_void, usage: u32);
     fn glVertexAttribPointer(i: c_int, size: c_int, ty: u32, normalized: u32, stride: u32, offset: u32);
     fn glEnableVertexAttribArray(i: c_int);
+    fn glGetAttribLocation(p: u32, name: *const c_char) -> c_int;
+    fn glDeleteBuffers(n: c_int, b: *const u32);
     fn glDrawArrays(mode: u32, first: c_int, count: c_int);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: u32);
@@ -141,7 +174,58 @@ extern "C" {
     fn glBlendFunc(s: u32, d: u32);
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glGetString(name: u32) -> *const c_char;
+    // FBO + compute (the GPU-direct present path, gemwl-verified).
+    fn glGenFramebuffers(n: c_int, f: *mut u32);
+    fn glBindFramebuffer(t: u32, f: u32);
+    fn glFramebufferTexture2D(t: u32, a: u32, tt: u32, tex: u32, level: c_int);
+    fn glActiveTexture(t: u32);
+    fn glBindImageTexture(unit: u32, tex: u32, level: c_int, layered: u8, layer: i32, access: u32, format: u32);
+    fn glDispatchCompute(x: u32, y: u32, z: u32);
+    fn glMemoryBarrier(bits: u32);
+    fn glFinish();
+    fn glUniform1i(l: c_int, v: c_int);
+    fn glUniform2i(l: c_int, x: c_int, y: c_int);
+    fn glDeleteFramebuffers(n: c_int, f: *const u32);
+    fn glDeleteShader(s: u32);
+    fn glDeleteProgram(p: u32);
 }
+
+// EGL/GL extension entry points — NOT exported by libglvnd (verified
+// 2026-09-11 on the store libs; the aarch64 link died on both), so they
+// are resolved at runtime through eglGetProcAddress, which the libglvnd
+// dispatch answers from the mesa-geminipda ICD (which must provide
+// EGL_EXT_image_dma_buf_import + GL_OES_EGL_image — the gemwl ICD
+// receipts). Resolved in Renderer::new, stored on the struct.
+type EglImage = *mut c_void;
+type EglCreateImageFn = unsafe extern "C" fn(
+    EGLDisplay,
+    EGLContext,
+    u32,
+    *const c_void,
+    *const c_int,
+) -> EglImage;
+type GlEglImageTargetFn = unsafe extern "C" fn(u32, EglImage);
+
+/// The GPU blit shader: scene FBO texture -> LK fb image (the gemwl
+/// GEMFB_COPY_CS, verified on glass 2026-09-01). The `.bgra` swizzle is
+/// load-bearing: the LK OVL scans the fb as a8r8g8b8 (byte0 = B), so the
+/// imageStore must land B in byte0; texelFetch decodes the GL texture to
+/// correct RGBA. (gemwl receipt: without it the whole desktop is R/B
+/// swapped.) The COMPUTE path is also load-bearing: fragment draws/blits
+/// into the 1088x2160 LINEAR fb target clip to ~1024x1024 on this
+/// tiler (gemwl A/B, 2026-09-01).
+const COPY_CS: &str = r#"
+#version 310 es
+layout(local_size_x = 16, local_size_y = 8) in;
+layout(rgba8, binding = 0) uniform highp writeonly image2D dst;
+layout(binding = 1) uniform highp sampler2D src;
+uniform ivec2 fbSize;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= fbSize.x || p.y >= fbSize.y) return;
+    imageStore(dst, p, texelFetch(src, p, 0).bgra);
+}
+"#;
 
 const VERT: &str = r#"
 attribute vec2 aPos;
@@ -234,6 +318,19 @@ pub struct Renderer {
     win_tex: HashMap<u32, (u32, u32, u32)>,
     verts: Vec<Vert>,
     colors: Vec<Color>,
+    // GPU-direct present (gemwl chain): the scene renders into a
+    // fullscreen FBO texture; a compute shader copies it into the LK
+    // framebuffer (imported from /dev/gemfb as a dma-buf EGLImage).
+    fbo: u32,
+    fbo_tex: u32,
+    fb_fd: c_int,      // LK fb dma-buf (GEMFB_IOC_EXPORT)
+    fb_image: EglImage,
+    fb_tex: u32,        // texture over fb_image (imageStore target)
+    cprog: u32,
+    c_src: c_int,
+    c_size: c_int,
+    eglCreateImageKHR: EglCreateImageFn,
+    glEGLImageTargetTexture2DOES: GlEglImageTargetFn,
 }
 
 impl Renderer {
@@ -253,25 +350,24 @@ impl Renderer {
         // answers from the vendor ICD (mesa-geminipda exports both).
         type PlatformDisplayFn =
             unsafe extern "C" fn(u32, *mut c_void, *const c_int) -> EGLDisplay;
-        type PlatformSurfaceFn =
-            unsafe extern "C" fn(EGLDisplay, u32, *mut c_void, *mut c_void, *const c_int) -> EGLSurface;
         let eglGetPlatformDisplayEXT: PlatformDisplayFn = unsafe {
             std::mem::transmute(eglGetProcAddress(
                 b"eglGetPlatformDisplayEXT\0".as_ptr() as *const c_char,
             ))
         };
-        let eglCreatePlatformSurface: PlatformSurfaceFn = unsafe {
-            std::mem::transmute(eglGetProcAddress(
-                b"eglCreatePlatformSurface\0".as_ptr() as *const c_char,
-            ))
-        };
+        // Pbuffer surface (1x1): the context needs a current surface for
+        // eglMakeCurrent, but nothing is ever presented through it —
+        // presentation is the compute blit into the LK fb (see present()).
+        // (The old window-surface + eglSwapBuffers path was
+        // spec-invalid for the GBM platform: eglCreatePlatformSurface
+        // must be handed a gbm surface, and a bare device returns a
+        // NULL/invalid surface — the EGL_MESA_platform_gbm spec, and the
+        // reason gemwl never used EGL window surfaces at all.)
         let mut attrs = [
             EGL_RENDERABLE_TYPE,
             EGL_OPENGL_ES3_BIT,
-            EGL_WIDTH,
-            width as c_int,
-            EGL_HEIGHT,
-            height as c_int,
+            EGL_SURFACE_TYPE as c_int,
+            EGL_PBUFFER_BIT as c_int,
             EGL_NONE,
         ];
         let display = unsafe { eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA, gbm_device, std::ptr::null()) };
@@ -320,18 +416,10 @@ impl Renderer {
                 eglGetError()
             }));
         }
-        let surface = unsafe {
-            eglCreatePlatformSurface(
-                display,
-                EGL_SURFACE_TYPE,
-                gbm_device,
-                &config as *const c_void as *mut c_void,
-                std::ptr::null(),
-            )
-        };
+        let surface = unsafe { eglCreatePbufferSurface(display, &config, 1, 1) };
         if surface.is_null() {
             return Err(format!(
-                "eglCreatePlatformSurface(GBM) failed (error 0x{:x})",
+                "eglCreatePbufferSurface failed (error 0x{:x})",
                 unsafe { eglGetError() }
             ));
         }
@@ -368,6 +456,33 @@ impl Renderer {
         let mut vbo = 0u32;
         unsafe { glGenBuffers(1, &mut vbo) };
 
+        // The extension entry points (runtime-resolved; see the type
+        // block above). The ICD must have EGL_EXT_image_dma_buf_import —
+        // without it the whole GPU-direct present path is dead.
+        let exts = unsafe { eglQueryString(display, EGL_EXTENSIONS) };
+        let exts = if exts.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(exts) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        if !exts.contains("EGL_EXT_image_dma_buf_import") {
+            log::warn!(
+                "ICD lacks EGL_EXT_image_dma_buf_import (EGL extensions: {exts}) — the GPU-direct present will fail"
+            );
+        }
+        let eglCreateImageKHR: EglCreateImageFn = unsafe {
+            std::mem::transmute(eglGetProcAddress(
+                b"eglCreateImageKHR\0".as_ptr() as *const c_char,
+            ))
+        };
+        let glEGLImageTargetTexture2DOES: GlEglImageTargetFn = unsafe {
+            std::mem::transmute(eglGetProcAddress(
+                b"glEGLImageTargetTexture2DOES\0".as_ptr() as *const c_char,
+            ))
+        };
+
         let mut r = Renderer {
             width,
             height,
@@ -385,6 +500,16 @@ impl Renderer {
             win_tex: HashMap::new(),
             verts: Vec::new(),
             colors: Vec::new(),
+            fbo: 0,
+            fbo_tex: 0,
+            fb_fd: -1,
+            fb_image: std::ptr::null_mut(),
+            fb_tex: 0,
+            cprog: 0,
+            c_src: -1,
+            c_size: -1,
+            eglCreateImageKHR,
+            glEGLImageTargetTexture2DOES,
         };
 
         let white = [255u8; 16 * 4];
@@ -392,7 +517,130 @@ impl Renderer {
         if !glyph_pixels.is_empty() {
             r.glyph_tex = r.make_texture(glyph_size, glyph_size, glyph_pixels)?;
         }
+
+        // --- GPU-direct present target (the gemwl chain, on glass
+        // 2026-09-01/09-10): scene FBO + /dev/gemfb LK-fb import + the
+        // compute copy. ---
+        let fb_fd = open_gemfb()?;
+        let attrs = fb_image_attrs(fb_fd);
+        let fb_image = unsafe {
+            (r.eglCreateImageKHR)(
+                display,
+                std::ptr::null_mut(),
+                EGL_LINUX_DMA_BUF_EXT,
+                std::ptr::null(),
+                attrs.as_ptr(),
+            )
+        };
+        if fb_image.is_null() {
+            return Err(format!(
+                "eglCreateImageKHR(LK fb dma-buf) failed (error 0x{:x}) — is the ICD's EGL_EXT_image_dma_buf_import available?",
+                unsafe { eglGetError() }
+            ));
+        }
+        r.init_present(fb_fd, fb_image)?;
         Ok(r)
+    }
+
+    /// Scene FBO (fullscreen render target), the LK-fb image texture and
+    /// the compute copy program (context must be current).
+    fn init_present(&mut self, fb_fd: c_int, fb_image: EglImage) -> Result<(), String> {
+        let mut fb_tex = 0u32;
+        unsafe {
+            glGenTextures(1, &mut fb_tex);
+            glBindTexture(GL_TEXTURE_2D, fb_tex);
+            (self.glEGLImageTargetTexture2DOES)(GL_TEXTURE_2D, fb_image);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
+        }
+        self.fb_tex = fb_tex;
+
+        // The scene FBO: a plain RGBA8 fullscreen texture. (gemwl's shadow
+        // is a panfrost dma-buf BO because wlroots' swapchain needs a
+        // wlr_buffer; a GL texture is the equivalent for our compute
+        // texelFetch source.)
+        let mut fbo_tex = 0u32;
+        let mut fbo = 0u32;
+        unsafe {
+            glGenTextures(1, &mut fbo_tex);
+            glBindTexture(GL_TEXTURE_2D, fbo_tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as c_int);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA as c_int,
+                self.width as c_int,
+                self.height as c_int,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                std::ptr::null(),
+            );
+            glGenFramebuffers(1, &mut fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(
+                GL_FRAMEBUFFER,
+                GL_COLOR_ATTACHMENT0,
+                GL_TEXTURE_2D,
+                fbo_tex,
+                0,
+            );
+        }
+        self.fbo_tex = fbo_tex;
+        self.fbo = fbo;
+
+        // T880 tiler first-batch bug (gemwl receipt, 2026-09-02): the
+        // FIRST tiler draw into a fresh fullscreen-size target rasterizes
+        // only ~1024x1024 — warm the FBO so the first real frame is
+        // clean.
+        tiler_warmup(self.fbo);
+
+        // The compute copy program.
+        let cs = unsafe { glCreateShader(GL_COMPUTE_SHADER) };
+        let src = CString::new(COPY_CS).unwrap();
+        unsafe {
+            glShaderSource(cs, 1, src.as_ptr() as *const *const c_char, std::ptr::null());
+            glCompileShader(cs);
+        }
+        let mut ok = 0i32;
+        unsafe { glGetShaderiv(cs, GL_COMPILE_STATUS, &mut ok) };
+        if ok == 0 {
+            let mut log = vec![0u8; 512];
+            let mut l = 0i32;
+            unsafe {
+                glGetShaderInfoLog(cs, 512, &mut l, log.as_mut_ptr() as *mut c_void);
+            }
+            let msg = String::from_utf8_lossy(&log[..l.max(0) as usize]).into_owned();
+            return Err(format!("copy compute shader: {msg}"));
+        }
+        let p = unsafe { glCreateProgram() };
+        unsafe {
+            glAttachShader(p, cs);
+            glLinkProgram(p);
+        }
+        unsafe { glGetProgramiv(p, GL_LINK_STATUS, &mut ok) };
+        if ok == 0 {
+            let mut log = vec![0u8; 512];
+            let mut l = 0i32;
+            unsafe {
+                glGetProgramInfoLog(p, 512, &mut l, log.as_mut_ptr() as *mut c_void);
+            }
+            let msg = String::from_utf8_lossy(&log[..l.max(0) as usize]).into_owned();
+            return Err(format!("copy compute program: {msg}"));
+        }
+        unsafe { glDeleteShader(cs) };
+        let loc = |name: &str| unsafe {
+            glGetUniformLocation(p, CString::new(name).unwrap().as_ptr())
+        };
+        self.cprog = p;
+        self.c_src = loc("src");
+        self.c_size = loc("fbSize");
+        self.fb_fd = fb_fd;
+        self.fb_image = fb_image;
+        Ok(())
     }
 
     fn make_texture(&mut self, w: u32, h: u32, rgba8: &[u8]) -> Result<u32, String> {
@@ -494,6 +742,7 @@ impl Renderer {
     fn frame_setup(&mut self) {
         unsafe {
             glViewport(0, 0, self.width as c_int, self.height as c_int);
+            glBindFramebuffer(GL_FRAMEBUFFER, self.fbo);
             glClearColor(0.055, 0.07, 0.085, 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
             glDisable(GL_DEPTH_TEST);
@@ -704,8 +953,9 @@ impl Renderer {
         }
     }
 
-    /// Begin the frame (viewport + clear).
+    /// Begin the frame (bind the scene FBO, viewport + clear).
     pub fn begin_frame(&mut self) {
+        unsafe { glBindFramebuffer(GL_FRAMEBUFFER, self.fbo) };
         self.frame_setup();
     }
 
@@ -743,15 +993,115 @@ impl Renderer {
         self.win_tex.get(&id).map(|t| t.0)
     }
 
-    /// Present the frame (page-flip via the gbm shadow plane).
-    pub fn swap(&mut self) -> Result<(), String> {
-        if unsafe { eglSwapBuffers(self.display, self.surface) } != EGL_TRUE {
-            return Err(format!(
-                "eglSwapBuffers failed (error 0x{:x})",
-                unsafe { eglGetError() }
-            ));
+    /// Present the frame: compute-blit the scene FBO texture into the
+    /// LK framebuffer (the gemwl chain — zero CPU pixel movement, no
+    /// KMS, no page flip; the panel scans the LK OVL memory directly).
+    /// Ends with glFinish, so on return the panel has the frame.
+    pub fn present(&mut self) -> Result<(), String> {
+        unsafe {
+            glUseProgram(self.cprog);
+            glUniform1i(self.c_src, 1);
+            glUniform2i(self.c_size, FB_W as c_int, FB_H as c_int);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, self.fbo_tex);
+            glBindImageTexture(
+                0,
+                self.fb_tex,
+                0,
+                0,
+                0,
+                GL_WRITE_ONLY,
+                GL_RGBA8,
+            );
+            glDispatchCompute((FB_W + 15) / 16, (FB_H + 7) / 8, 1);
+            glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+            glFinish();
+            glBindImageTexture(0, 0, 0, 0, 0, GL_WRITE_ONLY, GL_RGBA8);
+            glActiveTexture(GL_TEXTURE0);
         }
         Ok(())
+    }
+}
+
+/// Open /dev/gemfb and export the LK framebuffer as a dma-buf fd
+/// (GEMFB_IOC_EXPORT; geminipda-fb.c — the gemwl access path).
+fn open_gemfb() -> Result<c_int, String> {
+    let path = CString::new("/dev/gemfb").unwrap();
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("open /dev/gemfb: {}", std::io::Error::last_os_error()));
+    }
+    let mut out: c_int = 0;
+    let rc = unsafe { libc::ioctl(fd, GEMFB_IOC_EXPORT as _, &mut out as *mut c_int) };
+    if rc != 0 {
+        let e = std::io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(format!("GEMFB_IOC_EXPORT: {e}"));
+    }
+    log::info!("gemfb: LK fb dma-buf exported (fd {out})");
+    Ok(out)
+}
+
+/// The EGL_EXT_image_dma_buf_import attribute list for the LK fb
+/// (ABGR8888 at the 1088-px pitch — the gemwl import attrs).
+fn fb_image_attrs(fb_fd: c_int) -> [c_int; 13] {
+    [
+        EGL_WIDTH,
+        FB_W as c_int,
+        EGL_HEIGHT,
+        FB_H as c_int,
+        EGL_LINUX_DRM_FOURCC_EXT,
+        DRM_FORMAT_ABGR8888 as c_int,
+        EGL_DMA_BUF_PLANE0_FD_EXT,
+        fb_fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+        0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT,
+        FB_PITCH as c_int,
+        EGL_NONE,
+    ]
+}
+
+/// T880 tiler warmup (gemwl receipt 2026-09-02): the first tiler batch
+/// into a fresh fullscreen-size target clips to ~1024x1024; a
+/// throwaway full-frame draw into the FBO makes the first real frame
+/// clean.
+fn tiler_warmup(fbo: u32) {
+    let wvs = CString::new("attribute vec2 pos; void main(){ gl_Position=vec4(pos,0.0,1.0); }").unwrap();
+    let wfs = CString::new("precision mediump float; void main(){ gl_FragColor=vec4(0,0,0,1); }").unwrap();
+    unsafe {
+        let vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, wvs.as_ptr() as *const *const c_char, std::ptr::null());
+        glCompileShader(vs);
+        let fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, wfs.as_ptr() as *const *const c_char, std::ptr::null());
+        glCompileShader(fs);
+        let prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        let a_pos = glGetAttribLocation(prog, wvs.as_ptr());
+        // Warm the REAL scene FBO (the exact target the first frame
+        // uses) — its attachment stays in place.
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, FB_W as c_int, FB_H as c_int);
+        glClearColor(0.0, 0.0, 0.0, 1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(prog);
+        let q: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+        let mut vbo = 0u32;
+        glGenBuffers(1, &mut vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, (q.len() * 4) as i64, q.as_ptr() as *const c_void, GL_DYNAMIC_DRAW);
+        glVertexAttribPointer(a_pos, 2, GL_FLOAT, 0, 0, 0);
+        glEnableVertexAttribArray(a_pos);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFinish();
+        glDeleteBuffers(1, &vbo);
+        glDeleteProgram(prog);
+        log::info!("tiler warmup: full-frame draw into the scene FBO done");
     }
 }
 
