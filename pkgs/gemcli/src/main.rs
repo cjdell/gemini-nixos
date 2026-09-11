@@ -291,9 +291,9 @@ enum SessionCmd {
     Status,
     /// List the selectable modes
     List,
-    /// Persist the boot session (gnome|cosmic|niri|console)
+    /// Persist the boot session (gnome|cosmic|niri|gemshell|console)
     Set {
-        #[arg(value_parser = ["gnome", "cosmic", "niri", "console"])]
+        #[arg(value_parser = ["gnome", "cosmic", "niri", "gemshell", "console"])]
         mode: String,
         /// Apply now (AccountsService / console sentinel) without rebooting
         #[arg(long)]
