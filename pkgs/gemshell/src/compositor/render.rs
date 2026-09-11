@@ -42,7 +42,6 @@ extern "C" {
     fn eglMakeCurrent(d: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) -> u32;
     fn eglCreatePbufferSurface(d: EGLDisplay, config: *const c_void, w: c_int, h: c_int) -> EGLSurface;
     fn eglQueryString(d: EGLDisplay, name: u32) -> *const c_char;
-    fn eglGetConfigAttribute(d: EGLDisplay, config: *const c_void, attribute: c_int, value: *mut c_int) -> u32;
     fn eglSwapBuffers(d: EGLDisplay, surface: EGLSurface) -> u32;
     fn eglGetError() -> c_int;
     fn eglDestroySurface(d: EGLDisplay, s: EGLSurface) -> u32;
@@ -397,18 +396,28 @@ impl Renderer {
         }
         // Diagnostic (added 2026-09-11, the 0x3004 hunt): how many
         // configs does this display have AT ALL, and what do they say?
+        // (eglGetConfigAttribute is NOT exported by libglvnd either —
+        // runtime-resolved, like the other EGL ext entry points.)
+        type GetConfigAttrFn = Option<unsafe extern "C" fn(EGLDisplay, *const c_void, c_int, *mut c_int) -> u32>;
+        let get_config_attr: GetConfigAttrFn = unsafe {
+            std::mem::transmute(eglGetProcAddress(
+                b"eglGetConfigAttribute\0".as_ptr() as *const c_char,
+            ))
+        };
         let mut all: [EGLConfig; 64] = unsafe { std::mem::zeroed() };
         let mut nall = 0i32;
         let none = [EGL_NONE];
         let ok_all = unsafe { eglChooseConfig(display, none.as_ptr(), all.as_mut_ptr(), 64, &mut nall) };
         log::info!("eglChooseConfig(EGL_NONE): {} (n={nall})", if ok_all == EGL_TRUE { "ok" } else { "FAIL" });
-        if ok_all == EGL_TRUE {
-            for (i, cfg) in all.iter().take(nall as usize).enumerate() {
-                let (mut rt, mut st, mut r) = (0i32, 0i32, 0i32);
-                unsafe { eglGetConfigAttribute(display, cfg, EGL_RENDERABLE_TYPE, &mut rt) };
-                unsafe { eglGetConfigAttribute(display, cfg, EGL_SURFACE_TYPE as c_int, &mut st) };
-                unsafe { eglGetConfigAttribute(display, cfg, EGL_RED_SIZE, &mut r) };
-                log::info!("  config[{i}]: renderable_type=0x{rt:x} surface_type=0x{st:x} red={r}");
+        if let Some(get_config_attr) = get_config_attr {
+            if ok_all == EGL_TRUE {
+                for (i, cfg) in all.iter().take(nall as usize).enumerate() {
+                    let (mut rt, mut st, mut r) = (0i32, 0i32, 0i32);
+                    unsafe { get_config_attr(display, cfg, EGL_RENDERABLE_TYPE, &mut rt) };
+                    unsafe { get_config_attr(display, cfg, EGL_SURFACE_TYPE as c_int, &mut st) };
+                    unsafe { get_config_attr(display, cfg, EGL_RED_SIZE, &mut r) };
+                    log::info!("  config[{i}]: renderable_type=0x{rt:x} surface_type=0x{st:x} red={r}");
+                }
             }
         }
         let mut config: EGLConfig = unsafe { std::mem::zeroed() };
