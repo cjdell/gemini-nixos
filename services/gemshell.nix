@@ -32,9 +32,9 @@ let
   # The compositor package (compositor + gemsettings client in one store
   # path). Same callPackage args as the flake package, so the system and
   # `.#packages.aarch64-linux.gemshell` share the store path.
-  gemshell = pkgs.callPackage ../pkgs/gemshell.nix {
-    mesa = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
-  };
+  # The mesa fork (T880 delta) — the compositor's ICD + DRI driver.
+  mesa = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
+  gemshell = pkgs.callPackage ../pkgs/gemshell.nix { mesa = mesa; };
   # DejaVu (the fontconfig default on this device; fonts.packages in the
   # GNOME/LXQt/Phosh modules) — the compositor's UI font.
   fonts = pkgs.dejavu_fonts;
