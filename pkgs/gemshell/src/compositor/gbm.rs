@@ -19,6 +19,10 @@ use std::os::raw::{c_char, c_int, c_void};
 
 extern "C" {
     pub fn gbm_create_device(node: *const c_char) -> *mut c_void;
+    /// The fd-based API (wlroots/weston use this; the node-name variant
+    /// above was returning NULL for EVERY node on this device's mesa
+    /// 26.2.2 + libdrm 2.4.134 — 2026-09-11, open() itself succeeds).
+    pub fn gbm_device_new_fd(fd: c_int) -> *mut c_void;
     pub fn gbm_device_destroy(dev: *mut c_void);
     pub fn gbm_device_get_fd(dev: *mut c_void) -> c_int;
 }
@@ -55,16 +59,29 @@ impl Gbm {
                 continue;
             }
             let ptr = unsafe { gbm_create_device(nc.as_ptr()) };
-            if !ptr.is_null() {
-                let fd = unsafe { gbm_device_get_fd(ptr) };
-                if fd >= 0 {
-                    return Ok(Gbm { ptr, fd });
+            if ptr.is_null() {
+                // Fallback: the fd-based API (wlroots' path).
+                let ofd2 = unsafe { libc::open(nc.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+                if ofd2 >= 0 {
+                    let ptr2 = unsafe { gbm_device_new_fd(ofd2) };
+                    if !ptr2.is_null() {
+                        let fd = unsafe { gbm_device_get_fd(ptr2) };
+                        if fd >= 0 {
+                            return Ok(Gbm { ptr: ptr2, fd });
+                        }
+                        unsafe { gbm_device_destroy(ptr2) };
+                    }
+                    unsafe { libc::close(ofd2) };
                 }
-                unsafe { gbm_device_destroy(ptr) };
-                errs.push_str(&format!("{n}: open() ok, gbm_create_device ok, get_fd failed; "));
+                errs.push_str(&format!("{n}: gbm_create_device + gbm_device_new_fd both NULL; "));
                 continue;
             }
-            errs.push_str(&format!("{n}: open() ok, gbm_create_device NULL; "));
+            let fd = unsafe { gbm_device_get_fd(ptr) };
+            if fd >= 0 {
+                return Ok(Gbm { ptr, fd });
+            }
+            unsafe { gbm_device_destroy(ptr) };
+            errs.push_str(&format!("{n}: open() ok, gbm_create_device ok, get_fd failed; "));
         }
         Err(format!("gbm: no usable node — {errs}"))
     }
