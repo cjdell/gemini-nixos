@@ -17,6 +17,15 @@ use std::sync::{Arc, Mutex};
 use wayland_server::protocol::wl_buffer::WlBuffer;
 use wayland_server::protocol::wl_callback::WlCallback;
 use wayland_server::protocol::wl_compositor::WlCompositor;
+// The data-device manager is REQUIRED by GTK4 even for apps that never
+// touch the clipboard: gdkdisplay-wayland.c refuses the whole display if
+// the compositor does not expose `wl_data_device_manager`
+// ("The Wayland compositor does not provide one or more of the required
+// interfaces, not using Wayland display"). Without it every GTK app
+// launched from the launcher exited immediately (2026-09-11).
+use wayland_server::protocol::wl_data_device::WlDataDevice;
+use wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
+use wayland_server::protocol::wl_data_source::WlDataSource;
 use wayland_server::protocol::wl_keyboard::WlKeyboard;
 use wayland_server::protocol::wl_output::WlOutput;
 use wayland_server::protocol::wl_pointer::WlPointer;
@@ -34,10 +43,24 @@ use wayland_protocols::xdg::shell::server::xdg_popup::XdgPopup;
 use wayland_protocols::xdg::shell::server::xdg_surface::XdgSurface;
 use wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel;
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
+// xdg-decoration: without this GTK4 assumes CSD and draws its own title
+// bar while we draw the compositor titlebar too ("2 close buttons per
+// window", reported on glass 2026-09-11). We expose the global and
+// negotiate: clients that speak it get CSD (GNOME/libadwaita apps draw a
+// header bar regardless), clients that don't keep our SSD titlebar.
+use wayland_protocols::xdg::decoration::zv1::server::zxdg_decoration_manager_v1::{
+    Request as ZxdgDecorationManagerV1Request, ZxdgDecorationManagerV1,
+};
+use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::{
+    Mode as DecorationMode, Request as ZxdgToplevelDecorationV1Request, ZxdgToplevelDecorationV1,
+};
 
 use wayland_server::protocol::wl_buffer::Request as WlBufferRequest;
 use wayland_server::protocol::wl_callback::Request as WlCallbackRequest;
 use wayland_server::protocol::wl_compositor::Request as WlCompositorRequest;
+use wayland_server::protocol::wl_data_device::Request as WlDataDeviceRequest;
+use wayland_server::protocol::wl_data_device_manager::Request as WlDataDeviceManagerRequest;
+use wayland_server::protocol::wl_data_source::Request as WlDataSourceRequest;
 use wayland_server::protocol::wl_keyboard::Request as WlKeyboardRequest;
 use wayland_server::protocol::wl_output::Request as WlOutputRequest;
 use wayland_server::protocol::wl_pointer::Request as WlPointerRequest;
@@ -170,6 +193,13 @@ pub struct RegionData {}
 #[derive(Default, Clone)]
 pub struct WmBaseData {}
 
+#[derive(Default)]
+pub struct DecorationManagerData {}
+
+#[derive(Clone)]
+pub struct ToplevelDecorationData {
+    pub window: u32,
+}
 /// Per-client state (interior mutability: the Resource API only gives
 /// &U).
 #[derive(Debug, Default)]
@@ -275,6 +305,38 @@ impl GlobalDispatch<XdgWmBase, WmBaseData, Compositor> for Compositor {
         data_init: &mut DataInit<'_, Compositor>,
     ) {
         let _ = data_init.init(resource, WmBaseData {});
+    }
+}
+
+/// Global user data for the (minimal, clipboard-less) data-device
+/// manager. Distinct from `()` so `create_global`'s interface type stays
+/// inferable (wl_seat also uses `()`).
+#[derive(Default)]
+pub struct DataDeviceManagerData {}
+
+impl GlobalDispatch<WlDataDeviceManager, DataDeviceManagerData, Compositor> for Compositor {
+    fn bind(
+        _state: &mut Compositor,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<WlDataDeviceManager>,
+        _global_data: &DataDeviceManagerData,
+        data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        let _ = data_init.init(resource, ());
+    }
+}
+
+impl GlobalDispatch<ZxdgDecorationManagerV1, DecorationManagerData, Compositor> for Compositor {
+    fn bind(
+        _state: &mut Compositor,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: wayland_server::New<ZxdgDecorationManagerV1>,
+        _global_data: &DecorationManagerData,
+        data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        let _ = data_init.init(resource, ());
     }
 }
 
@@ -572,10 +634,10 @@ impl Dispatch<XdgToplevel, XdgToplevelData, Compositor> for Compositor {
             XdgToplevelRequest::SetFullscreen { .. } => {
                 log::debug!("set_fullscreen (ignored in v1)");
             }
+            XdgToplevelRequest::Move { seat: _, serial: _ } => state.begin_client_move(win),
             XdgToplevelRequest::SetParent { .. }
             | XdgToplevelRequest::SetMaxSize { .. }
             | XdgToplevelRequest::SetMinSize { .. }
-            | XdgToplevelRequest::Move { .. }
             | XdgToplevelRequest::Resize { .. }
             | XdgToplevelRequest::ShowWindowMenu { .. } => {}
         }
@@ -746,6 +808,138 @@ impl Dispatch<WlOutput, OutputData, Compositor> for Compositor {
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Compositor>,
     ) {
+    }
+}
+
+// ---------------------------------------------------------------------------
+// data-device manager (minimal; see the import comment)
+//
+// GTK4 only needs the GLOBAL to exist to open the Wayland display. We
+// never send a `data_offer`/`selection`, so copy-paste is a no-op — but
+// apps launch and render. Requests are accepted and ignored (the objects
+// must exist so the client can create/destroy them without protocol
+// errors). Drag-and-drop and the clipboard are a follow-up; the settings
+// panel does not need them.
+
+impl Dispatch<WlDataDeviceManager, (), Compositor> for Compositor {
+    fn request(
+        _state: &mut Compositor,
+        _client: &Client,
+        _resource: &WlDataDeviceManager,
+        request: <WlDataDeviceManager as Resource>::Request,
+        _data: &(),
+        _dhandle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        match request {
+            WlDataDeviceManagerRequest::CreateDataSource { id } => {
+                let _ = data_init.init(id, ());
+            }
+            WlDataDeviceManagerRequest::GetDataDevice { id, seat: _ } => {
+                let _ = data_init.init(id, ());
+            }
+            WlDataDeviceManagerRequest::Release => {}
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, (), Compositor> for Compositor {
+    fn request(
+        _state: &mut Compositor,
+        _client: &Client,
+        _resource: &WlDataSource,
+        request: <WlDataSource as Resource>::Request,
+        _data: &(),
+        _dhandle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        match request {
+            WlDataSourceRequest::Offer { mime_type: _ } => {}
+            WlDataSourceRequest::Destroy => {}
+            WlDataSourceRequest::SetActions { dnd_actions: _ } => {}
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlDataDevice, (), Compositor> for Compositor {
+    fn request(
+        _state: &mut Compositor,
+        _client: &Client,
+        _resource: &WlDataDevice,
+        request: <WlDataDevice as Resource>::Request,
+        _data: &(),
+        _dhandle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        match request {
+            WlDataDeviceRequest::StartDrag { .. } => {}
+            WlDataDeviceRequest::SetSelection { .. } => {}
+            WlDataDeviceRequest::Release => {}
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgDecorationManagerV1, (), Compositor> for Compositor {
+    fn request(
+        state: &mut Compositor,
+        _client: &Client,
+        _resource: &ZxdgDecorationManagerV1,
+        request: <ZxdgDecorationManagerV1 as Resource>::Request,
+        _data: &(),
+        _dhandle: &DisplayHandle,
+        data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        match request {
+            ZxdgDecorationManagerV1Request::Destroy => {}
+            ZxdgDecorationManagerV1Request::GetToplevelDecoration { id, toplevel } => {
+                // The toplevel's own user data tells us which Window this is.
+                let win = toplevel.data::<XdgToplevelData>().map(|d| d.window);
+                if let Some(win) = win {
+                    let dec = data_init.init(id, ToplevelDecorationData { window: win });
+                    state.set_decoration(win, dec);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZxdgToplevelDecorationV1, ToplevelDecorationData, Compositor> for Compositor {
+    fn request(
+        state: &mut Compositor,
+        _client: &Client,
+        resource: &ZxdgToplevelDecorationV1,
+        request: <ZxdgToplevelDecorationV1 as Resource>::Request,
+        data: &ToplevelDecorationData,
+        _dhandle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Compositor>,
+    ) {
+        match request {
+            ZxdgToplevelDecorationV1Request::SetMode { mode } => {
+                // The request carries a `WEnum`; unknown values fall back to
+                // CSD (the safe default: the client will self-decorate).
+                let csd = match mode {
+                    wayland_server::WEnum::Value(DecorationMode::ServerSide) => false,
+                    _ => true,
+                };
+                state.set_csd(data.window, csd);
+                resource.configure(if csd {
+                    DecorationMode::ClientSide
+                } else {
+                    DecorationMode::ServerSide
+                });
+            }
+            ZxdgToplevelDecorationV1Request::UnsetMode => {
+                // "compositor decides": default to server-side (our titlebar).
+                state.set_csd(data.window, false);
+                resource.configure(DecorationMode::ServerSide);
+            }
+            ZxdgToplevelDecorationV1Request::Destroy => state.clear_decoration(data.window),
+            _ => {}
+        }
     }
 }
 

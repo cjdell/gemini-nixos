@@ -351,19 +351,25 @@ pub fn draw_window(o: &mut Vec<Op>, comp: &Compositor, win: &crate::compositor::
         let (bx, by, bw, bh) = win.buffer_rect();
         o.push(Op::RectTex { x: bx + off, y: by, w: bw, h: bh, u0: 0.0, v0: 0.0, u1: 1.0, v1: 1.0, tex, c: Color::rgba(1.0, 1.0, 1.0, 1.0), premult: false });
     }
-    // titlebar
-    rect(o, x, y, win.w, crate::compositor::TITLEBAR_H, Color::rgba(0.13, 0.14, 0.16, 1.0));
-    if focused {
+    // titlebar (server-side decoration only; CSD clients draw their own —
+    // otherwise the user sees two title bars / close buttons)
+    if !win.csd {
+        rect(o, x, y, win.w, crate::compositor::TITLEBAR_H, Color::rgba(0.13, 0.14, 0.16, 1.0));
+        if focused {
+            rect(o, x, y, win.w, 2.5, ACCENT);
+        }
+        let title_color = if focused { BAR_FG } else { MUTED };
+        let title = if win.title.is_empty() { win.app_id.clone() } else { win.title.clone() };
+        o.push(Op::TextClipped { x: x + 12.0, w: win.w - 52.0, baseline: y + crate::compositor::TITLEBAR_H - 11.0, s: title, c: title_color });
+        // close (x)
+        let cbx = x + win.w - 26.0;
+        let cby = y + crate::compositor::TITLEBAR_H / 2.0;
+        line(o, cbx - 6.0, cby - 6.0, cbx + 6.0, cby + 6.0, 2.4, Color::rgba(0.8, 0.82, 0.85, 1.0));
+        line(o, cbx + 6.0, cby - 6.0, cbx - 6.0, cby + 6.0, 2.4, Color::rgba(0.8, 0.82, 0.85, 1.0));
+    } else if focused {
+        // A thin accent edge marks focus for undecorated/CSD windows.
         rect(o, x, y, win.w, 2.5, ACCENT);
     }
-    let title_color = if focused { BAR_FG } else { MUTED };
-    let title = if win.title.is_empty() { win.app_id.clone() } else { win.title.clone() };
-    o.push(Op::TextClipped { x: x + 12.0, w: win.w - 52.0, baseline: y + crate::compositor::TITLEBAR_H - 11.0, s: title, c: title_color });
-    // close (x)
-    let cbx = x + win.w - 26.0;
-    let cby = y + crate::compositor::TITLEBAR_H / 2.0;
-    line(o, cbx - 6.0, cby - 6.0, cbx + 6.0, cby + 6.0, 2.4, Color::rgba(0.8, 0.82, 0.85, 1.0));
-    line(o, cbx + 6.0, cby - 6.0, cbx - 6.0, cby + 6.0, 2.4, Color::rgba(0.8, 0.82, 0.85, 1.0));
 }
 
 /// Touch-test overlay (`GEMSHELL_TOUCH_TRAIL=1`): draw every finger's

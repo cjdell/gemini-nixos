@@ -1,6 +1,7 @@
 //! The gemshell compositor core — the main loop, window management,
 //! gestures and input. See docs/gemshell.md for the design.
 
+pub mod data;
 pub mod gbm;
 pub mod input;
 pub mod nested;
@@ -36,8 +37,11 @@ use gemdata_device::DeviceData;
 use gemdata_dummy::DummyData;
 
 use wayland::{
-    keymap_fd, BufferData, ClientState, CompositorData, OutputData, ShmData, SurfaceData,
-    WmBaseData, XdgPopupData, XdgSurfaceData, XdgToplevelData,
+    keymap_fd, BufferData, ClientState, CompositorData, DataDeviceManagerData, DecorationManagerData,
+    OutputData, ShmData, SurfaceData, WmBaseData, XdgPopupData, XdgSurfaceData, XdgToplevelData,
+};
+use wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::{
+    Mode as DecorationMode, ZxdgToplevelDecorationV1,
 };
 
 /// GEMSHELL_SCREENSHOT fired once (see render_frame).
@@ -110,12 +114,24 @@ pub struct Window {
     pub app: Option<usize>,
     pub is_popup: bool,
     pub parent: Option<u32>,
+    /// Client-side decoration (xdg-decoration negotiated): the client
+    /// draws its own titlebar/header bar, so the compositor must NOT draw
+    /// the SSD titlebar (the "2 close buttons" report, 2026-09-11).
+    pub csd: bool,
+    /// The client's `zxdg_toplevel_decoration_v1` object, if any (used to
+    /// send the mode configure).
+    pub decoration: Option<ZxdgToplevelDecorationV1>,
 }
 
 impl Window {
-    /// The client area (below the titlebar), in scene coords.
+    /// The client area (below the titlebar), in scene coords. With CSD
+    /// there is no compositor titlebar, so the content fills the window.
     pub fn content_rect(&self) -> (f32, f32, f32, f32) {
-        (self.x, self.y + TITLEBAR_H, self.w, self.h - TITLEBAR_H)
+        if self.csd {
+            (self.x, self.y, self.w, self.h)
+        } else {
+            (self.x, self.y + TITLEBAR_H, self.w, self.h - TITLEBAR_H)
+        }
     }
 
     /// Where the client buffer is drawn (letterboxed inside the content).
@@ -213,7 +229,12 @@ pub struct Compositor {
     /// The system-data provider — the ONE place gemshell reads/writes
     /// Wi-Fi, Bluetooth, audio, battery and brightness. Device by
     /// default; the in-memory dummy in nested mode. See `gemdata`.
-    data: Arc<dyn DataProvider>,
+    /// Wrapped in [`data::CachedData`]: reads are instant (cached) and
+    /// mutations/refreshes run on a worker thread, so the compositor
+    /// never blocks on nmcli/bluetoothctl/wpctl. See compositor/data.rs.
+    data: Arc<data::CachedData>,
+    /// Fires whenever the background data worker publishes a snapshot.
+    data_rx: mpsc::Receiver<()>,
     /// The egui shell UI (settings panel). GPU-tessellated; see shell.rs.
     shell: shell::ShellUi,
     /// egui input accumulated between frames (points space).
@@ -293,18 +314,30 @@ impl Compositor {
         let _ = handle.create_global::<Compositor, _, _>(11, ()); // wl_seat
         let _ = handle.create_global::<Compositor, _, _>(4, OutputData {}); // wl_output
         let _ = handle.create_global::<Compositor, _, _>(3, WmBaseData {}); // xdg_wm_base
+        // GTK4 REQUIRES wl_data_device_manager to even open the display
+        // (see the import comment in wayland.rs). Version 3 (not 4): we
+        // do not implement wl_data_device_manager.release.
+        let _ = handle.create_global::<Compositor, _, _>(3, DataDeviceManagerData {}); // wl_data_device_manager
+        // xdg-decoration: see wayland.rs. Version 2 (mode configure,
+        // set_mode/unset_mode, ToplevelDecorationError).
+        let _ = handle.create_global::<Compositor, _, _>(2, DecorationManagerData {}); // zxdg_decoration_manager_v1
 
         // The system-data provider: the real device one, or the in-memory
         // dummy for the nested x86_64 dev loop (no nmcli/bluetoothctl on
         // the workstation). Both back the same `gemdata::DataProvider`.
-        let data: Arc<dyn DataProvider> = if nested_mode {
+        let real: Arc<dyn DataProvider> = if nested_mode {
             Arc::new(DummyData::new())
         } else {
             Arc::new(DeviceData::new())
         };
         let (tx, rx) = mpsc::channel();
-        status::spawn(data.clone(), tx);
-        let status = status::read(&*data);
+        status::spawn(real.clone(), tx);
+        let status = status::read(&*real);
+        // Wrap the real provider in the async cache: the UI thread reads
+        // the last snapshot instantly and mutations go via a worker, so
+        // a slow nmcli/bluetoothctl call can't freeze the compositor
+        // (2026-09-11). The cheap status poller above keeps using `real`.
+        let (data, data_rx) = data::CachedData::new(real);
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let apps = apps::scan(&home);
@@ -350,6 +383,7 @@ impl Compositor {
                 last_titlebar_tap_ms: 0,
                 last_titlebar_win: None,
                 data,
+                data_rx,
                 shell: shell::ShellUi::new(),
                 egui_events: Vec::new(),
                 egui_pointer: None,
@@ -492,6 +526,21 @@ impl Compositor {
                     self.status = s;
                     self.dirty = true;
                 }
+                // While the settings panel is open, keep a slow repaint
+                // alive: the frame clock is dirty-driven, and the panel's
+                // 3 s data-refresh request lives in `run_egui` (which only
+                // runs when a frame is drawn). The status poller ticks
+                // every 2 s, so this yields a ~0.5 Hz panel repaint that
+                // services the refresh without any extra polling.
+                if self.settings_open {
+                    self.dirty = true;
+                }
+            }
+            // A fresh data snapshot (settings panel: Wi-Fi/BT/audio):
+            // ask the shell to re-read the cache on the next frame.
+            while self.data_rx.try_recv().is_ok() {
+                self.shell.state.need_refresh = true;
+                self.dirty = true;
             }
 
             if pfd[0].revents & libc::POLLIN != 0 {
@@ -904,7 +953,16 @@ impl Compositor {
             return None;
         }
         let now = self.present_time_ms.saturating_sub(self.start_ms);
-        if now.saturating_sub(self.settings_snapshot_ms) > 3000 {
+        // 8 s, not 3 s: a full snapshot is ~1–2 s of nmcli/bluetoothctl/
+        // wpctl on this SoC, and mutations are queued ahead of it, so a
+        // too-frequent poll is felt as input lag. The panel also requests
+        // a snapshot on open and after state-changing buttons, so this
+        // only needs to catch external changes (2026-09-11).
+        if now.saturating_sub(self.settings_snapshot_ms) > 8000 {
+            // Ask the worker for a fresh snapshot (non-blocking) and show
+            // the cached one immediately; the new one arrives via
+            // `data_rx` + `need_refresh` (2026-09-11).
+            self.data.refresh();
             self.shell.refresh(&*self.data);
             self.settings_snapshot_ms = now;
         }
@@ -1009,18 +1067,18 @@ impl Compositor {
                 continue;
             }
             if x >= win.x && x <= win.x + win.w && y >= win.y && y <= win.y + win.h {
-                hit = Some((win.id, win.is_popup, win.x, win.y, win.w));
+                hit = Some((win.id, win.is_popup, win.x, win.y, win.w, win.csd));
                 break;
             }
         }
-        let Some((wid, is_popup, wx, wy, ww)) = hit else {
+        let Some((wid, is_popup, wx, wy, ww, csd)) = hit else {
             self.launcher_open = false;
             self.switcher_open = false;
             self.gesture = Gesture::None;
             return;
         };
         self.raise(wid);
-        if !is_popup && y - wy < TITLEBAR_H {
+        if !is_popup && !csd && y - wy < TITLEBAR_H {
             // close button (top-right 44px)
             if x >= wx + ww - 44.0 {
                 self.close_window(wid);
@@ -1463,7 +1521,8 @@ impl Compositor {
     fn local_coords(&self, w: &Window, x: f32, y: f32) -> (f32, f32) {
         let (bx, by, bw, _bh) = w.buffer_rect();
         let Some(buf) = &w.buffer else {
-            return (x - w.x, y - w.y - TITLEBAR_H);
+            let ty = if w.csd { 0.0 } else { TITLEBAR_H };
+            return (x - w.x, y - w.y - ty);
         };
         let scale = (bw / buf.w as f32).max(1e-6);
         ((x - bx) / scale, (y - by) / scale)
@@ -1492,7 +1551,9 @@ impl Compositor {
         self.settings_open = true;
         self.shell.state.close = false;
         self.shell.state.status.clear();
+        // Instant: read the cache + queue a fresh snapshot on the worker.
         self.shell.refresh(&*self.data);
+        self.data.refresh();
         self.settings_snapshot_ms = util::now_ms().saturating_sub(self.start_ms);
         self.dirty = true;
     }
@@ -1579,6 +1640,8 @@ impl Compositor {
             app: None,
             is_popup: false,
             parent: None,
+            csd: false,
+            decoration: None,
         });
         self.dirty = true;
         Some(id)
@@ -1594,6 +1657,58 @@ impl Compositor {
         self.send_focus_change();
         self.request_configure(win);
         self.dirty = true;
+    }
+
+    /// A client created `zxdg_toplevel_decoration_v1` for `win`. Default
+    /// to CSD: GTK/libadwaita apps draw a header bar regardless of the
+    /// decoration mode, so advertising server-side would give two title
+    /// bars. Clients that prefer SSD send `set_mode(server_side)` next.
+    pub fn set_decoration(&mut self, win: u32, dec: ZxdgToplevelDecorationV1) {
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+            w.decoration = Some(dec.clone());
+            w.csd = true;
+        }
+        dec.configure(DecorationMode::ClientSide);
+        self.dirty = true;
+    }
+
+    pub fn set_csd(&mut self, win: u32, csd: bool) {
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+            if w.csd != csd {
+                w.csd = csd;
+                self.dirty = true;
+            }
+        }
+    }
+
+    pub fn clear_decoration(&mut self, win: u32) {
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
+            w.decoration = None;
+            w.csd = false;
+            self.dirty = true;
+        }
+    }
+
+    /// `xdg_toplevel.move` from a client (a CSD header-bar drag). We have
+    /// no pointer device, so move with the finger that is currently down.
+    pub fn begin_client_move(&mut self, win: u32) {
+        let finger = self.fingers.keys().next().copied();
+        let (fx, fy) = finger
+            .and_then(|id| self.fingers.get(&id))
+            .map(|f| (f.x, f.y))
+            .unwrap_or((0.0, 0.0));
+        let (wx, wy) = self
+            .windows
+            .iter()
+            .find(|w| w.id == win)
+            .map(|w| (w.x, w.y))
+            .unwrap_or((0.0, 0.0));
+        self.raise(win);
+        if let Some(id) = finger {
+            self.gesture = Gesture::Move { win, finger: id, off_dx: fx - wx, off_dy: fy - wy };
+            self.snap_win = Some(win);
+            self.snap_preview = Snap::None;
+        }
     }
 
     pub fn new_popup(&mut self, surface: WlSurface, parent: Option<u32>, w: f32, h: f32, x: f32, y: f32) -> Option<u32> {
@@ -1620,6 +1735,8 @@ impl Compositor {
             app: None,
             is_popup: true,
             parent,
+            csd: false,
+            decoration: None,
         });
         self.dirty = true;
         Some(id)
@@ -2172,10 +2289,19 @@ fn spawn_cmd<P: AsRef<std::ffi::OsStr>, A: AsRef<std::ffi::OsStr>, I: IntoIterat
     let prog = prog.as_ref().to_os_string();
     let args: Vec<std::ffi::OsString> =
         args.into_iter().map(|a| a.as_ref().to_os_string()).collect();
+    let name = prog.to_string_lossy().into_owned();
     std::thread::Builder::new()
         .name("spawn".into())
         .spawn(move || {
-            let _ = std::process::Command::new(&prog).args(&args).spawn();
+            // Log the outcome: a bare Exec name that is not on PATH or a
+            // client that dies at startup used to fail silently, so
+            // "apps don't launch" had no receipt (2026-09-11). The child
+            // inherits our stdout/stderr, so its own errors land in the
+            // gemini-gemshell journal too.
+            match std::process::Command::new(&prog).args(&args).spawn() {
+                Ok(child) => log::info!("spawned {name} (pid {})", child.id()),
+                Err(e) => log::error!("spawn {name}: {e}"),
+            }
         })
         .ok();
 }

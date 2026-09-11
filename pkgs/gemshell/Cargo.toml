@@ -52,7 +52,7 @@ opt-level = "s"
 [dependencies]
 # --- Wayland server (compositor) ---
 wayland-server = { version = "0.31", features = ["system", "log"] }
-wayland-protocols = { version = "0.32", features = ["client", "server"] }
+wayland-protocols = { version = "0.32", features = ["client", "server", "unstable"] }
 # (wayland-client is still needed by the nested-mode host connection)
 wayland-client = { version = "0.31", features = ["system", "log"] }
 # --- keyboard ---
