@@ -162,26 +162,56 @@ pub struct Input {
 
 /// Scan /dev/input for the keyboard + touch nodes (by device name).
 /// Returns (kbd path, touch path, kbd name, touch name).
+/// Find the keyboard + touch evdev nodes.
+///
+/// Scans /sys/class/input/inputN (name + dev major:minor) and
+/// classifies by CAPABILITY (EVIOCGBIT), not name string: a device with
+/// EV_ABS + ABS_MT_SLOT is the touch panel (NT36772 protocol-B); an
+/// EV_KEY-only device is a keyboard (prefer the AW9523 by name, else
+/// the first EV_KEY-only node — mt6351-keys is the power key cluster).
+/// The earlier /dev/input/eventN/device/name probe was wrong: eventN is
+/// a plain char device, so that path never exists (first on-glass run
+/// 2026-09-11: "no keyboard/touch evdev node").
 pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
     let mut kbd: Option<(String, String)> = None; // (path, name)
+    let mut kbd_fallback: Option<(String, String)> = None;
     let mut touch: Option<(String, String)> = None;
-    let Ok(rd) = std::fs::read_dir("/dev/input") else {
+    let Ok(rd) = std::fs::read_dir("/sys/class/input") else {
         return (None, None, String::new(), String::new());
     };
     for e in rd.flatten() {
-        let p = e.path();
-        let Some(name) = util::read_to_string(&p.join("device/name")).map(|s| s.trim().to_string()) else {
+        let base = e.path();
+        let name = util::read_to_string(&base.join("name")).map(|s| s.trim().to_string());
+        let dev = util::read_to_string(&base.join("dev")).map(|s| s.trim().to_string());
+        let (Some(name), Some(dev)) = (name, dev) else { continue };
+        let Ok(minor) = dev.rsplitn(2, ':').next().unwrap_or("").parse::<u32>() else {
             continue;
         };
+        let path = format!("/dev/input/event{minor}");
+        let Ok(fd) = open_ro(&path) else {
+            continue; // not readable (group) — skip
+        };
+        let keybit = evbit(fd, 0x01); // EV_KEY
+        let absbit = evbit(fd, 0x03); // EV_ABS
+        let is_touch = absbit
+            .iter()
+            .enumerate()
+            .any(|(bit, b)| *b != 0 && bit == 0x2f); // ABS_MT_SLOT
         let lower = name.to_lowercase();
-        if lower.contains("touchscreen") || lower.contains("nt36") {
-            touch = Some((p.to_string_lossy().into_owned(), name));
-        } else if lower.contains("aw9523") || lower.contains("gpio-keys") || lower.contains("keyboard") {
-            if kbd.is_none() {
-                kbd = Some((p.to_string_lossy().into_owned(), name));
+        if is_touch {
+            touch = Some((path.clone(), name.clone()));
+        } else if keybit.iter().any(|b| *b != 0) {
+            // EV_KEY device: prefer the AW9523 main keyboard by name.
+            let pref = lower.contains("aw9523") || lower == "keyboard";
+            if pref && kbd.is_none() {
+                kbd = Some((path.clone(), name.clone()));
+            } else if kbd_fallback.is_none() {
+                kbd_fallback = Some((path.clone(), name.clone()));
             }
         }
+        unsafe { libc::close(fd) };
     }
+    let kbd = kbd.or(kbd_fallback);
     match (kbd, touch) {
         (Some((kp, kn)), Some((tp, tn))) => (Some(kp), Some(tp), kn, tn),
         (k, t) => (
@@ -190,6 +220,28 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
             k.map(|x| x.1).unwrap_or_default(),
             t.map(|x| x.1).unwrap_or_default(),
         ),
+    }
+}
+
+/// The EVIOCGBIT(type) capability bitmap (64 bits) for an evdev fd.
+/// EVIOCGBIT = _IOW('E', 0x20, int[32]) = 0x80084500.
+fn evbit(fd: std::os::raw::c_int, ty: u16) -> [u8; 8] {
+    #[repr(C)]
+    struct Kb {
+        _type: u16,
+        size: u32,
+        bit: [u8; 8],
+    }
+    let mut k = Kb {
+        _type: ty,
+        size: 8,
+        bit: [0u8; 8],
+    };
+    let rc = unsafe { libc::ioctl(fd, 0x8008_4500u64 as _, &mut k as *mut Kb) };
+    if rc != 0 {
+        [0u8; 8]
+    } else {
+        k.bit
     }
 }
 
