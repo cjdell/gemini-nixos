@@ -70,6 +70,9 @@ extern "C" {
 // work that chased it stays (they are genuinely needed on NixOS), but
 // the config failure was here.
 const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
+// EGL_MESA_platform_surfaceless — host/nested rendering with no DRM
+// device (src/compositor/nested.rs + docs/gemshell.md "nested mode").
+const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
 const EGL_SURFACE_TYPE: u32 = 0x3033;
 const EGL_PBUFFER_BIT: u32 = 0x0001;
 const EGL_WINDOW_BIT: u32 = 0x0004;
@@ -326,6 +329,20 @@ pub enum Op {
     TextClipped { x: f32, w: f32, baseline: f32, s: String, c: Color },
 }
 
+/// Resolve `eglGetPlatformDisplayEXT` through `eglGetProcAddress`
+/// (libglvnd's libEGL exports no extension entry points — verified
+/// 2026-09-11 — the vendor ICD answers it) and create a platform
+/// display. `native` is the GBM device pointer for the GBM platform,
+/// NULL for surfaceless.
+unsafe fn platform_display(platform: u32, native: *mut c_void) -> EGLDisplay {
+    type PlatformDisplayFn =
+        unsafe extern "C" fn(u32, *mut c_void, *const c_int) -> EGLDisplay;
+    let f: PlatformDisplayFn = std::mem::transmute(eglGetProcAddress(
+        b"eglGetPlatformDisplayEXT\0".as_ptr() as *const c_char,
+    ));
+    f(platform, native, std::ptr::null())
+}
+
 pub struct Renderer {
     pub width: u32,
     pub height: u32,
@@ -361,6 +378,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Device renderer: EGL on the GBM device (`renderD128`/panfrost),
+    /// scene FBO, plus the LK-fb present chain. `gbm_device` is the
+    /// pointer vended by `gbm::Gbm`.
     pub fn new(
         gbm_device: *mut c_void,
         width: u32,
@@ -368,48 +388,63 @@ impl Renderer {
         glyph_pixels: &[u8],
         glyph_size: u32,
     ) -> Result<Self, String> {
-        // --- EGL ---
-        // The two platform entry points (eglGetPlatformDisplayEXT /
-        // eglCreatePlatformSurface) are NOT exported by libglvnd's
-        // libEGL (verified 2026-09-11: readelf on the store libEGL.so.1
-        // — the core API only), so per the EGL 1.5 spec they are
-        // resolved through eglGetProcAddress, which libglvnd's dispatch
-        // answers from the vendor ICD (mesa-geminipda exports both).
-        type PlatformDisplayFn =
-            unsafe extern "C" fn(u32, *mut c_void, *const c_int) -> EGLDisplay;
-        let eglGetPlatformDisplayEXT: PlatformDisplayFn = unsafe {
-            std::mem::transmute(eglGetProcAddress(
-                b"eglGetPlatformDisplayEXT\0".as_ptr() as *const c_char,
-            ))
-        };
-        // Pbuffer surface (1x1): the context needs a current surface for
-        // eglMakeCurrent, but nothing is ever presented through it —
-        // presentation is the compute blit into the LK fb (see present()).
-        // (The old window-surface + eglSwapBuffers path was
-        // spec-invalid for the GBM platform: eglCreatePlatformSurface
-        // must be handed a gbm surface, and a bare device returns a
-        // NULL/invalid surface — the EGL_MESA_platform_gbm spec, and the
-        // reason gemwl never used EGL window surfaces at all.)
-        // The GBM platform has NO pbuffer surface type (only gbm-window
-        // surfaces) — asking for EGL_PBUFFER_BIT was the 0x3004
-        // (EGL_BAD_MATCH) from eglChooseConfig (on glass, 2026-09-11).
-        // We render into a GL FBO anyway, so the config just needs to be
-        // renderable; the context is created surfaceless (makeCurrent
-        // with EGL_NO_SURFACE, legal in EGL 1.5).
-        let mut attrs = [
-            EGL_RENDERABLE_TYPE,
-            EGL_OPENGL_ES3_BIT,
-            EGL_SURFACE_TYPE as c_int,
-            EGL_WINDOW_BIT as c_int,
-            EGL_NONE,
-        ];
-        let display = unsafe { eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA, gbm_device, std::ptr::null()) };
+        let display = unsafe { platform_display(EGL_PLATFORM_GBM_MESA, gbm_device) };
         if display.is_null() {
             return Err(format!(
                 "eglGetPlatformDisplay(GBM) failed (error 0x{:x})",
                 unsafe { eglGetError() }
             ));
         }
+        Self::from_display(display, width, height, glyph_pixels, glyph_size, true)
+    }
+
+    /// Host/nested renderer: EGL GBM on the HOST render node (`gbm_device`
+    /// from `Gbm::new("/dev/dri/renderD128")` — radeonsi on the dev box),
+    /// scene FBO only — no `/dev/gemfb`, no compute blit. The nested
+    /// client presents the scene over Wayland
+    /// (src/compositor/nested.rs). x86_64 dev only.
+    ///
+    /// (EGL_PLATFORM_SURFACELESS_MESA returns a valid Mesa display but
+    /// ZERO configs on this multi-GPU host, verified 2026-09-11 — GBM on
+    /// an explicit render node is the reliable headless path, and is what
+    /// the device path already uses.)
+    pub fn new_host(
+        gbm_device: *mut c_void,
+        width: u32,
+        height: u32,
+        glyph_pixels: &[u8],
+        glyph_size: u32,
+    ) -> Result<Self, String> {
+        let display = unsafe { platform_display(EGL_PLATFORM_GBM_MESA, gbm_device) };
+        if display.is_null() {
+            return Err(format!(
+                "eglGetPlatformDisplay(host GBM) failed (error 0x{:x})",
+                unsafe { eglGetError() }
+            ));
+        }
+        Self::from_display(display, width, height, glyph_pixels, glyph_size, false)
+    }
+
+    fn from_display(
+        display: EGLDisplay,
+        width: u32,
+        height: u32,
+        glyph_pixels: &[u8],
+        glyph_size: u32,
+        with_fb: bool,
+    ) -> Result<Self, String> {
+        // The config: ES3-renderable; the context is created surfaceless
+        // (makeCurrent with EGL_NO_SURFACE, legal in EGL 1.5) because we
+        // render into a GL FBO. At one point EGL_SURFACE_TYPE/
+        // EGL_WINDOW_BIT were requested too; the GBM platform has no
+        // window/pbuffer surface type and that was the 0x3004
+        // (EGL_BAD_MATCH) from eglChooseConfig (on glass, 2026-09-11),
+        // so only renderable_type is requested.
+        let mut attrs = [
+            EGL_RENDERABLE_TYPE,
+            EGL_OPENGL_ES3_BIT,
+            EGL_NONE,
+        ];
         let (mut maj, mut min) = (0i32, 0i32);
         if unsafe { eglInitialize(display, &mut maj, &mut min) } != EGL_TRUE {
             return Err(format!("eglInitialize failed (error 0x{:x})", unsafe { eglGetError() }));
@@ -600,47 +635,42 @@ impl Renderer {
         }
         log::info!("base textures created (glyph {glyph_size}px)");
 
-        // --- GPU-direct present target (the gemwl chain, on glass
-        // 2026-09-01/09-10): scene FBO + /dev/gemfb LK-fb import + the
-        // compute copy. ---
-        let fb_fd = open_gemfb()?;
-        log::info!("gemfb opened (fd={fb_fd})");
-        let attrs = fb_image_attrs(fb_fd);
-        let fb_image = unsafe {
-            (r.eglCreateImageKHR)(
-                display,
-                std::ptr::null_mut(),
-                EGL_LINUX_DMA_BUF_EXT,
-                std::ptr::null(),
-                attrs.as_ptr(),
-            )
-        };
-        if fb_image.is_null() {
-            return Err(format!(
-                "eglCreateImageKHR(LK fb dma-buf) failed (error 0x{:x}) — is the ICD's EGL_EXT_image_dma_buf_import available?",
-                unsafe { eglGetError() }
-            ));
+        // The scene FBO is needed by EVERY backend (device + nested).
+        r.init_scene_fbo()?;
+        log::info!("scene FBO ready ({}x{})", r.width, r.height);
+
+        if with_fb {
+            // --- GPU-direct present target (the gemwl chain, on glass
+            // 2026-09-01/09-10): /dev/gemfb LK-fb import + the compute
+            // copy. ---
+            let fb_fd = open_gemfb()?;
+            log::info!("gemfb opened (fd={fb_fd})");
+            let attrs = fb_image_attrs(fb_fd);
+            let fb_image = unsafe {
+                (r.eglCreateImageKHR)(
+                    display,
+                    std::ptr::null_mut(),
+                    EGL_LINUX_DMA_BUF_EXT,
+                    std::ptr::null(),
+                    attrs.as_ptr(),
+                )
+            };
+            if fb_image.is_null() {
+                return Err(format!(
+                    "eglCreateImageKHR(LK fb dma-buf) failed (error 0x{:x}) — is the ICD's EGL_EXT_image_dma_buf_import available?",
+                    unsafe { eglGetError() }
+                ));
+            }
+            log::info!("LK fb dma-buf imported as EGLImage");
+            r.init_fb_present(fb_fd, fb_image)?;
+            log::info!("GPU-direct present target ready");
         }
-        log::info!("LK fb dma-buf imported as EGLImage");
-        r.init_present(fb_fd, fb_image)?;
-        log::info!("GPU-direct present target ready");
         Ok(r)
     }
 
-    /// Scene FBO (fullscreen render target), the LK-fb image texture and
-    /// the compute copy program (context must be current).
-    fn init_present(&mut self, fb_fd: c_int, fb_image: EglImage) -> Result<(), String> {
-        let mut fb_tex = 0u32;
-        unsafe {
-            glGenTextures(1, &mut fb_tex);
-            glBindTexture(GL_TEXTURE_2D, fb_tex);
-            (self.glEGLImageTargetTexture2DOES)(GL_TEXTURE_2D, fb_image);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
-        }
-        log::info!("LK fb image bound to texture {fb_tex}");
-        self.fb_tex = fb_tex;
-
+    /// The scene FBO (fullscreen RGBA8 render target), shared by the
+    /// device and nested backends (context must be current).
+    fn init_scene_fbo(&mut self) -> Result<(), String> {
         // The scene FBO: a plain RGBA8 fullscreen texture. (gemwl's shadow
         // is a panfrost dma-buf BO because wlroots' swapchain needs a
         // wlr_buffer; a GL texture is the equivalent for our compute
@@ -681,8 +711,24 @@ impl Renderer {
         // T880 tiler first-batch bug (gemwl receipt, 2026-09-02): the
         // FIRST tiler draw into a fresh fullscreen-size target rasterizes
         // only ~1024x1024 — warm the FBO so the first real frame is
-        // clean.
+        // clean. (Harmless no-op on non-panfrost hosts.)
         tiler_warmup(self.fbo);
+        Ok(())
+    }
+
+    /// The LK-fb image texture + the compute copy program (device only;
+    /// context must be current).
+    fn init_fb_present(&mut self, fb_fd: c_int, fb_image: EglImage) -> Result<(), String> {
+        let mut fb_tex = 0u32;
+        unsafe {
+            glGenTextures(1, &mut fb_tex);
+            glBindTexture(GL_TEXTURE_2D, fb_tex);
+            (self.glEGLImageTargetTexture2DOES)(GL_TEXTURE_2D, fb_image);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
+        }
+        log::info!("LK fb image bound to texture {fb_tex}");
+        self.fb_tex = fb_tex;
 
         // The compute copy program.
         let cs = unsafe { glCreateShader(GL_COMPUTE_SHADER) };
@@ -729,6 +775,32 @@ impl Renderer {
         self.fb_fd = fb_fd;
         self.fb_image = fb_image;
         Ok(())
+    }
+
+    /// Read the scene FBO back as top-down RGBA8 (the nested present;
+    /// same pixels `screenshot` writes, without the PNG).
+    pub fn read_scene_rgba(&self) -> Vec<u8> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut buf = vec![0u8; w * h * 4];
+        unsafe {
+            glBindFramebuffer(GL_FRAMEBUFFER, self.fbo);
+            glReadPixels(
+                0,
+                0,
+                self.width as c_int,
+                self.height as c_int,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            );
+        }
+        // glReadPixels returns rows bottom-up; flip to top-down.
+        let mut flipped = vec![0u8; buf.len()];
+        for y in 0..h {
+            let src = (h - 1 - y) * w * 4;
+            flipped[y * w * 4..(y + 1) * w * 4].copy_from_slice(&buf[src..src + w * 4]);
+        }
+        flipped
     }
 
     fn make_texture(&mut self, w: u32, h: u32, rgba8: &[u8]) -> Result<u32, String> {
@@ -1112,6 +1184,11 @@ impl Renderer {
     /// KMS, no page flip; the panel scans the LK OVL memory directly).
     /// Ends with glFinish, so on return the panel has the frame.
     pub fn present(&mut self) -> Result<(), String> {
+        // Nested/host renderer: no LK fb — the nested client reads the
+        // scene FBO back and presents it over Wayland.
+        if self.cprog == 0 {
+            return Ok(());
+        }
         unsafe {
             glUseProgram(self.cprog);
             glUniform1i(self.c_src, 1);

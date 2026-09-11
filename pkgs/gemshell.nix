@@ -83,7 +83,8 @@ rustPlatform.buildRustPackage rec {
       wl_shm settings client. See docs/gemshell.md.
     '';
     license = licenses.mit;
-    platforms = [ "aarch64-linux" ];
+    # x86_64-linux is the nested development build (bin/gemshell-nested.sh).
+    platforms = [ "aarch64-linux" "x86_64-linux" ];
     mainProgram = "gemshell";
   };
 }

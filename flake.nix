@@ -267,6 +267,21 @@
         gemini-exodus = gemini-exodus;
       };
 
+      # x86_64 host builds of the Rust apps — the nested dev loop runs on
+      # the workstation (bin/gemshell-nested.sh). Same derivation source,
+      # host nixpkgs (host Mesa/libglvnd). See docs/gemshell.md "Nested
+      # mode".
+      packages.x86_64-linux = let
+        hostPkgs = import nixpkgs { system = "x86_64-linux"; };
+      in {
+        # nixpkgs' `mesa` does not ship libgbm in its lib output (that is
+        # the separate `libgbm` package), unlike the geminipda fork —
+        # pass libgbm where the derivation expects the GBM provider.
+        gemshell = hostPkgs.callPackage ./pkgs/gemshell.nix {
+          mesa = hostPkgs.libgbm;
+        };
+      };
+
       # Host tooling stays x86_64 (this flake is evaluated from an x86_64
       # host; the native aarch64 builds go to the remote builder).
       devShells.x86_64-linux.default =

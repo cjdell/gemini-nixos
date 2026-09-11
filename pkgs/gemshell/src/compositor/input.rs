@@ -380,6 +380,112 @@ impl Input {
         })
     }
 
+    /// Nested/host mode: no evdev nodes. The keymap is still built
+    /// (layout from `XKB_DEFAULT_LAYOUT`, default "gemini", falling back
+    /// to "us" if the gemini symbols dir is not on the host); keys are
+    /// fed in via [`Input::process_key`].
+    pub fn new_virtual() -> Result<Self, String> {
+        let (ctx, keymap, keymap_str, slot_bits, slot_idx) = Self::build_xkb()?;
+        let state = unsafe { xkb::xkb_state_new(keymap) };
+        if state.is_null() {
+            return Err("xkb_state_new failed".into());
+        }
+        Ok(Input {
+            kbd_fd: -1,
+            touch_fd: -1,
+            kbd_name: "nested".into(),
+            touch_name: "nested".into(),
+            ctx,
+            keymap,
+            state,
+            keymap_str,
+            pressed: Vec::new(),
+            slot_bits,
+            slot_idx,
+            slot_x: [0.0; MAX_SLOTS],
+            slot_y: [0.0; MAX_SLOTS],
+            slot_down: [false; MAX_SLOTS],
+            cur_slot: 0,
+            x_range: AbsRange { min: 0.0, max: 1079.0 },
+            y_range: AbsRange { min: 0.0, max: 2159.0 },
+        })
+    }
+
+    /// Build the xkb context/keymap/slot tables for the configured
+    /// layout. Shared shape with `open` (kept as a helper for the
+    /// virtual path; `open` retains its inline copy for now).
+    #[allow(clippy::type_complexity)]
+    fn build_xkb() -> Result<
+        (
+            *mut xkb::xkb_context_t,
+            *mut xkb::xkb_keymap_t,
+            Option<String>,
+            [u32; 13],
+            [u8; 13],
+        ),
+        String,
+    > {
+        let ctx = unsafe { xkb::xkb_context_new(0) };
+        if ctx.is_null() {
+            return Err("xkb_context_new failed".into());
+        }
+        let mut layout = std::env::var("XKB_DEFAULT_LAYOUT").unwrap_or_else(|_| "gemini".into());
+        let mut keymap = make_keymap(ctx, &layout);
+        if keymap.is_null() {
+            log::warn!("xkb layout '{layout}' unavailable; falling back to 'us'");
+            layout = "us".into();
+            keymap = make_keymap(ctx, &layout);
+        }
+        if keymap.is_null() {
+            return Err(format!("xkb_keymap_new_from_names failed (layout={layout})"));
+        }
+        let keymap_str = unsafe {
+            let s = xkb::xkb_keymap_get_as_string(keymap, xkb::XKB_KEYMAP_FORMAT_TEXT_V1);
+            if s.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned()
+            }
+        };
+        log::info!("keymap compiled ({layout}): {} bytes", keymap_str.len());
+        let mut slot_bits = [0u32; 13];
+        let mut slot_idx = [32u8; 13];
+        for (slot, name) in ["", "Shift", "Lock", "Control", "Mod1", "Mod2", "Mod3", "Mod4", "Mod5"]
+            .iter()
+            .enumerate()
+        {
+            if slot == 0 {
+                continue;
+            }
+            let idx = unsafe {
+                xkb::xkb_keymap_mod_get_index(keymap, CString::new(*name).unwrap().as_ptr())
+            };
+            if idx < 32 {
+                slot_bits[slot] |= 1 << idx;
+                slot_idx[slot] = idx;
+            }
+        }
+        Ok((ctx, keymap, Some(keymap_str), slot_bits, slot_idx))
+    }
+
+    /// Nested input: feed one raw evdev scancode (the host's
+    /// `wl_keyboard.key` value) and return (keysym, wl mods mask).
+    /// xkbcommon keycodes are scancode + 8.
+    pub fn process_key(&mut self, code: u32, pressed: bool) -> (u32, u32) {
+        let xkb_code = code + 8;
+        let dir = if pressed { xkb::XKB_KEY_DOWN } else { xkb::XKB_KEY_UP };
+        if pressed {
+            if !self.pressed.contains(&code) {
+                self.pressed.push(code);
+            }
+        } else {
+            self.pressed.retain(|&k| k != code);
+        }
+        unsafe { xkb::xkb_state_update_key(self.state, xkb_code, dir) };
+        let keysym = unsafe { xkb::xkb_state_key_get_one_sym(self.state, xkb_code) };
+        (keysym, self.current_mods())
+    }
+
     /// Non-blocking drain of both evdev nodes.
     pub fn read_events(&mut self, scene_w: f32, scene_h: f32) -> Vec<Event> {
         let mut out = Vec::new();
@@ -405,14 +511,18 @@ impl Input {
                 continue;
             }
             let code = ev.code as u32;
+            // xkbcommon keycodes are the evdev scancode + 8; feeding the
+            // bare scancode looked up the wrong key (latent bug, found
+            // while adding nested input, 2026-09-11).
+            let xkb_code = code + 8;
             let dir = if ev.value == 0 { xkb::XKB_KEY_UP } else { xkb::XKB_KEY_DOWN };
-            unsafe { xkb::xkb_state_update_key(self.state, code, dir) };
+            unsafe { xkb::xkb_state_update_key(self.state, xkb_code, dir) };
             if ev.value == 0 {
                 self.pressed.retain(|&k| k != code);
             } else if ev.value == 1 {
                 self.pressed.push(code);
             }
-            let keysym = unsafe { xkb::xkb_state_key_get_one_sym(self.state, code) };
+            let keysym = unsafe { xkb::xkb_state_key_get_one_sym(self.state, xkb_code) };
             if keysym == 0 {
                 continue;
             }
@@ -423,7 +533,7 @@ impl Input {
             let pressed_keysyms: Vec<u32> = self
                 .pressed
                 .iter()
-                .map(|&k| unsafe { xkb::xkb_state_key_get_one_sym(self.state, k) })
+                .map(|&k| unsafe { xkb::xkb_state_key_get_one_sym(self.state, k + 8) })
                 .collect();
             let keymap = if out.iter().all(|e| !matches!(e, Event::Key { .. })) {
                 self.keymap_str.clone()
@@ -547,6 +657,28 @@ impl Input {
         }
         (out[0], out[1], out[2])
     }
+}
+
+/// Build an xkb keymap from RMLVO (`XKB_DEFAULT_RULES`/`_OPTIONS` env +
+/// the given layout). xkbcommon keys are (evdev scancode + 8).
+fn make_keymap(ctx: *mut xkb::xkb_context_t, layout: &str) -> *mut xkb::xkb_keymap_t {
+    let Ok(layout_c) = CString::new(layout) else {
+        return std::ptr::null_mut();
+    };
+    let rules_opt = std::env::var("XKB_DEFAULT_RULES")
+        .ok()
+        .and_then(|s| CString::new(s).ok());
+    let options_opt = std::env::var("XKB_DEFAULT_OPTIONS")
+        .ok()
+        .and_then(|s| CString::new(s).ok());
+    let rmlvo = xkb::xkb_rule_names {
+        rules: rules_opt.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null()),
+        model: std::ptr::null(),
+        layout: layout_c.as_ptr(),
+        variant: std::ptr::null(),
+        options: options_opt.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null()),
+    };
+    unsafe { xkb::xkb_keymap_new_from_names(ctx, &rmlvo, 0) }
 }
 
 impl Drop for Input {

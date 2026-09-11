@@ -3,6 +3,7 @@
 
 pub mod gbm;
 pub mod input;
+pub mod nested;
 pub mod render;
 pub mod status;
 pub mod ui;
@@ -22,6 +23,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 use wayland_server::protocol::wl_touch::WlTouch;
 use wayland_server::{Client, Display, ListeningSocket, Resource};
 use wayland_protocols::xdg::shell::server::xdg_popup::XdgPopup;
+use wayland_protocols::xdg::shell::server::xdg_surface::XdgSurface;
 use wayland_protocols::xdg::shell::server::xdg_toplevel::{
     State as ToplevelState, XdgToplevel,
 };
@@ -80,6 +82,10 @@ pub struct Window {
     pub id: u32,
     /// set once the client's toplevel/popup resource exists (adopt_*)
     pub toplevel: Option<XdgToplevel>,
+    /// the xdg_surface resource — needed to send the xdg_surface.configure
+    /// that MUST follow every xdg_toplevel.configure (clients wait for it
+    /// before attaching their first buffer; without it nothing maps).
+    pub xdg_surface: Option<XdgSurface>,
     pub surface: WlSurface,
     pub title: String,
     pub app_id: String,
@@ -149,7 +155,10 @@ enum Gesture {
 }
 
 pub struct Compositor {
-    gbm_dev: gbm::Gbm,
+    /// Device mode only (the panfrost render node); None when nested.
+    gbm_dev: Option<gbm::Gbm>,
+    /// Present target for `GEMSHELL_NESTED=1` (host dev builds).
+    nested: Option<nested::Nested>,
     pub renderer: render::Renderer,
     input: input::Input,
     pub font: font::Font,
@@ -177,7 +186,10 @@ pub struct Compositor {
     status_rx: mpsc::Receiver<status::Status>,
     dirty: bool,
     in_flight: bool,
+    start_ms: u64,
     serial: u32,
+    /// monotonic serial for xdg_surface.configure
+    configure_serial: u32,
     keymap_str: Option<String>,
     pub snap_preview: Snap,
     pub snap_win: Option<u32>,
@@ -196,10 +208,13 @@ impl Compositor {
     /// Builds the compositor state + the (separate) Wayland display.
     /// The display lives OUTSIDE the struct: `dispatch_clients(&mut self)`
     /// needs the display borrowed separately from the state.
-    pub fn new() -> Result<(Display<Compositor>, Self), String> {
+    /// `nested = true` runs as a Wayland client under the host
+    /// compositor (x86_64 development: `GEMSHELL_NESTED=1`); the
+    /// renderer is then surfaceless EGL and there is no evdev/GBM.
+    pub fn new(nested_mode: bool) -> Result<(Display<Compositor>, Self), String> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-        let font_path = find_font().ok_or_else(|| "no system TTF font found".to_string())?;
+        let font_path = util::find_font().ok_or_else(|| "no system TTF font found".to_string())?;
         log::info!("font: {}", font_path.display());
         let font = font::Font::load(
             font_path
@@ -210,22 +225,39 @@ impl Compositor {
         )
         .map_err(|e| format!("font: {e}"))?;
 
-        let (kbd_opt, touch_opt, kbd_name, touch_name) = input::find_nodes();
-        let (kbd_path, touch_path) = match (kbd_opt, touch_opt) {
-            (Some(k), Some(t)) => (k, t),
-            _ => return Err("no keyboard/touch evdev node (need `input` group)".to_string()),
-        };
-        let input = input::Input::open(&kbd_path, &touch_path, &kbd_name, &touch_name)?;
-        let keymap_str = input.keymap_string();
-
-        // GBM device on the PANFROST RENDER NODE (renderD128) — headless
-        // rendering; the LK panel is driven by the compute blit into the
-        // /dev/gemfb LK framebuffer, NOT by KMS on card0 (the gemwl
-        // chain, gemwl.c header + docs/gemshell.md). card0
-        // (geminipda-drm) is left alone.
-        let gbm_dev = gbm::Gbm::new("/dev/dri/renderD128")?;
         let glyph_size = font.w;
-        let renderer = render::Renderer::new(gbm_dev.ptr, W, H, &font.pixels, glyph_size)?;
+        let input;
+        let gbm_dev;
+        let renderer;
+        let nested_client;
+        if nested_mode {
+            // x86_64 dev: no evdev, no /dev/gemfb — headless GL on the
+            // HOST render node and a parent Wayland connection. The child
+            // clients (gemsettings, apps) connect to OUR socket below
+            // (run()).
+            input = input::Input::new_virtual()?;
+            let g = gbm::Gbm::new("/dev/dri/renderD128")?;
+            renderer = render::Renderer::new_host(g.ptr, W, H, &font.pixels, glyph_size)?;
+            gbm_dev = Some(g);
+            nested_client = Some(nested::Nested::new(W, H)?);
+        } else {
+            let (kbd_opt, touch_opt, kbd_name, touch_name) = input::find_nodes();
+            let (kbd_path, touch_path) = match (kbd_opt, touch_opt) {
+                (Some(k), Some(t)) => (k, t),
+                _ => return Err("no keyboard/touch evdev node (need `input` group)".to_string()),
+            };
+            input = input::Input::open(&kbd_path, &touch_path, &kbd_name, &touch_name)?;
+            // GBM device on the PANFROST RENDER NODE (renderD128) — headless
+            // rendering; the LK panel is driven by the compute blit into the
+            // /dev/gemfb LK framebuffer, NOT by KMS on card0 (the gemwl
+            // chain, gemwl.c header + docs/gemshell.md). card0
+            // (geminipda-drm) is left alone.
+            let g = gbm::Gbm::new("/dev/dri/renderD128")?;
+            renderer = render::Renderer::new(g.ptr, W, H, &font.pixels, glyph_size)?;
+            gbm_dev = Some(g);
+            nested_client = None;
+        }
+        let keymap_str = input.keymap_string();
 
         let display = Display::new().map_err(|e| format!("wayland display: {e}"))?;
         let handle = display.handle();
@@ -247,6 +279,7 @@ impl Compositor {
 
         let compositor = Compositor {
             gbm_dev,
+                nested: nested_client,
                 renderer,
                 input,
                 font,
@@ -266,10 +299,12 @@ impl Compositor {
                 apps,
                 app_icons: HashMap::new(),
                 settings_open: false,
+                configure_serial: 0,
                 status,
                 status_rx: rx,
                 dirty: true,
                 in_flight: false,
+                start_ms: util::now_ms(),
                 serial: 1,
                 keymap_str,
                 snap_preview: Snap::None,
@@ -326,7 +361,10 @@ impl Compositor {
     }
 
     pub fn run(mut self, mut display: Display<Compositor>) -> i32 {
-        let socket = match ListeningSocket::bind("wayland-0") {
+        // Nested: the host compositor already owns `wayland-0`, so the
+        // sockets must not collide — our clients use wayland-gemshell.
+        let socket_name = if self.nested.is_some() { "wayland-gemshell" } else { "wayland-0" };
+        let socket = match ListeningSocket::bind(socket_name) {
             Ok(s) => s,
             Err(e) => {
                 log::error!("wayland socket bind: {e}");
@@ -336,22 +374,42 @@ impl Compositor {
         let sock_name = socket
             .socket_name()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "wayland-0".into());
+            .unwrap_or_else(|| socket_name.into());
         log::info!("wayland socket: {sock_name}");
+        // Children spawned from the launcher (gemsettings, apps) inherit
+        // this and therefore connect to US, not the host compositor.
+        std::env::set_var("WAYLAND_DISPLAY", &sock_name);
         self.upload_app_icons();
+        // Dev convenience: GEMSHELL_AUTOSTART=gemsettings launches a
+        // client right away (bin/gemshell-nested.sh).
+        if let Ok(app) = std::env::var("GEMSHELL_AUTOSTART") {
+            if !app.is_empty() {
+                log::info!("autostart: {app}");
+                spawn_cmd(app, Vec::<String>::new());
+            }
+        }
 
         let wl_fd = display.as_fd().as_raw_fd();
-        let gbm_fd = self.gbm_dev.fd;
-        let kbd_fd = self.input.kbd_fd;
-        let touch_fd = self.input.touch_fd;
         let sock_fd = socket.as_raw_fd();
-        let mut pfd = [
-            pollfd(wl_fd, libc::POLLIN),
-            pollfd(gbm_fd, libc::POLLIN),
-            pollfd(kbd_fd, libc::POLLIN),
-            pollfd(touch_fd, libc::POLLIN),
-            pollfd(sock_fd, libc::POLLIN),
-        ];
+        let mut pfd: Vec<libc::pollfd> = vec![pollfd(wl_fd, libc::POLLIN)];
+        let parent_idx = self.nested.as_ref().map(|n| {
+            pfd.push(pollfd(n.fd(), libc::POLLIN));
+            pfd.len() - 1
+        });
+        let gbm_idx = self.gbm_dev.as_ref().map(|g| {
+            pfd.push(pollfd(g.fd, libc::POLLIN));
+            pfd.len() - 1
+        });
+        let (kbd_idx, touch_idx) = if self.nested.is_none() {
+            pfd.push(pollfd(self.input.kbd_fd, libc::POLLIN));
+            let k = pfd.len() - 1;
+            pfd.push(pollfd(self.input.touch_fd, libc::POLLIN));
+            (Some(k), Some(pfd.len() - 1))
+        } else {
+            (None, None)
+        };
+        pfd.push(pollfd(sock_fd, libc::POLLIN));
+        let sock_idx = pfd.len() - 1;
 
         loop {
             let timeout = if self.dirty || self.animating() { 0 } else { 16 };
@@ -376,7 +434,43 @@ impl Compositor {
                 let _ = display.flush_clients();
             }
 
-            if pfd[4].revents & libc::POLLIN != 0 {
+            // Nested: drain host input and forward it into our seat.
+            if let Some(pi) = parent_idx {
+                if pfd[pi].revents & libc::POLLIN != 0 {
+                    let (ww, wh) = self.nested.as_ref().map(|n| n.size()).unwrap_or((W, H));
+                    let events = if let Some(n) = self.nested.as_mut() {
+                        n.pump();
+                        n.take_input()
+                    } else {
+                        Vec::new()
+                    };
+                    for ev in events {
+                        match ev {
+                            nested::NestedInput::Key { code, pressed } => {
+                                let (keysym, mods) = self.input.process_key(code, pressed);
+                                self.serial += 1;
+                                self.handle_key(code, keysym, pressed, mods);
+                            }
+                            nested::NestedInput::PointerDown { x, y } => {
+                                let (sx, sy) = scale_pt(x, y, ww, wh);
+                                self.serial += 1;
+                                self.touch_down(0, sx, sy);
+                            }
+                            nested::NestedInput::PointerMotion { x, y } => {
+                                let (sx, sy) = scale_pt(x, y, ww, wh);
+                                self.serial += 1;
+                                self.touch_motion(0, sx, sy);
+                            }
+                            nested::NestedInput::PointerUp => {
+                                self.serial += 1;
+                                self.touch_up(0);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if pfd[sock_idx].revents & libc::POLLIN != 0 {
                 while let Ok(Some(stream)) = socket.accept() {
                     match display.handle().insert_client(stream, Arc::new(ClientState::default())) {
                         Ok(client) => {
@@ -392,14 +486,21 @@ impl Compositor {
                 }
             }
 
-            if pfd[1].revents & libc::POLLIN != 0 {
-                self.gbm_dev.consume_flip();
-                self.in_flight = false;
-                self.present_time_ms = util::now_ms();
-                self.dirty = true;
+            if let Some(gi) = gbm_idx {
+                if pfd[gi].revents & libc::POLLIN != 0 {
+                    if let Some(g) = self.gbm_dev.as_mut() {
+                        g.consume_flip();
+                    }
+                    self.in_flight = false;
+                    self.present_time_ms = util::now_ms();
+                    self.dirty = true;
+                }
             }
 
-            if pfd[2].revents & libc::POLLIN != 0 || pfd[3].revents & libc::POLLIN != 0 {
+            if kbd_idx.is_some()
+                && (pfd[kbd_idx.unwrap()].revents & libc::POLLIN != 0
+                    || pfd[touch_idx.unwrap()].revents & libc::POLLIN != 0)
+            {
                 for ev in self.input.read_events(W as f32, H as f32) {
                     match ev {
                         input::Event::Key {
@@ -443,6 +544,16 @@ impl Compositor {
 
             if self.dirty && !self.in_flight {
                 self.render_frame();
+                // Nested: publish the scene FBO to the host window (the
+                // device path already presented in render_frame via the
+                // compute blit into the LK fb).
+                if self.nested.is_some() {
+                    let rgba = self.renderer.read_scene_rgba();
+                    let (sw, sh) = (self.renderer.width, self.renderer.height);
+                    if let Some(n) = self.nested.as_mut() {
+                        n.submit(&rgba, sw, sh);
+                    }
+                }
                 self.dirty = false;
                 self.in_flight = true;
                 self.present_time_ms = util::now_ms();
@@ -593,9 +704,11 @@ impl Compositor {
         let Some(focus) = self.focus else { return };
         let Some(win) = self.windows.iter().find(|w| w.id == focus) else { return };
         let Some(kbd) = self.kbd_res_for(win) else { return };
-        let xkb_code = code + 8; // evdev keycode -> xkb keycode
+        // wl_keyboard.key carries the raw evdev scancode; CLIENTS add 8
+        // for xkbcommon (wayland.xml). The old +8 here double-offset the
+        // key for every client (fixed 2026-09-11, nested-mode bring-up).
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
-        let _ = kbd.key(self.serial, self.present_time_ms as u32, xkb_code, state);
+        let _ = kbd.key(self.serial, self.present_time_ms as u32, code, state);
         let (d, l, k) = self.input.mods_masks();
         let _ = kbd.modifiers(self.serial, d, l, k, 0);
     }
@@ -1204,6 +1317,7 @@ impl Compositor {
         self.windows.push(Window {
             id,
             toplevel: None,
+            xdg_surface: None,
             surface,
             title: String::new(),
             app_id: String::new(),
@@ -1225,10 +1339,11 @@ impl Compositor {
     }
 
     /// The toplevel resource is in (data_init created it in the dispatch).
-    pub fn adopt_toplevel(&mut self, win: u32, toplevel: XdgToplevel) {
+    pub fn adopt_toplevel(&mut self, win: u32, toplevel: XdgToplevel, xdg_surface: XdgSurface) {
         self.focus = Some(win);
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.toplevel = Some(toplevel);
+            w.xdg_surface = Some(xdg_surface);
         }
         self.send_focus_change();
         self.request_configure(win);
@@ -1243,6 +1358,7 @@ impl Compositor {
         self.windows.push(Window {
             id,
             toplevel: None,
+            xdg_surface: None,
             surface,
             title: String::new(),
             app_id: String::new(),
@@ -1263,9 +1379,10 @@ impl Compositor {
         Some(id)
     }
 
-    pub fn adopt_popup(&mut self, win: u32, popup: XdgPopup) {
+    pub fn adopt_popup(&mut self, win: u32, popup: XdgPopup, xdg_surface: XdgSurface) {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.toplevel = None;
+            w.xdg_surface = Some(xdg_surface);
             let _ = popup; // popups carry no toplevel; kept alive via the popup resource in XdgPopupData
         }
     }
@@ -1428,6 +1545,10 @@ impl Compositor {
     }
 
     fn request_configure(&mut self, win: u32) {
+        // Bump the serial before borrowing the window (the xdg_surface
+        // configure below must carry a fresh one).
+        self.configure_serial = self.configure_serial.wrapping_add(1).max(1);
+        let serial = self.configure_serial;
         let Some(w) = self.windows.iter().find(|w| w.id == win) else {
             return;
         };
@@ -1453,6 +1574,14 @@ impl Compositor {
         let states_bytes: Vec<u8> = states.into_iter().map(|s| s as u8).collect();
         // NOTE: generated order is (width, height, states)
         let _ = t.configure(cw, ch, states_bytes);
+        // Every toplevel configure must be followed by an
+        // xdg_surface.configure carrying a serial; the client acks that
+        // serial and only then attaches its first buffer. The original
+        // send-only-toplevel-configure meant NO standard client could
+        // ever map (found writing gemsettings, 2026-09-11).
+        if let Some(xs) = w.xdg_surface.as_ref() {
+            let _ = xs.configure(serial);
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1665,13 +1794,21 @@ impl Compositor {
             log::error!("present: {e}");
         }
         // One-shot screenshot for on-glass verification:
-        // GEMSHELL_SCREENSHOT=/path writes the first frame as a PNG.
+        // GEMSHELL_SCREENSHOT=/path writes a frame as a PNG, after
+        // GEMSHELL_SCREENSHOT_DELAY_MS (default 0) so a client launched
+        // just after the compositor is on screen too.
         if !SHOT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
             if let Ok(path) = std::env::var("GEMSHELL_SCREENSHOT") {
-                SHOT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-                match self.renderer.screenshot(&path) {
-                    Ok(()) => log::info!("screenshot written: {path}"),
-                    Err(e) => log::error!("screenshot: {e}"),
+                let delay: u64 = std::env::var("GEMSHELL_SCREENSHOT_DELAY_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if util::now_ms().saturating_sub(self.start_ms) >= delay {
+                    SHOT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                    match self.renderer.screenshot(&path) {
+                        Ok(()) => log::info!("screenshot written: {path}"),
+                        Err(e) => log::error!("screenshot: {e}"),
+                    }
                 }
             }
         }
@@ -1712,52 +1849,20 @@ pub fn snap_rect(snap: Snap, _win: Option<u32>) -> (f32, f32, f32, f32) {
     }
 }
 
+/// Map a point in nested-window pixels to scene coordinates.
+fn scale_pt(x: f64, y: f64, win_w: u32, win_h: u32) -> (f32, f32) {
+    (
+        (x * W as f64 / win_w.max(1) as f64) as f32,
+        (y * H as f64 / win_h.max(1) as f64) as f32,
+    )
+}
+
 fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
     libc::pollfd { fd, events, revents: 0 }
 }
 
-fn find_font() -> Option<std::path::PathBuf> {
-    // 1) GEMSHELL_FONT: an explicit path (the systemd service sets it to
-    // the store dejavu — deterministic, no store-path guessing).
-    if let Ok(p) = std::env::var("GEMSHELL_FONT") {
-        let pb = std::path::PathBuf::from(&p);
-        if pb.is_file() {
-            return Some(pb);
-        }
-    }
-    // 2) the usual suspects — including the NixOS system profile
-    // (/run/current-system/sw/share/fonts; fonts.packages land there via
-    // /etc/fonts, but the profile dir is the stable one).
-    for dir in [
-        "/run/current-system/sw/share/fonts",
-        "/usr/share/fonts/dejavu",
-        "/usr/share/fonts/truetype",
-        "/usr/share/fonts/TTF",
-        "/usr/share/fonts",
-    ] {
-        if let Some(p) = walk(dir, |p| p.extension().and_then(|e| e.to_str()) == Some("ttf")) {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn walk(dir: &str, f: impl Fn(&std::path::Path) -> bool) -> Option<std::path::PathBuf> {
-    let mut stack = vec![std::path::PathBuf::from(dir)];
-    while let Some(d) = stack.pop() {
-        if let Ok(rd) = std::fs::read_dir(&d) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else if f(&p) {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    None
-}
+// find_font/walk now live in crate::common::util (shared with
+// gemsettings).
 
 fn spawn_cmd<P: AsRef<std::ffi::OsStr>, A: AsRef<std::ffi::OsStr>, I: IntoIterator<Item = A>>(
     prog: P,

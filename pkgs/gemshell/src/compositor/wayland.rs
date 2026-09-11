@@ -502,7 +502,7 @@ impl Dispatch<XdgSurface, XdgSurfaceData, Compositor> for Compositor {
                     sd.inner.lock().unwrap().window = Some(win);
                 }
                 let t = data_init.init(id_toplevel, XdgToplevelData { window: win });
-                state.adopt_toplevel(win, t);
+                state.adopt_toplevel(win, t, resource.clone());
             }
             XdgSurfaceRequest::GetPopup { parent, positioner, id: id_popup } => {
                 let surface = data.surface.clone();
@@ -541,7 +541,7 @@ impl Dispatch<XdgSurface, XdgSurfaceData, Compositor> for Compositor {
                     sd.inner.lock().unwrap().window = Some(win);
                 }
                 let p = data_init.init(id_popup, XdgPopupData { window: win, parent: parent_win });
-                state.adopt_popup(win, p);
+                state.adopt_popup(win, p, resource.clone());
             }
             XdgSurfaceRequest::SetWindowGeometry { .. }
             | XdgSurfaceRequest::AckConfigure { .. } => {}

@@ -33,6 +33,50 @@ pub fn which(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Depth-first search for the first file under `dir` matching `f`.
+pub fn walk(dir: &str, f: impl Fn(&std::path::Path) -> bool) -> Option<std::path::PathBuf> {
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    while let Some(d) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if f(&p) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find a UI TTF: `$GEMSHELL_FONT` (the service sets the DejaVu store
+/// path) then the usual profile/user font dirs. Shared by the compositor
+/// and gemsettings.
+pub fn find_font() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("GEMSHELL_FONT") {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    for dir in [
+        "/run/current-system/sw/share/fonts",
+        "/home/cjdell/.local/share/fonts",
+        "/home/cjdell/.nix-profile/share/fonts",
+        "/usr/share/fonts/dejavu",
+        "/usr/share/fonts/truetype",
+        "/usr/share/fonts/TTF",
+        "/usr/share/fonts",
+    ] {
+        if let Some(p) = walk(dir, |p| p.extension().and_then(|e| e.to_str()) == Some("ttf")) {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// The XDG data base directories, highest precedence first:
 /// `$XDG_DATA_HOME` (default `$HOME/.local/share`) then every
 /// colon-separated `$XDG_DATA_DIRS` entry (default

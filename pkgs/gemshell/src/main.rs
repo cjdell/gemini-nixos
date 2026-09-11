@@ -35,8 +35,13 @@ fn unbind_fbcons() {
 }
 
 fn main() {
-    unbind_fbcons();
-    let (display, mut comp) = match compositor::Compositor::new() {
+    // Nested mode (x86_64 development): run as a client under the host
+    // compositor. Env-driven so the same binary is used everywhere.
+    let nested = std::env::var_os("GEMSHELL_NESTED").is_some();
+    if !nested {
+        unbind_fbcons();
+    }
+    let (display, mut comp) = match compositor::Compositor::new(nested) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("gemshell: {e}");

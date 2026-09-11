@@ -20,7 +20,8 @@
 # Usage (from the repo root):
 #   bash bin/gemshell-dev.sh run     build + copy + (re)start the transient unit
 #   bash bin/gemshell-dev.sh shot [OUT.png]
-#                                     run + GEMSHELL_SCREENSHOT, pull the frame
+#                                     run + gemsettings + GEMSHELL_SCREENSHOT,
+#                                     pull the frame (a client is on screen)
 #   bash bin/gemshell-dev.sh logs    journal of the transient unit
 #   bash bin/gemshell-dev.sh stop    stop transient unit + restart the installed one
 #   bash bin/gemshell-dev.sh status  what is running now
@@ -49,9 +50,12 @@ build_and_copy() {
 }
 
 run() {
-    local out extra="${1:-}" extra_line=""
+    local out extra="${1:-}" launch="${2:-}" settle="${3:-5}" extra_line="" settings_line=""
     for e in $extra; do extra_line="$extra_line args+=(--setenv=$e)"; done
     out=$(build_and_copy)
+    if [ "$launch" = settings ]; then
+        settings_line="systemctl reset-failed gemsettings-dev.service 2>/dev/null || true; systemd-run --unit=gemsettings-dev --uid=cjdell --collect --setenv=XDG_RUNTIME_DIR=/run/gemshell --setenv=WAYLAND_DISPLAY=wayland-0 --setenv=HOME=/home/cjdell --setenv=PATH=$out/bin:/run/current-system/sw/bin --setenv=PULSE_SERVER=unix:/run/gemwl-audio/pulse/native --setenv=PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio $out/bin/gemsettings"
+    fi
     echo "== running $out on the device (transient unit) ==" >&2
     dev_ssh "set -e
         systemctl stop gemini-gemshell.service 2>/dev/null || true
@@ -66,6 +70,9 @@ run() {
             args+=(\"--setenv=\$kv\")
         done
         args+=("--setenv=HOME=/home/cjdell")
+        # Make the compositor's spawn of gemsettings find the
+        # freshly-built client, not the old system-profile one.
+        args+=("--setenv=PATH=$out/bin:/run/current-system/sw/bin:/run/wrappers/bin")
         $extra_line
         mkdir -p /run/gemshell
         systemd-run --unit=$unit --uid=cjdell \
@@ -73,8 +80,11 @@ run() {
             --property=RuntimeDirectoryMode=0700 \
             --property=Restart=no \
             \"\${args[@]}\" $out/bin/gemshell
-        sleep 5
+        sleep 1
+        $settings_line
+        sleep $((settle - 1))
         systemctl is-active $unit || true
+        systemctl is-active gemsettings-dev.service 2>/dev/null || true
         echo '--- journal ---'
         journalctl -u $unit --no-pager -o cat | tail -60"
 }
@@ -85,10 +95,9 @@ shot() {
     # (2026-09-11) — the driver mmap guard landed, but the path stays
     # unused until it is re-verified on a throwaway boot.
     local outfile="${1:-$repo/gemshell-shot.png}"
-    run "GEMSHELL_SCREENSHOT=/tmp/gemshell-shot.png"
-    sleep 1
+    run "GEMSHELL_SCREENSHOT=/tmp/gemshell-shot.png GEMSHELL_SCREENSHOT_DELAY_MS=7000" settings 9
     scp "${ssh_opts[@]}" "root@$dev:/tmp/gemshell-shot.png" "$outfile" >&2
-    echo "saved $outfile (scene FBO)"
+    echo "saved $outfile (scene FBO, compositor + gemsettings)"
 }
 
 logs()      { dev_ssh "journalctl -u $unit --no-pager -o cat | tail -120"; }
