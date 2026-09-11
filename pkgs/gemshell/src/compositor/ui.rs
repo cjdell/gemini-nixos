@@ -343,6 +343,51 @@ pub fn draw_window(o: &mut Vec<Op>, comp: &Compositor, win: &crate::compositor::
     line(o, cbx + 6.0, cby - 6.0, cbx - 6.0, cby + 6.0, 2.4, Color::rgba(0.8, 0.82, 0.85, 1.0));
 }
 
+/// Touch-test overlay (`GEMSHELL_TOUCH_TRAIL=1`): draw every finger's
+/// path on the scene so touch can be verified on the glass by drawing.
+/// A 3-finger touch clears the canvas (see `Compositor::touch_down`).
+pub fn draw_touch_trail(o: &mut Vec<Op>, comp: &Compositor) {
+    // Distinct colour per finger id so multitouch is visible.
+    const PALETTE: [Color; 6] = [
+        Color::rgba(0.98, 0.40, 0.42, 1.0),
+        Color::rgba(0.40, 0.85, 0.98, 1.0),
+        Color::rgba(0.55, 0.95, 0.45, 1.0),
+        Color::rgba(0.98, 0.85, 0.35, 1.0),
+        Color::rgba(0.80, 0.55, 0.98, 1.0),
+        Color::rgba(0.98, 0.60, 0.20, 1.0),
+    ];
+    let mut prev: Option<(u32, f32, f32)> = None;
+    for &(id, x, y) in &comp.trail {
+        if id == u32::MAX {
+            prev = None; // pen-up break
+            continue;
+        }
+        let c = PALETTE[(id as usize) % PALETTE.len()];
+        if let Some((pid, px, py)) = prev {
+            if pid == id {
+                line(o, px, py, x, y, 7.0, c);
+            }
+        }
+        circle(o, x, y, 5.0, c);
+        prev = Some((id, x, y));
+    }
+    // Legend so the mode is unmistakable on glass.
+    o.push(Op::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: W as f32,
+        h: 30.0,
+        c: Color::rgba(0.0, 0.0, 0.0, 0.45),
+    });
+    o.push(Op::TextCentered {
+        x: 0.0,
+        w: W as f32,
+        baseline: 21.0,
+        s: "TOUCH TEST — draw with your finger · 3 fingers clears".into(),
+        c: Color::rgba(0.98, 0.98, 0.98, 1.0),
+    });
+}
+
 /// Workspace dots above the taskbar.
 pub fn draw_workspace_dots(o: &mut Vec<Op>, comp: &Compositor) {
     let dy = H as f32 - TASKBAR_H - 14.0;

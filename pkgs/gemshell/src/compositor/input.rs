@@ -161,6 +161,18 @@ pub struct Input {
     slot_x: [f32; MAX_SLOTS],
     slot_y: [f32; MAX_SLOTS],
     slot_down: [bool; MAX_SLOTS],
+    // Per-frame MT state: which slots changed this frame and whether the
+    // change was a contact down/up. The NT36772 driver reports
+    // ABS_MT_TRACKING_ID *before* ABS_MT_POSITION_X/Y
+    // (novatek-nt36xxx.c nvt36xxx_report: input_mt_slot ->
+    // input_mt_report_slot_state -> touchscreen_report_pos), so events
+    // MUST be emitted at SYN_REPORT using the now-updated positions —
+    // emitting at TRACKING_ID time used the previous contact's (or
+    // 0,0) coordinates, which made every tap land at the origin
+    // ("no touch input at all", on glass 2026-09-12).
+    slot_changed: [bool; MAX_SLOTS],
+    slot_new_down: [bool; MAX_SLOTS],
+    slot_new_up: [bool; MAX_SLOTS],
     touch_rotate: i32,
     cur_slot: usize,
     x_range: AbsRange,
@@ -381,6 +393,9 @@ impl Input {
             slot_x: [0.0; MAX_SLOTS],
             slot_y: [0.0; MAX_SLOTS],
             slot_down: [false; MAX_SLOTS],
+            slot_changed: [false; MAX_SLOTS],
+            slot_new_down: [false; MAX_SLOTS],
+            slot_new_up: [false; MAX_SLOTS],
             touch_rotate: touch_rotate_env(),
             cur_slot: 0,
             x_range: xr,
@@ -413,6 +428,9 @@ impl Input {
             slot_x: [0.0; MAX_SLOTS],
             slot_y: [0.0; MAX_SLOTS],
             slot_down: [false; MAX_SLOTS],
+            slot_changed: [false; MAX_SLOTS],
+            slot_new_down: [false; MAX_SLOTS],
+            slot_new_up: [false; MAX_SLOTS],
             touch_rotate: touch_rotate_env(),
             cur_slot: 0,
             x_range: AbsRange { min: 0.0, max: 1079.0 },
@@ -562,7 +580,6 @@ impl Input {
 
     fn read_touch(&mut self, out: &mut Vec<Event>, scene_w: f32, scene_h: f32) {
         let mut ev = RawEvent::default();
-        let mut frame: Option<(usize, f32, f32)> = None;
         loop {
             let n = unsafe {
                 libc::read(
@@ -579,29 +596,45 @@ impl Input {
                 (EV_ABS, ABS_MT_POSITION_X) => {
                     // Store NORMALISED 0..1; the scene mapping (which
                     // includes the portrait-panel/landscape-scene
-                    // rotation) is applied below.
+                    // rotation) is applied at SYN_REPORT below.
                     self.slot_x[self.cur_slot] = self.norm(ev.value as f32, self.x_range);
+                    self.slot_changed[self.cur_slot] = true;
                 }
                 (EV_ABS, ABS_MT_POSITION_Y) => {
                     self.slot_y[self.cur_slot] = self.norm(ev.value as f32, self.y_range);
+                    self.slot_changed[self.cur_slot] = true;
                 }
                 (EV_ABS, ABS_MT_TRACKING_ID) => {
+                    // Record the down/up transition now, but do NOT emit
+                    // yet: the driver sends TRACKING_ID before the
+                    // POSITION axes, so the coordinates are only final at
+                    // SYN_REPORT (see the struct-field note).
                     let s = self.cur_slot;
-                    let (x, y) = self.touch_to_scene(s, scene_w, scene_h);
+                    self.slot_changed[s] = true;
                     if ev.value >= 0 && !self.slot_down[s] {
                         self.slot_down[s] = true;
-                        out.push(Event::TouchDown { id: s as u32, x, y });
+                        self.slot_new_down[s] = true;
                     } else if ev.value < 0 && self.slot_down[s] {
                         self.slot_down[s] = false;
-                        out.push(Event::TouchUp { id: s as u32 });
+                        self.slot_new_up[s] = true;
                     }
-                    frame = Some((s, x, y));
                 }
                 (EV_SYN, SYN_REPORT) => {
-                    if let Some((s, x, y)) = frame.take() {
-                        if self.slot_down[s] {
+                    for s in 0..MAX_SLOTS {
+                        if !(self.slot_changed[s] || self.slot_new_down[s] || self.slot_new_up[s]) {
+                            continue;
+                        }
+                        let (x, y) = self.touch_to_scene(s, scene_w, scene_h);
+                        if self.slot_new_down[s] {
+                            self.slot_new_down[s] = false;
+                            out.push(Event::TouchDown { id: s as u32, x, y });
+                        } else if self.slot_new_up[s] {
+                            self.slot_new_up[s] = false;
+                            out.push(Event::TouchUp { id: s as u32 });
+                        } else if self.slot_down[s] {
                             out.push(Event::TouchMotion { id: s as u32, x, y });
                         }
+                        self.slot_changed[s] = false;
                     }
                 }
                 _ => {}

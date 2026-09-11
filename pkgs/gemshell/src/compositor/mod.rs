@@ -222,6 +222,13 @@ pub struct Compositor {
     egui_pointer: Option<egui::Pos2>,
     /// When the settings snapshots were last reloaded (ms since start).
     settings_snapshot_ms: u64,
+    /// Touch test mode (`GEMSHELL_TOUCH_TRAIL=1`): every finger draws a
+    /// trail on the scene and normal gestures are bypassed, so touch can
+    /// be verified on the glass by drawing. A 3-finger touch clears it.
+    touch_trail: bool,
+    /// Trail points: (finger id, scene x, scene y). `id == u32::MAX` is a
+    /// pen-up break (never drawn).
+    trail: Vec<(u32, f32, f32)>,
 }
 
 impl Compositor {
@@ -347,6 +354,8 @@ impl Compositor {
                 egui_events: Vec::new(),
                 egui_pointer: None,
                 settings_snapshot_ms: 0,
+                touch_trail: std::env::var_os("GEMSHELL_TOUCH_TRAIL").is_some(),
+                trail: Vec::new(),
             };
         Ok((display, compositor))
     }
@@ -893,6 +902,24 @@ impl Compositor {
     // touch + gestures
 
     fn touch_down(&mut self, id: u32, x: f32, y: f32) {
+        // Touch test mode: draw, don't gesture. 3 fingers = clear.
+        if self.touch_trail {
+            if self.fingers.len() >= 2 {
+                self.trail.clear();
+                log::info!("touch-trail: cleared");
+            }
+            self.fingers.insert(
+                id,
+                Finger { x, y, start_x: x, start_y: y, moved: false, down_ms: util::now_ms() },
+            );
+            log::info!("touch-trail: down id={id} scene=({x:.0},{y:.0})");
+            self.trail.push((id, x, y));
+            if self.trail.len() > 8000 {
+                self.trail.drain(0..2000);
+            }
+            self.dirty = true;
+            return;
+        }
         // The settings panel is modal: every finger is an egui pointer.
         if self.settings_open {
             self.egui_move_pointer(x, y);
@@ -1025,6 +1052,18 @@ impl Compositor {
     }
 
     fn touch_motion(&mut self, id: u32, x: f32, y: f32) {
+        if self.touch_trail {
+            if let Some(f) = self.fingers.get_mut(&id) {
+                f.x = x;
+                f.y = y;
+            }
+            self.trail.push((id, x, y));
+            if self.trail.len() > 8000 {
+                self.trail.drain(0..2000);
+            }
+            self.dirty = true;
+            return;
+        }
         if self.settings_open {
             self.egui_move_pointer(x, y);
             return;
@@ -1103,6 +1142,13 @@ impl Compositor {
     }
 
     fn touch_up(&mut self, id: u32) {
+        if self.touch_trail {
+            self.fingers.remove(&id);
+            // Pen-up break so the next stroke is not connected to this one.
+            self.trail.push((u32::MAX, 0.0, 0.0));
+            self.dirty = true;
+            return;
+        }
         if self.settings_open {
             let p = self.egui_pointer.unwrap_or(egui::Pos2::ZERO);
             self.egui_pointer_button(p.x * shell::PPP, p.y * shell::PPP, false);
@@ -1928,6 +1974,9 @@ impl Compositor {
             ui::draw_switcher(&mut ops, self);
         }
         ui::draw_workspace_dots(&mut ops, self);
+        if self.touch_trail {
+            ui::draw_touch_trail(&mut ops, self);
+        }
 
         // The egui settings panel is drawn last, over the scene. Its
         // meshes are GPU triangles (no CPU rasterization).
