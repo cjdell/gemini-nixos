@@ -203,8 +203,12 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
         let path = format!("/dev/input/event{minor}");
         // Capabilities from sysfs (the capabilities/ dir; no ioctl
         // needed): ev = type bits, abs/key = the per-type code bitmaps.
+        // NOTE: the files are space-separated hex WORDS on this kernel
+        // (the key bitmap = "169000000000 35ff57ff3ffcffc"; ev/abs are
+        // single words) — OR the words together (they are disjoint
+        // 32-bit slices, so order does not matter).
         let hex = |f: &std::path::Path| -> u64 {
-            util::read_to_string(f).map(|s| u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0)).unwrap_or(0)
+            util::read_to_string(f).map(|s| s.split_whitespace().fold(0u64, |acc, t| acc | u64::from_str_radix(t, 16).unwrap_or(0))).unwrap_or(0)
         };
         let ev = hex(&base.join("capabilities/ev"));
         let abs = hex(&base.join("capabilities/abs"));
