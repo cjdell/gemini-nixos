@@ -50,29 +50,41 @@ extern "C" {
     fn eglGetProcAddress(name: *const c_char) -> *mut c_void;
 }
 
-// EGL enums
+// EGL enums — values from the Khronos EGL headers (verified against
+// libglvnd 1.7.0 `include/EGL/egl.h`/`eglext.h`, 2026-09-11).
+//
+// These were ALL WRONG in the first cut (a hall of hallucinated
+// constants: EGL_NONE = 0 instead of 0x3038, EGL_RENDERABLE_TYPE =
+// 0x3095 instead of 0x3040, dma_buf attrs 0x32D5.. instead of
+// 0x3270..). That single class of bug was the real cause of the
+// on-glass crash loop: `eglChooseConfig` was handed the list [0],
+// 0 is NOT EGL_NONE (0x3038), so the display parsed it as an unknown
+// attribute and returned EGL_BAD_ATTRIBUTE (0x3004) with 0 configs —
+// not a driver/ICD problem at all. The EGL_VENDOR_PATH/DRI_DRIVER_DIR
+// work that chased it stays (they are genuinely needed on NixOS), but
+// the config failure was here.
 const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
-const EGL_SURFACE_TYPE: u32 = 0x3031;
+const EGL_SURFACE_TYPE: u32 = 0x3033;
 const EGL_PBUFFER_BIT: u32 = 0x0001;
-const EGL_WINDOW_BIT: u32 = 0x0002;
+const EGL_WINDOW_BIT: u32 = 0x0004;
 const EGL_OPENGL_ES_API: u32 = 0x30A0;
-const EGL_OPENGL_ES3_BIT: c_int = 0x00004000;
-const EGL_RENDERABLE_TYPE: c_int = 0x3095;
+const EGL_OPENGL_ES3_BIT: c_int = 0x00000040;
+const EGL_RENDERABLE_TYPE: c_int = 0x3040;
 const EGL_RED_SIZE: c_int = 0x3024;
-const EGL_WIDTH: c_int = 0x303D;
-const EGL_HEIGHT: c_int = 0x303E;
+const EGL_WIDTH: c_int = 0x3057;
+const EGL_HEIGHT: c_int = 0x3056;
 const EGL_CONTEXT_CLIENT_VERSION: c_int = 0x3098;
-const EGL_NONE: c_int = 0;
+const EGL_NONE: c_int = 0x3038;
 const EGL_TRUE: u32 = 1;
-const EGL_EXTENSIONS: u32 = 0x3050;
+const EGL_EXTENSIONS: u32 = 0x3055;
 // EGL_EXT_image_dma_buf_import (resolved through eglGetProcAddress —
 // libglvnd's libEGL exports no extension entry points, verified
 // 2026-09-11; the mesa-geminipda ICD answers them).
-const EGL_LINUX_DMA_BUF_EXT: u32 = 0x32D5;
-const EGL_LINUX_DRM_FOURCC_EXT: c_int = 0x32D8;
-const EGL_DMA_BUF_PLANE0_FD_EXT: c_int = 0x32D9;
-const EGL_DMA_BUF_PLANE0_OFFSET_EXT: c_int = 0x32DA;
-const EGL_DMA_BUF_PLANE0_PITCH_EXT: c_int = 0x32DB;
+const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
+const EGL_LINUX_DRM_FOURCC_EXT: c_int = 0x3271;
+const EGL_DMA_BUF_PLANE0_FD_EXT: c_int = 0x3272;
+const EGL_DMA_BUF_PLANE0_OFFSET_EXT: c_int = 0x3273;
+const EGL_DMA_BUF_PLANE0_PITCH_EXT: c_int = 0x3274;
 // GL
 const DRM_FORMAT_ABGR8888: u32 = 0x34324241; // 'ABGR'
 const GL_FRAMEBUFFER: u32 = 0x8D40;
@@ -398,9 +410,9 @@ impl Renderer {
         let v = if v.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned() };
         let a = if a.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(a) }.to_string_lossy().into_owned() };
         log::info!("EGL vendor: {v} — api: {a}");
-        let dev0 = unsafe { eglQueryString(display, 0x3050) };
+        let dev0 = unsafe { eglQueryString(display, EGL_EXTENSIONS) };
         let dev0 = if dev0.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(dev0) }.to_string_lossy().into_owned() };
-        log::info!("EGL extensions: {}", if dev0.len() > 300 { format!("{}...", &dev0[..300]) } else { dev0 });
+        log::info!("EGL extensions: {}", if dev0.len() > 400 { format!("{}...", &dev0[..400]) } else { dev0 });
         if unsafe { eglBindAPI(EGL_OPENGL_ES_API) } != EGL_TRUE {
             return Err("eglBindAPI(ES) failed".into());
         }
