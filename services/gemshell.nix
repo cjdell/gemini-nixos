@@ -143,11 +143,10 @@ in
           # scanner fell back to /root and found 0 apps (and the icons
           # too). The service user's real home.
           "HOME=/home/${cfg.user}"
-          # Touch test mode (2026-09-12): draw on the background with a
-          # finger (coloured per finger; a 3-finger touch clears) to
-          # verify touch on the glass. Set to "0"/remove to restore
-          # normal gestures once touch is confirmed.
-          "GEMSHELL_TOUCH_TRAIL=1"
+          # Touch is confirmed working (2026-09-12, ABS_MT_SLOT fix), so
+          # the GEMSHELL_TOUCH_TRAIL test mode is off — normal gestures
+          # are active. To re-enable the finger-drawing overlay for
+          # debugging, add "GEMSHELL_TOUCH_TRAIL=1" here (docs/gemshell.md).
           # Apps launched from the launcher need $SHELL + a sane PATH
           # (the system-profile bin dir carries the app binaries). The
           # explicit store bins are for the gemdata-device DataProvider,
