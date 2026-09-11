@@ -1703,7 +1703,19 @@ fn pollfd(fd: RawFd, events: libc::c_short) -> libc::pollfd {
 }
 
 fn find_font() -> Option<std::path::PathBuf> {
+    // 1) GEMSHELL_FONT: an explicit path (the systemd service sets it to
+    // the store dejavu — deterministic, no store-path guessing).
+    if let Ok(p) = std::env::var("GEMSHELL_FONT") {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    // 2) the usual suspects — including the NixOS system profile
+    // (/run/current-system/sw/share/fonts; fonts.packages land there via
+    // /etc/fonts, but the profile dir is the stable one).
     for dir in [
+        "/run/current-system/sw/share/fonts",
         "/usr/share/fonts/dejavu",
         "/usr/share/fonts/truetype",
         "/usr/share/fonts/TTF",

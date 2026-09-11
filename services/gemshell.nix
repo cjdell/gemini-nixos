@@ -35,6 +35,9 @@ let
   gemshell = pkgs.callPackage ../pkgs/gemshell.nix {
     mesa = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
   };
+  # DejaVu (the fontconfig default on this device; fonts.packages in the
+  # GNOME/LXQt/Phosh modules) — the compositor's UI font.
+  fonts = pkgs.dejavu_fonts;
   # xkbcommon include dir with symbols/gemini (Fn = level-3 shift); the
   # compositor reads XKB_CONFIG_EXTRA_PATH + XKB_DEFAULT_LAYOUT when it
   # compiles the keymap (src/compositor/input.rs).
@@ -103,6 +106,10 @@ in
         Environment = [
           # Wayland socket dir (the display auto-creates wayland-0 here).
           "XDG_RUNTIME_DIR=/run/gemshell"
+          # The UI font (deterministic store path — /usr/share/fonts does
+          # not exist on NixOS; the compositor's fallback walk covers
+          # /run/current-system/sw/share/fonts too).
+          "GEMSHELL_FONT=${fonts}/share/fonts/truetype/DejaVuSans.ttf"
           # Keymap: the gemini layout (Fn = level-3) via the symbols dir.
           "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
           "XKB_DEFAULT_LAYOUT=gemini"
@@ -169,6 +176,8 @@ in
     # profile (environment.systemPackages) is the app suite. gemsettings
     # must be on PATH (the compositor spawns it by name). gemdemo is the
     # GL-client smoke test (docs/gemshell.md checklist item 6).
-    environment.systemPackages = [ gemshell gemdemo ];
+    # The UI font for the compositor (GEMSHELL_FONT above).
+    fonts.packages = [ fonts ];
+    environment.systemPackages = [ gemshell gemdemo fonts ];
   };
 }
