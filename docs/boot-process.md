@@ -240,7 +240,7 @@ all. Full analysis + the workaround ladder: `docs/repartition-android-space.md` 
 | Partition map, hardware | `GeminiPDA/docs/hardware.md` |
 | Boot.img geometry for this port, stage-1 sizing (R1), cmdline contract (R4) | `docs/mobile-nixos-port-feasibility.md` §3/§6/§7 |
 | Repurpose p32 + dual-boot proposal + shared-kernel constraint | `docs/repartition-android-space.md` |
-| Kernel identity (borrowed #329, vendored artifacts) | `README.md` "Kernel phase" + `kernel/borrowed/` |
+| Kernel source model (published v6.6 base + in-repo delta; the retired borrowed #329 under `kernel/borrowed/`) | `AGENTS.md` "Kernel source model" + `kernel/borrowed/` |
 | The initrd implementation | `devices/planet-geminipda/initrd.nix` |
 | Flash/para tooling | `bin/flash-nixos.sh`, `bin/boot-switch.sh` |
 | Reboot/poweroff power states, the limbo, WDT EXRST + MT6351 BBPU design | `docs/power-states.md` (2026-09-10) |

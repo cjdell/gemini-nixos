@@ -5,6 +5,29 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — README/AGENTS restructure (human README, operational detail to AGENTS)
+
+Docs-only. The README had grown into an agent/ops dump. Split it:
+
+- **README.md** is now a human-facing overview: what the repo is, then
+  **"What works today"** as the lead section (boot/GNOME/Wi-Fi/BT/A2DP/
+  audio/power/touch/keyboard/wine/DOSBox/graphics/recovery), the device
+  + partition layout, boot chain, a condensed layout + device-services
+  table, a documentation index, versions, a short build/flash quickstart
+  and the R1–R3 constraints.
+- **AGENTS.md** gained the moved operational detail: build model +
+  commands, the kernel published-base + in-repo-delta model, the manual
+  flash procedure + safety model, the on-device
+  `nixos-rebuild switch --flake .` loop, pins maintenance, plus the
+  formerly README-only Mesa ICD-wiring and rootfs-integration receipts.
+- **Correction [added 2026-09-11]:** README R3 still claimed "no DRM —
+  the desktop is gemwl"; superseded by the 2026-09-10 `geminipda-drm`
+  KMS driver + GNOME. R3 now says so (gemwl stays the rollback).
+- Pointer fix: `docs/boot-process.md` §8 now points the kernel-source
+  model at AGENTS (the row also still said "borrowed #329", retired
+  2026-09-08).
+- No code, no build, no flash; device untouched.
+
 ## 2026-09-11 — systemd `suspend` disabled; GNOME auto-suspend pinned off (deployed gen 22)
 
 User asked whether `systemctl suspend` is the same thing as `gemcli

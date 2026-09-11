@@ -172,7 +172,8 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 
 | Concern | File |
 |---|---|
-| Repo purpose, layout, boot chain, flash flow, phase status | `README.md` |
+| Repo purpose, layout, boot chain, current status | `README.md` |
+| Build model + commands, kernel source model, manual flash flow, on-device rebuild, pins maintenance | `AGENTS.md` (this file, below) |
 | Feasibility study + the phased plan (phase table = roadmap) | `docs/mobile-nixos-port-feasibility.md` |
 | Plain-language boot explainer (receipt pointers) | `docs/boot-process.md` |
 | **Phase-2 on-glass knowledge + TODO** (2026-09-07 milestone: bootopt discovery, recovery receipts, not-quite-working list) | `docs/phase-2-on-glass.md` |
@@ -180,7 +181,7 @@ the LK logo (~15 s WDT loop) before any kernel output (discovered
 | "Published base + in-repo delta" pattern (mesa done; kernel next) | `docs/library-deltas.md` |
 | **What was actually tried / happened** (dated entries; golden log) | `docs/session-log.md` |
 | **Disaster recovery** — full-flash-erase → TWRP playbook (levels 0–2), image ledger + sha256, gather checklist, drills | `docs/disaster-recovery/` (README · inventory · gather · drills) |
-| Flake entry; Mobile NixOS pin (`2c132754`); **nixpkgs pinned in-flake** (`dc5d91f84032`, channel rev — see README Pins); devShell (host x86_64, MNX npins) | `flake.nix` |
+| Flake entry; Mobile NixOS pin (`2c132754`); **nixpkgs pinned in-flake** (`26.11pre1068949` — see README Versions + this file's "Pins (maintenance)"); devShell (host x86_64, MNX npins) | `flake.nix` |
 | Out-of-tree device definition (boot.img geometry, borrowed kernel, minimal initrd wiring) | `devices/planet-geminipda/` |
 | Stage-2 system config (headless + g_ether SSH, services, mesa fork, systemd-BPF/cudaLLVM overlays) | `config/gemini.nix` |
 | SoC fragment (out-of-tree MT6797) | `modules/hardware-soc-mediatek-mt6797.nix` |
@@ -309,6 +310,192 @@ over i2c). ICHGR = 0 is NORMAL when load ≥ input power (power-path);
 scale 50 mA/step. No fuel gauge → voltage thresholds only (guard
 <3.65 V, orderly poweroff <3.50 V). `i2cget -f -y 0 0x6b` — the `-f` is
 MANDATORY (kernel driver claims 0x6b).
+
+## Build model & commands (native aarch64)
+
+Builds are **native aarch64** (canonical since the 2026-09-08
+native-aarch64 merge; the x86_64 cross toplevel is ABANDONED — it hit
+nixpkgs cross walls, last one Qt6CoreTools missing for the lxqt scope;
+`docs/handover-2026-09-07-lxqt-native.md`). Every drv is
+system=aarch64-linux; builds run as root against the LOCAL store with
+`--option builders @/etc/nix/machines --fallback` so the 192.168.49.191
+remote builder (8-core Pi) compiles and the host pulls finished paths
+back over ssh (`bash bin/deploy.sh build` = exactly this; run long
+builds under `bash bin/run-job.sh start <name> -- bash bin/deploy.sh
+build`):
+
+```sh
+sudo nix build --store local .#packages.aarch64-linux.default   # boot.img + rootfs.img (+ flash script)
+sudo nix build --store local .#packages.aarch64-linux.bootimg   # boot.img only (self-built lean kernel)
+sudo nix build --store local .#packages.aarch64-linux.kernel    # the kernel package alone (Image.gz+dtbs+modules)
+sudo nix build --store local .#packages.aarch64-linux.rootfs    # rootfs.img (→ `linux` partition)
+sudo nix build --store local .#packages.aarch64-linux.initrd    # minimal initrd (size measurement, docs R1)
+sudo nix build --store local .#packages.aarch64-linux.mesa      # patched nixpkgs Mesa 26.2.2 (panfrost + T880 delta)
+```
+
+Since 2026-09-08 the kernel is compiled in-nix (lean config: ~6 min
+on the aarch64 builder; the full #329 config takes much longer — the
+lean config drops 61 % of enabled symbols). Mesa is the other heavy
+build (cached in the local store once built).
+
+aarch64 note (historical): under the OLD npins rev,
+`ffmpeg`/`ffmpeg-headless` defaulted to `withCudaLLVM = true` and failed
+for aarch64, so `config/gemini.nix` carried an overlay forcing
+`withCudaLLVM = false`. **Removed 2026-09-08 with the repin**: the new
+pinned channel rev's aarch64 ffmpeg builds are on the cache. Same story
+for the systemd `withLibBPF` and openblas `dynamicArch` workaround
+overlays (old-rev/cross-era). If a real build of this rev re-hits one of
+the old bugs, re-add the specific override with a date + receipt.
+
+### Mesa ICD runtime wiring
+
+**Historical (verified in the rootfs 2026-09-05), then superseded
+2026-09-10:** originally the fork's manifest landed in `/etc` via an
+explicit `environment.etc` entry (NixOS does not merge a package's
+`$out/etc`), with a RUNPATH to its own lib dir so `libgallium-25.0.7.so`
+resolved without an ldconfig cache. Since the single-Mesa change
+(`hardware.graphics.package` = patched nixpkgs Mesa 26.2.2) there is one
+ICD at `/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json`. The
+on-glass extension check worth keeping: `eglQueryString(EGL_EXTENSIONS)`
+must list `EGL_EXT_image_dma_buf_import`.
+
+### Rootfs integration details (from the outstanding.md audit)
+
+`sramldo-smc.ko` is loaded at boot via `boot.kernelModules` (the kernel
+derivation builds it in `postInstall` and ships it under `extra/`,
+depmod-indexed); `busybox` + `i2c-tools` are system packages for the
+scripts and hand use on the serial console. `boot.kernelModules` also
+loads the DRM chain (`drm`/`drm_shmem_helper`/`gpu-sched`/`panfrost`) +
+`mt6351-keys` early (major-226 race with `wlan_gen3`), the B-19 USB
+host-PM udev rules keep USB autosuspend off, and
+`gemini-backlight-default` dims the display to 10 % at boot.
+`gemini-wdt-reboot` / `gemini-boot-recovery` exist as CLIs *and*
+hand-started systemd units. The bash-shebang rewrite (feasibility §7
+R10) is applied at package time so the verbatim Debian scripts exec on
+the NixOS rootfs.
+
+## Kernel source model (published base + in-repo delta; self-contained since 2026-09-08)
+
+The kernel is **built in-repo** — no borrowed #329 artifacts, no
+GeminiPDA dependency, no vendored source (full receipt:
+`docs/session-log.md` 2026-09-08).
+
+- **base** = the published upstream Linux **v6.6** release tarball
+  (kernel.org, fetched by hash) — byte-identical to `git archive v6.6`
+  of the geminipda-bringup base commit `ffc253263a…`, which is also
+  pinned as a git submodule pointer at `kernel/base` (fetch on demand:
+  `git submodule update --init --depth 1 kernel/base`);
+- **delta** = `devices/planet-geminipda/kernel/delta/` — the 512 plain
+  files the bring-up branch changes over v6.6 (457 added + 55 modified,
+  no deletions; NO patch files — edit source directly).
+  `v6.6-base + delta == geminipda-bringup @ 188aade69` (the on-glass
+  #329 tree), verified byte-for-byte; refresh with
+  `bin/sync-kernel-delta.sh`;
+- **config** = the LEAN device config (`./config`, generated by
+  `bin/prune-kernel-config.sh` from `config.full-329`, the exact #329
+  config kept for A/B). Prunes hardware that can never exist on this
+  unit: 4,213 → 1,655 enabled after olddefconfig (61 % fewer symbols);
+  result: Image.gz 8.0 MiB (was 13.5), 388 modules (was 1,165), DTB
+  byte-identical to #329.
+
+`kernel/borrowed/` (the #329 payload/DTB/module-tree/config) and
+`devices/planet-geminipda/kernel-borrowed.nix` remain on disk as the
+pre-verification reference/rollback.
+
+## Flashing (manual — no fastboot)
+
+**Tooling is in-repo and ready** (see the cheat sheet above):
+`bin/flash-nixos.sh` orchestrates the whole pipeline — it converges the
+device to TWRP from **any** state (running Linux via para-write + WDT
+EXRST self-boot over ssh, Android via adb, or POC/offline with prompts),
+then flashes. `bin/boot-switch.sh` is the adb/TWRP boot-target state
+machine underneath; device state over ssh = `bin/device-ssh.sh` /
+`bin/net-up.sh` (g_ether, 10.15.19.82).
+
+1. Build: `nix build .#packages.aarch64-linux.default` → `result/`
+   with `boot.img` + `system.img` (the NixOS rootfs, ~8 GB with GNOME).
+2. `bash bin/flash-nixos.sh status` — device state + local artifacts.
+3. `bash bin/flash-nixos.sh boot` — backs up the current `boot`, flashes
+   `boot.img` → p22 `boot` (16 MiB). Stays in TWRP.
+4. `bash bin/flash-nixos.sh rootfs --yes` — **streams** `system.img` →
+   p27 `linux` (58 GiB ext4, label `NIXOS_SYSTEM`; destroys the current
+   NixOS rootfs). First boot auto-resizes the fs to fill p27 and
+   rehydrates the Nix store. (Run under `bin/run-job.sh` — ~8 GB.)
+5. `bash bin/flash-nixos.sh boot-nixos` — clear para + reboot: LK →
+   initrd → p27 `linux` → NixOS stage-2.
+
+**A repartition (TWRP + NixOS only) is a one-way operation** handled by
+`bin/repartition-nixos.sh` — see `docs/repartition-android-space.md`
+§12. After it there is only one OS, so no para-based OS switching.
+
+**Safety model:** an unverified boot image that hangs has no software
+path back (recovery = mtkclient preloader mode), so the scripts default
+to para = boot-recovery (TWRP sticky) until you explicitly boot the new
+image, and every `boot` flash is backed up to `stock-dump/` first
+(`bin/boot-switch.sh restore` rolls back). Rollback of the rootfs =
+reflash `system.img`; p27 `linux` is the only partition these scripts
+write.
+
+## On-device build/switch — `nixos-rebuild switch --flake .`
+
+Since 2026-09-09 the flake exposes `nixosConfigurations.gemini`, so the
+STOCK NixOS tool works on the device. The PDA is a first-class flake
+target: a repo clone at `/root/gemini-nixos` (sync with this host via
+`bin/device-repo.sh` seed/push/pull or the github origin) can iterate the
+config and add programs with NO host involved:
+
+```sh
+# on the device (root, in the repo clone at /root/gemini-nixos):
+nixos-rebuild list-generations --flake .     # what is installed / selectable
+# edit config/gemini.nix, git add + commit, then:
+nixos-rebuild build --flake .                # eval + build on the PDA (no activation)
+nixos-rebuild switch --flake .               # profile switch + activate (no reflash)
+# ...and the classic ad-hoc shell:
+nix-shell -p pkgname        # pinned to the same nixpkgs rev as the flake (rule 9)
+```
+
+`--flake .` resolves to `.#nixosConfigurations.gemini` (the device
+hostname). The flake exposes that configuration (single eval shared
+with `packages.aarch64-linux.toplevel` — the SAME toplevel derivation,
+verified 2026-09-09), so `nixos-rebuild` builds, sets the system profile
+and runs switch-to-configuration exactly as `bin/device-rebuild.sh` /
+`bin/deploy.sh` do by hand. `nixos-rebuild` (the Python nixos-rebuild-ng
+— the bash one is gone from nixpkgs at this pin) lands in the system
+closure by default, and MNX's rootfs postBootCommands created
+`/etc/NIXOS` + the system profile at first boot. Every toplevel records
+the git rev of the tree it was built from
+(`system.configurationRevision` → `nixos-rebuild list-generations` /
+`nixos-version --configuration-revision`; a dirty tree shows as
+`<sha>-dirty`) — commit before switching so the generation is a clean
+commit (rule 0). `bin/device-rebuild.sh` stays as the convenience
+wrapper (status/rollback/gc + the `channels` re-pin for `nix-shell -p`);
+rollback without it = `nixos-rebuild --rollback switch --flake .`.
+
+Builds are native aarch64 into the device store (store writes flow
+through the socket-activated nix-daemon — `/nix/store` is bind-mounted
+ro in the main namespace by design). The pinned nixpkgs rev substitutes
+from cache.nixos.org over the device's wifi/USB NAT; only the custom
+drvs (mesa, kernel, wlroots/labwc/gemwl, firmware) and config glue
+compile locally. Kill the in-tree build via run-job or the daemon
+(cap: `max-jobs = 2`, `cores = 2` — 3.6 GiB RAM bound; a zram/swapfile
+is the open improvement).
+
+## Pins (maintenance)
+
+- **Mobile NixOS**: commit `2c132754` (branch `development`), fetched
+  as a pinned tarball by `flake.nix` (it is not a flake, so nix 2.34
+  cannot use it as a flake input). Bump the SHA in `flake.nix`.
+- **nixpkgs**: pinned by **this flake** (`flake.nix`) — chosen rev =
+  the nixos-unstable **channel snapshot** `dc5d91f84032`
+  (`26.11pre1068949`). Bump = take the rev behind
+  `https://channels.nixos.org/nixos-unstable/git-revision`, re-verify
+  the narHash (`nix flake prefetch github:NixOS/nixpkgs/<rev>`), and
+  re-pin the device's `nix-shell -p` channel
+  (`bin/device-rebuild.sh channels`). See rule 9.
+- **Kernel**: `bin/sync-kernel-delta.sh` folds a new fork rev into the
+  delta (default `06fd13e11`); the delta now deliberately DIVERGES from
+  the fork in five files, so the script ABORTS and lists them — pass
+  `FORCE=1` only after folding local work into the fork.
 
 ## Conventions
 
