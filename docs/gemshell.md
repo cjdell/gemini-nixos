@@ -9,11 +9,44 @@ Registered as a choosable session — `gemcli session set gemshell` —
 alongside gnome / cosmic / niri / console
 (docs/desktop-selection.md).
 
-Status: **aarch64 build green (2026-09-11)** —
-`nix build .#packages.aarch64-linux.gemshell` succeeds on the remote
-builder (binaries `gemshell` + `gemsettings`, RUNPATH pinned per the
-gemdemo receipt). Host loop: `bash bin/gemshell-host-check.sh`
-(seconds). On-glass bring-up checklist still owed — see below.
+Status: **on glass (2026-09-11)** — the compositor boots, imports the LK
+framebuffer (GPU-direct present), renders the shell UI, and runs clients;
+`gemsettings` is a real client (Wi-Fi / Bluetooth / Audio). Nested x86_64
+dev loop: `bash bin/gemshell-nested.sh` (host EGL/GBM + wl_shm, seconds
+per iteration). Host check: `bash bin/gemshell-host-check.sh`.
+**Owed: a human look at the glass to confirm the orientation/rotation
+direction + touch calibration.** Full receipt: session-log 2026-09-11
+"gemshell ON GLASS".
+
+## Orientation (landscape product / portrait fb)
+
+The Gemini is a landscape clamshell but the LK framebuffer is a
+**portrait 1080x2160** buffer. gemwl renders its landscape scene with
+`WL_OUTPUT_TRANSFORM_90`; `geminipda-drm` advertises panel-orientation
+`LEFT_UP` (=90) for the same reason (driver header, 2026-09-10). gemshell
+follows: the logical scene is **2160x1080** (`compositor::W/H`), and
+`present()` counter-rotates 90 into the fb in the compute copy
+(`COPY_CS`, `fbSize`/`srcSize`/`rotation` uniforms). Touch evdev is
+portrait like the fb; `Input::touch_to_scene` applies the matching
+inverse rotation.
+
+- `GEMSHELL_ROTATE` (default 90) — display counter-rotation.
+- `GEMSHELL_TOUCH_ROTATE` (default = `GEMSHELL_ROTATE`).
+
+Because display and touch use the same transform, an incorrect direction
+would look wrong but still hit the right controls; confirm visually.
+
+## Nested mode on x86_64 (development)
+
+`GEMSHELL_NESTED=1` (via `bin/gemshell-nested.sh`) runs gemshell as a
+**Wayland client** under the host compositor: headless EGL/GBM on
+`/dev/dri/renderD128`, the scene FBO read back and presented into an
+`xdg_toplevel` via `wl_shm` (nearest-neighbour downscale,
+`GEMSHELL_NESTED_SCALE`, default 0.5), and the host's
+pointer/keyboard/touch forwarded into gemshell's own seat. Children
+connect to the `wayland-gemshell` socket. This is the fast UI loop — no
+device flash. `GEMSHELL_AUTOSTART=gemsettings` puts a client on screen.
+Build: `nix build .#packages.x86_64-linux.gemshell`.
 
 Build gotchas found the hard way (2026-09-11, aarch64 nix build —
 the host `cargo check` never links, so all of these died only on the

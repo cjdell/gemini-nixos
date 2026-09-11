@@ -5,6 +5,75 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — gemshell ON GLASS: compositor renders; gemsettings; nested x86_64; landscape
+
+The gemshell compositor's first cut built but crash-looped on the PDA.
+This session found and fixed the whole chain, got real pixels on glass,
+implemented the `gemsettings` client, added a nested x86_64 dev loop,
+and fixed the orientation (a landscape product on a portrait fb).
+
+**Headline bugs (all in the first cut, all now fixed — details in
+`gemshell:` commits `efff9ad`, `21a89c5`, `fcf7117` + docs/gemshell.md):**
+
+- **EGL enums were hallucinated** (`EGL_NONE = 0` instead of `0x3038`,
+  `EGL_RENDERABLE_TYPE = 0x3095/0x3040`, width/height, extensions, the
+  dma_buf attrs `0x32D5..` vs `0x3270..`). With `0 != EGL_NONE`
+  `eglChooseConfig` returned `EGL_BAD_ATTRIBUTE (0x3004)` + 0 configs —
+  chased on glass as an ICD/`EGL_VENDOR_PATH` problem. Audited every
+  constant against libglvnd 1.7.0 headers.
+- **`EGLConfig` was `c_void` not `*mut c_void`** → `eglChooseConfig`
+  wrote 8-byte handles into 1-byte slots (stack corruption).
+- **GL constants also wrong**: `GL_COMPUTE_SHADER 0x8DA2` (0x91B9),
+  `GL_RGBA8 0x8D53` (0x8058), framebuffer barrier `0x20` (0x400),
+  `GL_BLEND 0x0BE0` (=GL_BLEND_DST; glEnable silently no-op, no alpha).
+- **`glShaderSource` given a string, not an array-of-pointers** (3
+  sites) — Mesa read the shader text as a pointer (SEGV).
+- **`GEMFB_IOC_EXPORT` returns the dma-buf fd as the ioctl result**; the
+  code read the ignored arg and treated the positive return as an error.
+- **`aPos`/`aUv` looked up with `glGetUniformLocation`** (→ -1) so no
+  geometry drew; the frame was only the clear colour.
+- `wl_keyboard.key` must carry the raw evdev scancode (the old `+8`
+  double-offset every client); `EVIOCGABS` direction/type/nr were wrong;
+  `xdg_surface.configure` was never sent (no standard client could map).
+- Launcher: honour `XDG_DATA_DIRS`/`$XDG_DATA_HOME` (NixOS has no
+  `/usr/share/applications` → 0 apps) and set `HOME` for the service.
+
+**On glass (gen, transient unit via `bin/gemshell-dev.sh`):** the
+compositor boots, `GL: OpenGL ES 3.1 Mesa 26.2.2`, imports the LK fb
+(`GEMFB_IOC_EXPORT`), builds the scene FBO + present target, launches its
+socket and renders. `GEMSHELL_SCREENSHOT` (scene-FBO PNG) confirms the
+full UI: status bar, taskbar, windows, text, icons.
+
+**Orientation:** the product is landscape but the LK fb is PORTRAIT
+1080x2160 (gemwl uses `WL_OUTPUT_TRANSFORM_90`; `geminipda-drm`
+advertises `LEFT_UP`=90 for the same reason). The scene is now
+2160x1080 and `present()` counter-rotates 90 into the fb; touch is
+un-rotated with the matching inverse. `GEMSHELL_ROTATE` /
+`GEMSHELL_TOUCH_ROTATE` allow on-glass calibration. **Owed: a human
+look at the glass to confirm the rotation direction** (the same
+transform as gemwl should be right, but it is unverified).
+
+**`gemsettings`** was a `fn main() {}` stub; it is now a real wl_shm
+client (Wi-Fi via nmcli, Bluetooth via bluetoothctl, Audio via wpctl;
+wl_touch + xkb password entry), 1600x940 landscape.
+
+**Nested dev loop on x86_64** (`bin/gemshell-nested.sh`, `GEMSHELL_NESTED=1`):
+runs gemshell as a Wayland client under the workstation compositor
+(headless EGL/GBM on `/dev/dri/renderD128`, wl_shm present of the scene
+FBO, host pointer/keyboard/touch forwarded). Verified on zen3
+(radeonsi): compositor + gemsettings render, 59 apps / 92 icons. This
+makes UI iteration seconds instead of a device flash. Flake exposes
+`packages.x86_64-linux.gemshell`.
+
+**Caution noted:** CPU `mmap`+read of the LK fb dma-buf
+(`GEMSHELL_SCREENSHOT_FB`) HUNG the unit until the WDT reset it
+(2026-09-11); `geminipda-fb.c`'s `gemfb_mmap` now bounds the remap to
+the VMA length, and the path stays unused until re-verified on a
+throwaway boot.
+
+Next: on-glass visual/human confirmation of orientation + touch
+calibration, then the docs/gemshell.md on-glass checklist.
+
 ## 2026-09-11 — gemshell: the Rust compositor reaches BUILD-LEVEL (aarch64 build green; session wiring in; on-glass owed)
 
 The gemshell compositor (this repo's custom Rust desktop —
