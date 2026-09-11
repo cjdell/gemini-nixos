@@ -68,6 +68,10 @@ pub struct SettingsState {
     /// Screen backlight, raw sysfs value + its max (Display tab).
     pub brightness: i32,
     pub brightness_max: i32,
+    /// Current compositor UI scale (Display tab), and the value the user
+    /// picked this frame (the compositor applies it).
+    pub ui_scale: f32,
+    pub requested_scale: Option<f32>,
 }
 
 impl Default for SettingsState {
@@ -84,6 +88,8 @@ impl Default for SettingsState {
             audio: AudioState::default(),
             brightness: 0,
             brightness_max: 100,
+            ui_scale: 1.0,
+            requested_scale: None,
         }
     }
 }
@@ -92,6 +98,9 @@ impl Default for SettingsState {
 pub struct UiFrame {
     pub primitives: Vec<egui::ClippedPrimitive>,
     pub textures: egui::TexturesDelta,
+    /// The user picked a new UI scale this frame (Settings > Display);
+    /// the compositor applies it (`Compositor::set_ui_scale`).
+    pub requested_scale: Option<f32>,
 }
 
 pub struct ShellUi {
@@ -118,15 +127,25 @@ impl ShellUi {
         ShellUi { ctx, state: SettingsState::default() }
     }
 
+    /// Set egui's pixels-per-point. Includes the compositor UI scale so a
+    /// 150/200% panel is rasterized at full resolution (crisp), not
+    /// upscaled from the 100% atlas.
+    pub fn set_ppp(&mut self, ppp: f32) {
+        if ppp > 0.0 {
+            self.ctx.set_pixels_per_point(ppp);
+        }
+    }
+
     /// Reload every snapshot from the provider (shell-outs; call on open,
     /// after a mutation, or on a slow timer — never per frame).
-    pub fn refresh(&mut self, data: &dyn DataProvider) {
+    pub fn refresh(&mut self, data: &dyn DataProvider, ui_scale: f32) {
         self.state.wifi = data.wifi();
         self.state.bt = data.bluetooth();
         self.state.audio = data.audio();
         let s = data.status();
         self.state.brightness = s.brightness;
         self.state.brightness_max = s.brightness_max;
+        self.state.ui_scale = ui_scale;
         self.state.need_refresh = false;
     }
 
@@ -144,7 +163,8 @@ impl ShellUi {
             state.need_refresh = false;
         }
         let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
-        UiFrame { primitives, textures: full.textures_delta }
+        let requested_scale = state.requested_scale.take();
+        UiFrame { primitives, textures: full.textures_delta, requested_scale }
     }
 }
 
@@ -441,6 +461,22 @@ fn audio_ui(ui: &mut egui::Ui, data: &dyn DataProvider, st: &mut SettingsState) 
 // ---------- Display ----------
 
 fn display_ui(ui: &mut egui::Ui, data: &dyn DataProvider, st: &mut SettingsState) {
+    // ---- UI scale ----
+    ui.label(RichText::new("Interface scale").size(19.0).color(FG));
+    ui.horizontal(|ui| {
+        for (label, value) in [("100%", 1.0f32), ("150%", 1.5), ("200%", 2.0)] {
+            let selected = (st.ui_scale - value).abs() < 0.01;
+            if ui.selectable_label(selected, RichText::new(label).size(18.0)).clicked() && !selected {
+                st.ui_scale = value;
+                st.requested_scale = Some(value);
+            }
+        }
+    });
+    muted(ui, "Applies to the whole desktop (chrome, launcher and text).");
+    ui.add_space(6.0);
+    ui.separator();
+
+    // ---- brightness ----
     let max = st.brightness_max.max(1);
     let mut pct = ((st.brightness.max(0) as i64 * 100) / max as i64).clamp(0, 100) as i32;
     ui.horizontal(|ui| {

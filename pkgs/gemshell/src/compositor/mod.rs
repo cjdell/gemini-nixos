@@ -215,6 +215,13 @@ pub struct Compositor {
     /// monotonic serial for xdg_surface.configure
     configure_serial: u32,
     keymap_str: Option<String>,
+    /// Logical UI size in scene units: `W/ui_scale` × `H/ui_scale`. All
+    /// layout (chrome, launcher, windows, snap rects) is in these units;
+    /// the renderer maps them across the full physical viewport.
+    pub lw: f32,
+    pub lh: f32,
+    /// UI scale (1.0 / 1.5 / 2.0), changed from Settings > Display.
+    pub ui_scale: f32,
     pub snap_preview: Snap,
     pub snap_win: Option<u32>,
     present_time_ms: u64,
@@ -306,6 +313,7 @@ impl Compositor {
             nested_client = None;
         }
         let keymap_str = input.keymap_string();
+        let ui_scale = Self::load_ui_scale();
 
         let display = Display::new().map_err(|e| format!("wayland display: {e}"))?;
         let handle = display.handle();
@@ -375,6 +383,9 @@ impl Compositor {
                 start_ms: util::now_ms(),
                 serial: 1,
                 keymap_str,
+                lw: W as f32 / ui_scale,
+                lh: H as f32 / ui_scale,
+                ui_scale,
                 snap_preview: Snap::None,
                 snap_win: None,
                 present_time_ms: util::now_ms(),
@@ -617,6 +628,11 @@ impl Compositor {
                 && (pfd[kbd_idx.unwrap()].revents & libc::POLLIN != 0
                     || pfd[touch_idx.unwrap()].revents & libc::POLLIN != 0)
             {
+                // NOTE: `read_events` maps touch into the full-resolution
+                // scene. The layout (chrome/windows/gestures) is LOGICAL
+                // (`lw`×`lh`), so convert on the way in; the renderer scales
+                // logical back up to physical (2026-09-11).
+                let iscale = self.ui_scale;
                 for ev in self.input.read_events(W as f32, H as f32) {
                     match ev {
                         input::Event::Key {
@@ -631,11 +647,11 @@ impl Compositor {
                         }
                         input::Event::TouchDown { id, x, y } => {
                             self.serial += 1;
-                            self.touch_down(id, x, y);
+                            self.touch_down(id, x / iscale, y / iscale);
                         }
                         input::Event::TouchMotion { id, x, y } => {
                             self.serial += 1;
-                            self.touch_motion(id, x, y);
+                            self.touch_motion(id, x / iscale, y / iscale);
                         }
                         input::Event::TouchUp { id } => {
                             self.serial += 1;
@@ -900,6 +916,8 @@ impl Compositor {
 
     /// Feed a scene-pixel point into egui's pointer (egui is in points).
     fn egui_move_pointer(&mut self, x: f32, y: f32) {
+        // `x`/`y` are LOGICAL scene units; egui points are logical / PPP
+        // (the screen rect passed to egui is `lw/PPP` × `lh/PPP`).
         let p = egui::pos2(x / shell::PPP, y / shell::PPP);
         self.egui_pointer = Some(p);
         self.egui_events.push(egui::Event::PointerMoved(p));
@@ -963,13 +981,16 @@ impl Compositor {
             // the cached one immediately; the new one arrives via
             // `data_rx` + `need_refresh` (2026-09-11).
             self.data.refresh();
-            self.shell.refresh(&*self.data);
+            self.shell.refresh(&*self.data, self.ui_scale);
             self.settings_snapshot_ms = now;
         }
         let screen = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(W as f32 / shell::PPP, H as f32 / shell::PPP),
+            egui::vec2(self.lw / shell::PPP, self.lh / shell::PPP),
         );
+        // egui's font atlas is rasterized at `pixels_per_point`; include
+        // the UI scale so 150/200% text is crisp, not upscaled.
+        self.shell.set_ppp(self.egui_ppp());
         let events = std::mem::take(&mut self.egui_events);
         let input = egui::RawInput {
             screen_rect: Some(screen),
@@ -978,6 +999,9 @@ impl Compositor {
             ..Default::default()
         };
         let frame = self.shell.run(&*self.data, input);
+        if let Some(scale) = frame.requested_scale {
+            self.set_ui_scale(scale);
+        }
         if self.shell.state.close {
             self.settings_open = false;
             self.shell.state.close = false;
@@ -1054,7 +1078,7 @@ impl Compositor {
             self.gesture = Gesture::None; // tap resolved on up
             return;
         }
-        if y < STATUS_H || y > H as f32 - TASKBAR_H {
+        if y < STATUS_H || y > self.lh - TASKBAR_H {
             self.pending_tap = Some((x, y));
             self.gesture = Gesture::None;
             return;
@@ -1175,8 +1199,8 @@ impl Compositor {
                     .map(|w| w.maximized || w.snap != Snap::None)
                     .unwrap_or(false);
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
-                    w.x = (x - off_dx).clamp(0.0, W as f32 - w.w);
-                    w.y = (y - off_dy).clamp(STATUS_H, H as f32 - TASKBAR_H - 40.0);
+                    w.x = (x - off_dx).clamp(0.0, self.lw - w.w);
+                    w.y = (y - off_dy).clamp(STATUS_H, self.lh - TASKBAR_H - 40.0);
                 }
                 if needs_unsnap {
                     self.unmaximize(win);
@@ -1189,7 +1213,7 @@ impl Compositor {
                     return;
                 };
                 if active {
-                    self.ws_pos = (self.ws_pos - (cx - last_x) / W as f32)
+                    self.ws_pos = (self.ws_pos - (cx - last_x) / self.lw)
                         .clamp(0.0, (N_WORKSPACES - 1) as f32);
                 }
                 if let Gesture::WorkspaceSwipe { last_x: lx, .. } = &mut self.gesture {
@@ -1222,7 +1246,7 @@ impl Compositor {
                 // old hard clamp was `[-600, 0]` — the wrong sign, so a
                 // swipe-up was clamped straight back to 0 and only three
                 // rows were ever reachable (2026-09-12).
-                let max = (ui::launcher_content_h(self.apps.len()) - H as f32).max(0.0);
+                let max = (ui::launcher_content_h(self.apps.len()) - self.lh).max(0.0);
                 self.launcher_scroll = self.launcher_scroll.clamp(0.0, max);
                 if let Gesture::LauncherScroll { last_y: ly, .. } = &mut self.gesture {
                     *ly = y;
@@ -1320,13 +1344,13 @@ impl Compositor {
         if x < edge {
             return Snap::Left;
         }
-        if x > W as f32 - edge {
+        if x > self.lw - edge {
             return Snap::Right;
         }
         if y < STATUS_H + edge {
             return Snap::Top;
         }
-        if y > H as f32 - TASKBAR_H - edge {
+        if y > self.lh - TASKBAR_H - edge {
             return Snap::Bottom;
         }
         Snap::None
@@ -1338,7 +1362,7 @@ impl Compositor {
     fn handle_tap(&mut self, x: f32, y: f32) {
         if self.launcher_open {
             // Explicit Close button (top-right).
-            let (bx, by) = ui::launcher_close_pos();
+            let (bx, by) = ui::launcher_close_pos(self.lw);
             if (x - bx).abs() < 100.0 && (y - by).abs() < 50.0 {
                 self.launcher_open = false;
                 self.dirty = true;
@@ -1346,7 +1370,7 @@ impl Compositor {
             }
             let n = self.apps.len();
             for i in 0..n {
-                let (cx, cy) = ui::launcher_tile_pos(i, self.launcher_scroll);
+                let (cx, cy) = ui::launcher_tile_pos(i, self.launcher_scroll, self.lw);
                 if x > cx - 70.0 && x < cx + 70.0 && y > cy - 70.0 && y < cy + 80.0 {
                     self.launch_app(i);
                     self.launcher_open = false;
@@ -1363,8 +1387,8 @@ impl Compositor {
             let cw = 220.0;
             let gap = 24.0;
             let total = n as f32 * cw + (n - 1) as f32 * gap;
-            let x0 = (W as f32 - total) / 2.0;
-            let y0 = H as f32 / 2.0 - 120.0;
+            let x0 = (self.lw - total) / 2.0;
+            let y0 = self.lh / 2.0 - 120.0;
             for i in 0..n {
                 let tx = x0 + i as f32 * (cw + gap);
                 if x > tx - 6.0 && x < tx + cw + 6.0 && y > y0 - 6.0 && y < y0 + 252.0 {
@@ -1378,7 +1402,7 @@ impl Compositor {
             return;
         }
         if y < STATUS_H {
-            for (name, cx) in ui::status_zones() {
+            for (name, cx) in ui::status_zones(self.lw) {
                 if (x - cx).abs() < ui::ZONE_HALF {
                     match name {
                         "settings" | "sound" | "wifi" | "bluetooth" => self.open_settings(),
@@ -1390,7 +1414,7 @@ impl Compositor {
             }
             return;
         }
-        if y > H as f32 - TASKBAR_H {
+        if y > self.lh - TASKBAR_H {
             if x < ui::LAUNCHER_X + ui::LAUNCHER_S + 8.0 {
                 self.launcher_open = !self.launcher_open;
                 self.switcher_open = false;
@@ -1401,7 +1425,7 @@ impl Compositor {
                 self.visible_windows().iter().map(|w| (w.id, w.workspace)).collect();
             let mut tx = ui::TILE_X0;
             for (wid, ws) in tiles {
-                if tx + ui::TILE_S > W as f32 {
+                if tx + ui::TILE_S > self.lw {
                     break;
                 }
                 if x >= tx && x < tx + ui::TILE_S {
@@ -1552,7 +1576,7 @@ impl Compositor {
         self.shell.state.close = false;
         self.shell.state.status.clear();
         // Instant: read the cache + queue a fresh snapshot on the worker.
-        self.shell.refresh(&*self.data);
+        self.shell.refresh(&*self.data, self.ui_scale);
         self.data.refresh();
         self.settings_snapshot_ms = util::now_ms().saturating_sub(self.start_ms);
         self.dirty = true;
@@ -1689,6 +1713,59 @@ impl Compositor {
         }
     }
 
+    /// egui points-per-pixel including the UI scale: the panel is laid
+    /// out in `lw/PPP` points and rendered at `PPP * ui_scale` device px
+    /// per point, so its glyph atlas stays crisp at 150 / 200%.
+    pub fn egui_ppp(&self) -> f32 {
+        shell::PPP * self.ui_scale
+    }
+
+    /// Change the UI scale (1.0 / 1.5 / 2.0), from Settings > Display.
+    /// Re-lays out the chrome/windows and re-configures clients so they
+    /// can reflow; persists to `$HOME/.config/gemshell/scale`.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        let scale = scale.clamp(1.0, 2.0);
+        if (scale - self.ui_scale).abs() < 0.001 {
+            return;
+        }
+        self.ui_scale = scale;
+        self.lw = W as f32 / scale;
+        self.lh = H as f32 / scale;
+        self.renderer.ui_scale = scale;
+        // Windows keep their logical geometry; tell clients to reflow.
+        let ids: Vec<u32> = self
+            .windows
+            .iter()
+            .filter(|w| !w.is_popup)
+            .map(|w| w.id)
+            .collect();
+        for id in ids {
+            self.request_configure(id);
+        }
+        self.save_ui_scale(scale);
+        self.dirty = true;
+        log::info!("ui scale -> {scale}");
+    }
+
+    fn save_ui_scale(&self, scale: f32) {
+        if let Some(home) = std::env::var_os("HOME") {
+            let dir = std::path::PathBuf::from(home).join(".config/gemshell");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Err(e) = std::fs::write(dir.join("scale"), format!("{scale}")) {
+                log::warn!("save ui scale: {e}");
+            }
+        }
+    }
+
+    fn load_ui_scale() -> f32 {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(|h| std::fs::read_to_string(h.join(".config/gemshell/scale")).ok())
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map(|s| s.clamp(1.0, 2.0))
+            .unwrap_or(1.0)
+    }
+
     /// `xdg_toplevel.move` from a client (a CSD header-bar drag). We have
     /// no pointer device, so move with the finger that is currently down.
     pub fn begin_client_move(&mut self, win: u32) {
@@ -1723,10 +1800,10 @@ impl Compositor {
             surface,
             title: String::new(),
             app_id: String::new(),
-            x: x.clamp(0.0, W as f32 - 10.0),
-            y: y.clamp(STATUS_H, H as f32 - TASKBAR_H - 10.0),
-            w: w.clamp(40.0, W as f32 as f32),
-            h: h.clamp(40.0, H as f32 as f32),
+            x: x.clamp(0.0, self.lw - 10.0),
+            y: y.clamp(STATUS_H, self.lh - TASKBAR_H - 10.0),
+            w: w.clamp(40.0, self.lw as f32),
+            h: h.clamp(40.0, self.lh as f32),
             buffer: None,
             workspace: self.ws_target as u32,
             minimized: false,
@@ -1756,7 +1833,7 @@ impl Compositor {
         parent
             .and_then(|p| self.windows.iter().find(|w| w.id == p))
             .map(|w| (w.x, w.y, w.w, w.h))
-            .unwrap_or((W as f32 / 2.0, H as f32 / 2.0, 200.0, 200.0))
+            .unwrap_or((self.lw / 2.0, self.lh / 2.0, 200.0, 200.0))
     }
 
     pub fn set_title(&mut self, win: u32, title: String) {
@@ -1817,8 +1894,8 @@ impl Compositor {
                 w.snap = Snap::Max;
                 w.x = 0.0;
                 w.y = STATUS_H;
-                w.w = W as f32;
-                w.h = H as f32 - STATUS_H - TASKBAR_H;
+                w.w = self.lw;
+                w.h = self.lh - STATUS_H - TASKBAR_H;
             } else {
                 self.unmaximize(win);
                 return;
@@ -1855,9 +1932,9 @@ impl Compositor {
         let Some(w) = self.windows.iter_mut().find(|w| w.id == win) else {
             return;
         };
-        let sw = W as f32;
+        let sw = self.lw;
         let st = STATUS_H;
-        let sb = H as f32 - TASKBAR_H;
+        let sb = self.lh - TASKBAR_H;
         w.maximized = false;
         match snap {
             Snap::Left => {
@@ -2070,13 +2147,13 @@ impl Compositor {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.buffer = Some(buf.clone());
             if !w.maximized && w.snap == Snap::None && !w.is_popup {
-                let bw = (buf.w as f32).min(W as f32 - 16.0);
-                let bh = (buf.h as f32).min(H as f32 - STATUS_H - TASKBAR_H - TITLEBAR_H - 16.0);
+                let bw = (buf.w as f32).min(self.lw - 16.0);
+                let bh = (buf.h as f32).min(self.lh - STATUS_H - TASKBAR_H - TITLEBAR_H - 16.0);
                 if (bw - w.w).abs() > 1.0 || (bh - w.h).abs() > 1.0 {
                     w.w = bw;
                     w.h = bh;
-                    w.x = w.x.clamp(0.0, W as f32 - bw);
-                    w.y = w.y.clamp(STATUS_H, H as f32 - TASKBAR_H - bh);
+                    w.x = w.x.clamp(0.0, self.lw - bw);
+                    w.y = w.y.clamp(STATUS_H, self.lh - TASKBAR_H - bh);
                 }
             }
             let _ = tex;
@@ -2120,14 +2197,17 @@ impl Compositor {
     // rendering
 
     fn render_frame(&mut self) {
+        // The renderer maps logical units (lw×lh) across the physical
+        // viewport; keep it in sync with the Settings scale.
+        self.renderer.ui_scale = self.ui_scale;
         let mut ops: Vec<render::Op> = Vec::with_capacity(256);
-        ui::draw_background(&mut ops);
+        ui::draw_background(&mut ops, self.lw, self.lh);
 
         // windows per visible workspace (with the slide offset)
         let p = self.ws_pos;
         for ws in 0..N_WORKSPACES {
-            let off = (ws as f32 - p) * W as f32;
-            if off < -(W as f32) || off > W as f32 {
+            let off = (ws as f32 - p) * self.lw;
+            if off < -(self.lw) || off > self.lw {
                 continue;
             }
             for win in self.windows.iter().filter(|w| w.workspace == ws && !w.minimized) {
@@ -2158,7 +2238,8 @@ impl Compositor {
         self.renderer.begin_frame();
         self.renderer.replay(&self.font, &ops);
         if let Some(frame) = &egui_frame {
-            self.renderer.draw_egui(&frame.primitives, &frame.textures, shell::PPP);
+            self.renderer
+                .draw_egui(&frame.primitives, &frame.textures, self.egui_ppp());
         }
         if let Err(e) = self.renderer.present() {
             log::error!("present: {e}");
@@ -2206,10 +2287,10 @@ impl Compositor {
 
 /// The snap rect for a zone (drawn by ui, applied to windows by the
 /// compositor) — one source of truth.
-pub fn snap_rect(snap: Snap, _win: Option<u32>) -> (f32, f32, f32, f32) {
-    let sw = W as f32;
+pub fn snap_rect(snap: Snap, _win: Option<u32>, lw: f32, lh: f32) -> (f32, f32, f32, f32) {
+    let sw = lw;
     let st = STATUS_H;
-    let sb = H as f32 - TASKBAR_H;
+    let sb = lh - TASKBAR_H;
     match snap {
         Snap::Left => (0.0, st, sw / 2.0, sb - st),
         Snap::Right => (sw / 2.0, st, sw / 2.0, sb - st),

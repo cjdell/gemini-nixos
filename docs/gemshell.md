@@ -53,6 +53,61 @@ host-verified, deploy pending:
   slider); the Audio tab now lists the `gemini_speakers` filter sink as
   "Built-in Speakers" next to "Headphones / Jack" (see Settings panel).
 
+### 2026-09-11 second glass-report batch
+
+Three more glass reports; build + host verified, deployed to the unit:
+
+- **"Apps don't launch at all".** GTK4's
+  `gdk/wayland/gdkdisplay-wayland.c` refuses the whole display unless
+  the compositor exposes **`wl_data_device_manager`** ("The Wayland
+  compositor does not provide one or more of the required interfaces, not
+  using Wayland display"), and the app then dies with "Failed to open
+  display". Added the global plus minimal dispatch for
+  `wl_data_device_manager` / `wl_data_source` / `wl_data_device`
+  (clipboard is a no-op for now). Receipt: gnome-calculator stays
+  running on the device (`MESA-EGL: failed to get driver name` warnings
+  are from libmutter preferring the render node; the app still runs).
+- **Settings froze for seconds and handled taps from 30 s+ ago.** The
+  panel synchronously ran a ~1–2 s nmcli/bluetoothctl/wpctl snapshot on
+  the compositor thread on open and every 3 s, and every slider step
+  queued another. New `compositor::data::CachedData` wraps the provider:
+  reads come from an in-memory snapshot (instant), mutations run on a
+  worker, refreshes are coalesced (`refresh_pending`), and mutations are
+  coalesced **by kind, last-wins** and run *before* the snapshot, so a
+  fast mutation (devmem backlight) is never stuck behind `nmcli`.
+  Brightness/volume/mute do not request a snapshot at all. Poll interval
+  3 s → 8 s. The panel stays responsive during a `wpctl` call because
+  the compositor never blocks on it.
+- **Two sets of window chrome (two close buttons).** GTK4 assumes CSD
+  when the compositor does not advertise `xdg-decoration`, so it drew its
+  own header bar while gemshell drew the SSD titlebar. Added
+  `zxdg_decoration_manager_v1` (default **client-side**: GNOME/libadwaita
+  apps draw a header bar regardless, so advertising server-side would
+  give two bars). `Window.csd` makes the SSD titlebar
+  (`draw_window`), the content offset (`content_rect` /
+  `local_coords`) and the titlebar hit-test switch. Clients that prefer
+  SSD send `set_mode(server_side)` and get the compositor titlebar.
+  `xdg_toplevel.move` (a CSD header-bar drag) now moves the window with
+  the finger that is down.
+
+### Variable UI scale
+
+Settings > Display offers **100% / 150% / 200%**. Design:
+
+- The compositor lays out in **logical units** `lw = W/ui_scale`,
+  `lh = H/ui_scale` (`Compositor::{lw,lh,ui_scale}`); `Renderer::ui_scale`
+  maps logical → the full physical viewport in the vertex shader
+  (`uRes = width/ui_scale`), so the existing pixel-space ops just work.
+- UI text is rasterized into the glyph atlas at `26 × SUP` (`SUP = 2`) and
+  every metric is divided by SUP, so text stays crisp at 150/200% (and is
+  downscaled by linear filtering at 100%).
+- egui (`pixels_per_point = PPP × ui_scale`) is rasterized at the scaled
+  resolution too; the panel's screen rect stays `lw/PPP` points.
+- Touch is read in physical scene coordinates and converted to logical at
+  ingest (`x / ui_scale`) so hit-tests line up at every scale.
+- The scale persists to `$HOME/.config/gemshell/scale` and is re-applied
+  at boot; changing it re-configures toplevels so clients reflow.
+
 ## Orientation (landscape product / portrait fb)
 
 The Gemini is a landscape clamshell but the LK framebuffer is a

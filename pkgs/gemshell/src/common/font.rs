@@ -44,6 +44,13 @@ pub struct Font {
 pub const CHARSET: &str =
     " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~£°•";
 
+/// Supersample factor for the glyph atlas. Glyphs are rasterized at
+/// `px * SUP` and every metric in [`Placed`] is divided by `SUP`, so text
+/// stays crisp when the compositor UI scale (`ui_scale`, 1.0–2.0) makes a
+/// glyph occupy `px * ui_scale` physical pixels. SUP=2 covers 100–200%
+/// (at 100% the atlas is downscaled, which linear filtering handles well).
+pub const SUP: f32 = 2.0;
+
 impl Font {
     pub fn load(path: &str, px: f32, atlas_size: u32) -> Result<Self, String> {
         let data = std::fs::read(path).map_err(|e| format!("read font {path}: {e}"))?;
@@ -55,7 +62,9 @@ impl Font {
         let mut cy: u32 = 1;
         let mut row_h: u32 = 0;
 
-        let scale = PxScale::from(px);
+        // Raster the outline larger than requested; metrics are reported
+        // in the requested (`px`) units (see SUP above).
+        let scale = PxScale::from(px * SUP);
         let scaled = face.as_scaled(scale);
         for c in CHARSET.chars() {
             let id = face.glyph_id(c);
@@ -70,7 +79,7 @@ impl Font {
             let Some(outline) = face.outline_glyph(glyph) else {
                 // no outline (space / missing glyph) — still reserve the
                 // advance so text layout works
-                let advance = scaled.h_advance(id);
+                let advance = scaled.h_advance(id) / SUP;
                 glyphs.insert(
                     c,
                     Placed { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 0, h: 0, advance, x_off: 0.0, y_top: 0.0 },
@@ -124,9 +133,9 @@ impl Font {
                 out[o + 2] = a;
                 out[o + 3] = a;
             }
-            let advance = scaled.h_advance(id);
-            let x_off = bounds.min.x; // raster left edge, relative to pen
-            let y_top = -bounds.min.y; // raster top edge, above baseline
+            let advance = scaled.h_advance(id) / SUP;
+            let x_off = bounds.min.x / SUP; // raster left edge, relative to pen
+            let y_top = -bounds.min.y / SUP; // raster top edge, above baseline
             glyphs.insert(
                 c,
                 Placed {

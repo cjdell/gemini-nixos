@@ -409,6 +409,10 @@ unsafe fn platform_display(platform: u32, native: *mut c_void) -> EGLDisplay {
 pub struct Renderer {
     pub width: u32,
     pub height: u32,
+    /// UI scale (1.0 / 1.5 / 2.0). The compositor lays out in LOGICAL
+    /// units (`width/ui_scale` × `height/ui_scale`) and this shader maps
+    /// them across the full physical viewport. See `Compositor::ui_scale`.
+    pub ui_scale: f32,
     display: EGLDisplay,
     context: EGLContext,
     /// surfaceless (EGL_NO_SURFACE) — see the attrs comment above
@@ -702,6 +706,7 @@ impl Renderer {
         let mut r = Renderer {
             width,
             height,
+            ui_scale: 1.0,
             display,
             context,
             surface: std::ptr::null_mut(),
@@ -1025,7 +1030,12 @@ impl Renderer {
             glDisable(GL_CULL_FACE);
             glEnable(GL_BLEND);
             glUseProgram(self.program);
-            glUniform2f(self.u_res, self.width as f32, self.height as f32);
+            let s = if self.ui_scale > 0.01 { self.ui_scale } else { 1.0 };
+            glUniform2f(
+                self.u_res,
+                self.width as f32 / s,
+                self.height as f32 / s,
+            );
             glBindBuffer(GL_ARRAY_BUFFER, self.vbo);
             glEnableVertexAttribArray(self.a_pos);
             glEnableVertexAttribArray(self.a_uv);
@@ -1158,8 +1168,8 @@ impl Renderer {
                 self.rect_tex(
                     pen + g.x_off,
                     top,
-                    g.w as f32,
-                    g.h as f32,
+                    g.w as f32 / crate::common::font::SUP,
+                    g.h as f32 / crate::common::font::SUP,
                     g.u0,
                     g.v0,
                     g.u1,
@@ -1207,16 +1217,16 @@ impl Renderer {
             if gx >= x + w {
                 break;
             }
-            let gw = (g.w as f32).min(x + w - gx);
+            let gw = (g.w as f32 / crate::common::font::SUP).min(x + w - gx);
             let top = baseline - g.y_top;
             self.rect_tex(
                 gx,
                 top,
                 gw,
-                g.h as f32,
+                g.h as f32 / crate::common::font::SUP,
                 g.u0,
                 g.v0,
-                g.u0 + (g.u1 - g.u0) * gw / g.w as f32,
+                g.u0 + (g.u1 - g.u0) * gw / (g.w as f32 / crate::common::font::SUP),
                 g.v1,
                 self.glyph_tex,
                 c,

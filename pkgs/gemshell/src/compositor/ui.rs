@@ -161,8 +161,8 @@ pub fn app_icon(o: &mut Vec<Op>, comp: &Compositor, app: usize, cx: f32, cy: f32
 /// The status-bar tap zones — the single source of truth shared by the
 /// draw and the hit-test. (name, cx) — half-width is ZONE_HALF.
 pub const ZONE_HALF: f32 = 26.0;
-pub fn status_zones() -> Vec<(&'static str, f32)> {
-    let mut x = W as f32 - 16.0;
+pub fn status_zones(lw: f32) -> Vec<(&'static str, f32)> {
+    let mut x = lw - 16.0;
     let mut z = vec![];
     x -= 44.0;
     z.push(("battery", x - 22.0));
@@ -178,13 +178,13 @@ pub fn status_zones() -> Vec<(&'static str, f32)> {
 }
 
 pub fn draw_status_bar(o: &mut Vec<Op>, comp: &Compositor) {
-    rect(o, 0.0, 0.0, W as f32, STATUS_H, BAR_BG);
+    rect(o, 0.0, 0.0, comp.lw, STATUS_H, BAR_BG);
     let t = format!("{:02}:{:02}", comp.status.hour, comp.status.minute);
     o.push(Op::Text { x: 14.0, baseline: STATUS_H - 12.0, s: t, c: BAR_FG });
 
     let cy = STATUS_H / 2.0;
     let s = 15.0;
-    for (name, cx) in status_zones() {
+    for (name, cx) in status_zones(comp.lw) {
         match name {
             "battery" => {
                 icon_battery(o, cx, cy, s, comp.status.battery, comp.status.charging, BAR_FG);
@@ -208,8 +208,8 @@ pub const TILE_S: f32 = 56.0;
 pub const TILE_GAP: f32 = 14.0;
 
 pub fn draw_taskbar(o: &mut Vec<Op>, comp: &Compositor) {
-    let y = H as f32 - TASKBAR_H;
-    rect(o, 0.0, y, W as f32, TASKBAR_H, BAR_BG);
+    let y = comp.lh - TASKBAR_H;
+    rect(o, 0.0, y, comp.lw, TASKBAR_H, BAR_BG);
     let cy = y + TASKBAR_H / 2.0;
     let s = LAUNCHER_S;
 
@@ -218,7 +218,7 @@ pub fn draw_taskbar(o: &mut Vec<Op>, comp: &Compositor) {
 
     let mut x = TILE_X0;
     for win in comp.visible_windows() {
-        if x + TILE_S > W as f32 - 16.0 {
+        if x + TILE_S > comp.lw - 16.0 {
             break;
         }
         let focused = comp.focus == Some(win.id);
@@ -230,7 +230,7 @@ pub fn draw_taskbar(o: &mut Vec<Op>, comp: &Compositor) {
 }
 
 pub fn draw_snap_preview(o: &mut Vec<Op>, comp: &Compositor) {
-    let (x, y, w, h) = crate::compositor::snap_rect(comp.snap_preview, comp.snap_win);
+    let (x, y, w, h) = crate::compositor::snap_rect(comp.snap_preview, comp.snap_win, comp.lw, comp.lh);
     rect(o, x, y, w, h, ACCENT_SOFT);
     rect(o, x, y, w, 3.0, ACCENT);
     rect(o, x, y + h - 3.0, w, 3.0, ACCENT);
@@ -245,8 +245,8 @@ pub const LAUNCHER_TILE: f32 = 120.0;
 pub const LAUNCHER_ROW_H: f32 = 184.0;
 pub const LAUNCHER_START_Y: f32 = 140.0;
 
-pub fn launcher_tile_pos(i: usize, scroll: f32) -> (f32, f32) {
-    let cw = (W as f32 - 2.0 * LAUNCHER_MARGIN) / LAUNCHER_COLS as f32;
+pub fn launcher_tile_pos(i: usize, scroll: f32, lw: f32) -> (f32, f32) {
+    let cw = (lw - 2.0 * LAUNCHER_MARGIN) / LAUNCHER_COLS as f32;
     let gap = (cw - LAUNCHER_TILE) / 2.0;
     let row = i / LAUNCHER_COLS;
     let col = i % LAUNCHER_COLS;
@@ -264,16 +264,16 @@ pub fn launcher_content_h(n: usize) -> f32 {
 }
 
 /// Centre of the launcher `Close` button (top-right, inside the status bar).
-pub fn launcher_close_pos() -> (f32, f32) {
-    (W as f32 - 110.0, 74.0)
+pub fn launcher_close_pos(lw: f32) -> (f32, f32) {
+    (lw - 110.0, 74.0)
 }
 
 pub fn draw_launcher(o: &mut Vec<Op>, comp: &Compositor) {
-    rect(o, 0.0, 0.0, W as f32, H as f32, OVERLAY_BG);
-    o.push(Op::TextCentered { x: 0.0, w: W as f32, baseline: 90.0, s: "Apps".into(), c: BAR_FG });
+    rect(o, 0.0, 0.0, comp.lw, comp.lh, OVERLAY_BG);
+    o.push(Op::TextCentered { x: 0.0, w: comp.lw, baseline: 90.0, s: "Apps".into(), c: BAR_FG });
     for (i, app) in comp.apps.iter().enumerate() {
-        let (cx, cy) = launcher_tile_pos(i, comp.launcher_scroll);
-        if cy < 40.0 || cy > H as f32 - 40.0 {
+        let (cx, cy) = launcher_tile_pos(i, comp.launcher_scroll, comp.lw);
+        if cy < 40.0 || cy > comp.lh - 40.0 {
             continue;
         }
         app_icon(o, comp, i, cx, cy, 120.0);
@@ -286,7 +286,7 @@ pub fn draw_launcher(o: &mut Vec<Op>, comp: &Compositor) {
         });
     }
     // Close affordance (a tap anywhere outside a tile also closes).
-    let (bx, by) = launcher_close_pos();
+    let (bx, by) = launcher_close_pos(comp.lw);
     rounded(o, bx - 84.0, by - 34.0, 168.0, 68.0, 34.0, WIN_BG);
     o.push(Op::TextCentered {
         x: bx - 84.0,
@@ -298,14 +298,14 @@ pub fn draw_launcher(o: &mut Vec<Op>, comp: &Compositor) {
 }
 
 pub fn draw_switcher(o: &mut Vec<Op>, comp: &Compositor) {
-    rect(o, 0.0, 0.0, W as f32, H as f32, OVERLAY_BG);
+    rect(o, 0.0, 0.0, comp.lw, comp.lh, OVERLAY_BG);
     let wins = comp.switcher_windows();
     let n = wins.len().max(1);
     let cw = 220.0;
     let gap = 24.0;
     let total = n as f32 * cw + (n - 1) as f32 * gap;
-    let x0 = (W as f32 - total) / 2.0;
-    let y = H as f32 / 2.0 - 120.0;
+    let x0 = (comp.lw - total) / 2.0;
+    let y = comp.lh / 2.0 - 120.0;
     for (i, win) in wins.iter().enumerate() {
         let x = x0 + i as f32 * (cw + gap);
         let sel = i == comp.switcher_index;
@@ -322,16 +322,16 @@ pub fn draw_switcher(o: &mut Vec<Op>, comp: &Compositor) {
     }
     o.push(Op::TextCentered {
         x: 0.0,
-        w: W as f32,
-        baseline: H as f32 / 2.0 + 180.0,
+        w: comp.lw,
+        baseline: comp.lh / 2.0 + 180.0,
         s: "Fn+S / 2-finger up — switch".into(),
         c: MUTED,
     });
 }
 
 /// Background fill (the whole scene).
-pub fn draw_background(o: &mut Vec<Op>) {
-    rect(o, 0.0, 0.0, W as f32, H as f32, BG);
+pub fn draw_background(o: &mut Vec<Op>, lw: f32, lh: f32) {
+    rect(o, 0.0, 0.0, lw, lh, BG);
 }
 
 /// A window (chrome + content) at slide offset `off`.
@@ -404,13 +404,13 @@ pub fn draw_touch_trail(o: &mut Vec<Op>, comp: &Compositor) {
     o.push(Op::Rect {
         x: 0.0,
         y: 0.0,
-        w: W as f32,
+        w: comp.lw,
         h: 30.0,
         c: Color::rgba(0.0, 0.0, 0.0, 0.45),
     });
     o.push(Op::TextCentered {
         x: 0.0,
-        w: W as f32,
+        w: comp.lw,
         baseline: 21.0,
         s: "TOUCH TEST — draw with your finger · 3 fingers clears".into(),
         c: Color::rgba(0.98, 0.98, 0.98, 1.0),
@@ -419,12 +419,12 @@ pub fn draw_touch_trail(o: &mut Vec<Op>, comp: &Compositor) {
 
 /// Workspace dots above the taskbar.
 pub fn draw_workspace_dots(o: &mut Vec<Op>, comp: &Compositor) {
-    let dy = H as f32 - TASKBAR_H - 14.0;
+    let dy = comp.lh - TASKBAR_H - 14.0;
     for ws in 0..crate::compositor::N_WORKSPACES {
         let sel = (ws as f32 - comp.ws_target_f()).abs() < 0.5;
         circle(
             o,
-            W as f32 / 2.0 + (ws as i32 - 1) as f32 * 22.0,
+            comp.lw / 2.0 + (ws as i32 - 1) as f32 * 22.0,
             dy,
             if sel { 5.0 } else { 3.5 },
             if sel { ACCENT } else { Color::rgba(0.5, 0.52, 0.56, 1.0) },
