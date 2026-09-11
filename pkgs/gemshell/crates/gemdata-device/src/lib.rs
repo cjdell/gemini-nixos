@@ -204,34 +204,82 @@ pub fn parse_wpctl_volume(out: &str) -> (f32, bool) {
     (volume, muted)
 }
 
-/// `wpctl status` → the `Sinks:` block as [`AudioSink`]s.
+/// `wpctl status` → the audio *sink* nodes as [`AudioSink`]s.
+///
+/// Two places can hold a settable output:
+///  - the `Sinks:` block (the hardware ALSA sink), where `wpctl` prints
+///    the human description and a leading `*` for the default;
+///  - the `Filters:` block, where the L/R-correcting virtual sink
+///    `gemini_speakers` appears tagged `[Audio/Sink]` (2026-09-10q).
+/// The old parser only looked in `Sinks:`, so the settings panel could
+/// never offer “Built-in Speakers” (2026-09-12).
+///
+/// The `name` here is whatever `wpctl status` showed (description for the
+/// hardware sink, node name for the filter sink); [`DeviceData::audio`]
+/// later resolves a human description via `wpctl inspect`.
 pub fn parse_wpctl_status_sinks(out: &str) -> Vec<AudioSink> {
-    let mut sinks = Vec::new();
-    let mut in_sinks = false;
+    let mut sinks: Vec<AudioSink> = Vec::new();
+    let mut section = String::new();
     for line in out.lines() {
-        let t = line.trim_end();
-        if t.trim_start().starts_with("Sinks:") {
-            in_sinks = true;
+        let cleaned: String =
+            line.chars().filter(|c| !matches!(c, '│' | '├' | '└' | '─')).collect();
+        let t = cleaned.trim();
+        if t.is_empty() {
             continue;
         }
-        if !in_sinks {
-            continue;
+        if let Some(name) = t.strip_suffix(':') {
+            if matches!(name, "Devices" | "Sinks" | "Sources" | "Filters" | "Streams") {
+                section = name.to_string();
+                continue;
+            }
         }
-        if t.trim().is_empty() {
-            break;
-        }
-        let trimmed = t.trim_start();
-        let default = trimmed.starts_with('*');
-        let rest = trimmed.trim_start_matches('*').trim_start();
-        let Some(dot) = rest.find('.') else { continue };
-        let Ok(id) = rest[..dot].trim().parse::<u32>() else { continue };
-        let mut name = rest[dot + 1..].trim().to_string();
+        let default = t.starts_with('*');
+        let body = t
+            .trim_start_matches('*')
+            .trim_start()
+            .trim_start_matches('-')
+            .trim_start();
+        let Some(dot) = body.find('.') else { continue };
+        let Ok(id) = body[..dot].trim().parse::<u32>() else { continue };
+        let mut name = body[dot + 1..].trim().to_string();
         if let Some(b) = name.find('[') {
             name = name[..b].trim().to_string();
+        }
+        if name.is_empty() {
+            continue;
+        }
+        // In `Sinks:` every entry is a sink; elsewhere only the
+        // `[Audio/Sink]`-tagged filter node counts (skip its
+        // `[Stream/Output/Audio]` companion and other blocks).
+        if section != "Sinks" && !t.contains("[Audio/Sink]") {
+            continue;
+        }
+        if sinks.iter().any(|s| s.id == id.to_string()) {
+            continue;
         }
         sinks.push(AudioSink { id: id.to_string(), name, default });
     }
     sinks
+}
+
+/// Extract one quoted `key = "value"` property from `wpctl inspect`.
+pub fn parse_wpctl_prop(out: &str, key: &str) -> Option<String> {
+    for line in out.lines() {
+        let t = line.trim_start_matches(|c: char| matches!(c, '│' | '├' | '└' | '─' | ' ' | '*'));
+        if let Some(rest) = t.strip_prefix(key) {
+            if let Some(rest) = rest.trim_start().strip_prefix('=') {
+                return Some(rest.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `wpctl inspect @DEFAULT_SINK@` → the default sink's `node.name`
+/// (`wpctl status` marks a `*` only inside the `Sinks:` block, so the
+/// filter default has to be resolved this way).
+pub fn parse_wpctl_default_name(out: &str) -> Option<String> {
+    parse_wpctl_prop(out, "node.name")
 }
 
 /// `bluetoothctl show` → `(powered, discovering)`.
@@ -427,7 +475,26 @@ impl gemdata::DataProvider for DeviceData {
     fn audio(&self) -> AudioState {
         let (volume, muted) =
             parse_wpctl_volume(&read_cmd("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]));
-        let sinks = parse_wpctl_status_sinks(&read_cmd("wpctl", &["status"]));
+        let mut sinks = parse_wpctl_status_sinks(&read_cmd("wpctl", &["status"]));
+        // Resolve each sink's human description + node name, and mark the
+        // default even when it is a filter sink (no `*` in `wpctl
+        // status`): `gemini_speakers` shows only its node name there, so
+        // the panel would otherwise list "gemini_speakers" (2026-09-12).
+        let default_name =
+            parse_wpctl_default_name(&read_cmd("wpctl", &["inspect", "@DEFAULT_SINK@"]));
+        for s in &mut sinks {
+            let info = read_cmd("wpctl", &["inspect", &s.id]);
+            if let Some(desc) = parse_wpctl_prop(&info, "node.description") {
+                if !desc.is_empty() {
+                    s.name = desc;
+                }
+            }
+            if let Some(node) = parse_wpctl_prop(&info, "node.name") {
+                if default_name.as_deref() == Some(node.as_str()) {
+                    s.default = true;
+                }
+            }
+        }
         AudioState { volume, muted, sinks }
     }
 
@@ -507,22 +574,51 @@ mod tests {
     }
 
     #[test]
-    fn wpctl_sinks() {
+    fn wpctl_sinks_includes_filter_sink() {
+        // Real `wpctl status` shape: the hardware sink lives in `Sinks:`
+        // with a `*`; the virtual sink lives in `Filters:` tagged
+        // `[Audio/Sink]` (with a `[Stream/Output/Audio]` companion that
+        // must be ignored).
         let out = "\
 Audio
- ├─ Devices:
- │
- Sinks:
-   *   41. Built-in Audio Analogue Stereo [vol: 0.40]
-       55. gemini_speakers                          [vol: 1.00]
- └─ Sources:
+ \u{251c}\u{2500} Devices:
+ \u{2502}      46. Built-in Audio                      [alsa]
+ \u{2502}  
+ \u{251c}\u{2500} Sinks:
+ \u{2502}  *   51. Headphones / Jack                   [vol: 0.61]
+ \u{2502}  
+ \u{251c}\u{2500} Sources:
+ \u{2502}  
+ \u{251c}\u{2500} Filters:
+ \u{2502}    - gemini_speakers
+ \u{2502}      34. gemini_speakers                          [Audio/Sink]
+ \u{2502}      36. gemini_speakers.output                   [Stream/Output/Audio]
+ \u{2502}  
+ \u{2514}\u{2500} Streams:
 ";
         let s = parse_wpctl_status_sinks(out);
         assert_eq!(s.len(), 2);
         assert!(s[0].default);
-        assert_eq!(s[0].id, "41");
-        assert_eq!(s[0].name, "Built-in Audio Analogue Stereo");
-        assert_eq!(s[1].id, "55");
+        assert_eq!(s[0].id, "51");
+        assert_eq!(s[0].name, "Headphones / Jack");
+        assert_eq!(s[1].id, "34");
+        assert_eq!(s[1].name, "gemini_speakers");
+        assert!(!s[1].default);
+    }
+
+    #[test]
+    fn wpctl_props() {
+        let out = "\
+  * node.description = \"Built-in Speakers\"
+  * node.name = \"gemini_speakers\"
+  * media.class = \"Audio/Sink\"
+";
+        assert_eq!(parse_wpctl_prop(out, "node.name").as_deref(), Some("gemini_speakers"));
+        assert_eq!(
+            parse_wpctl_prop(out, "node.description").as_deref(),
+            Some("Built-in Speakers")
+        );
+        assert_eq!(parse_wpctl_default_name(out).as_deref(), Some("gemini_speakers"));
     }
 
     #[test]

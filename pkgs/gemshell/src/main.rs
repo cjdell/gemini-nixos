@@ -38,7 +38,7 @@ fn unbind_fbcons() {
 fn main() {
     // Nested mode (x86_64 development): run as a client under the host
     // compositor. Env-driven so the same binary is used everywhere.
-    let nested = std::env::var_os("GEMSHELL_NESTED").is_some();
+    let nested = common::util::env_flag("GEMSHELL_NESTED");
     if !nested {
         unbind_fbcons();
     }

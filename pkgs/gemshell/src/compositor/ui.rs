@@ -239,20 +239,33 @@ pub fn draw_snap_preview(o: &mut Vec<Op>, comp: &Compositor) {
 }
 
 /// Launcher grid geometry (shared by draw + hit-test).
+pub const LAUNCHER_COLS: usize = 3;
+pub const LAUNCHER_MARGIN: f32 = 60.0;
+pub const LAUNCHER_TILE: f32 = 120.0;
+pub const LAUNCHER_ROW_H: f32 = 184.0;
+pub const LAUNCHER_START_Y: f32 = 140.0;
+
 pub fn launcher_tile_pos(i: usize, scroll: f32) -> (f32, f32) {
-    const COLS: usize = 3;
-    const MARGIN: f32 = 60.0;
-    const TILE: f32 = 120.0;
-    const ROW_H: f32 = 184.0;
-    const START_Y: f32 = 140.0;
-    let cw = (W as f32 - 2.0 * MARGIN) / COLS as f32;
-    let gap = (cw - TILE) / 2.0;
-    let row = i / COLS;
-    let col = i % COLS;
+    let cw = (W as f32 - 2.0 * LAUNCHER_MARGIN) / LAUNCHER_COLS as f32;
+    let gap = (cw - LAUNCHER_TILE) / 2.0;
+    let row = i / LAUNCHER_COLS;
+    let col = i % LAUNCHER_COLS;
     (
-        MARGIN + col as f32 * cw + gap + TILE / 2.0,
-        START_Y - scroll + row as f32 * ROW_H + TILE / 2.0,
+        LAUNCHER_MARGIN + col as f32 * cw + gap + LAUNCHER_TILE / 2.0,
+        LAUNCHER_START_Y - scroll + row as f32 * LAUNCHER_ROW_H + LAUNCHER_TILE / 2.0,
     )
+}
+
+/// Total scrollable content height for `n` apps (used to clamp the
+/// scroll so the last row can always be reached).
+pub fn launcher_content_h(n: usize) -> f32 {
+    let rows = n.div_ceil(LAUNCHER_COLS);
+    LAUNCHER_START_Y + rows as f32 * LAUNCHER_ROW_H + 40.0
+}
+
+/// Centre of the launcher `Close` button (top-right, inside the status bar).
+pub fn launcher_close_pos() -> (f32, f32) {
+    (W as f32 - 110.0, 74.0)
 }
 
 pub fn draw_launcher(o: &mut Vec<Op>, comp: &Compositor) {
@@ -272,6 +285,16 @@ pub fn draw_launcher(o: &mut Vec<Op>, comp: &Compositor) {
             c: BAR_FG,
         });
     }
+    // Close affordance (a tap anywhere outside a tile also closes).
+    let (bx, by) = launcher_close_pos();
+    rounded(o, bx - 84.0, by - 34.0, 168.0, 68.0, 34.0, WIN_BG);
+    o.push(Op::TextCentered {
+        x: bx - 84.0,
+        w: 168.0,
+        baseline: by + 10.0,
+        s: "Close".into(),
+        c: BAR_FG,
+    });
 }
 
 pub fn draw_switcher(o: &mut Vec<Op>, comp: &Compositor) {

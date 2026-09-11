@@ -11,6 +11,16 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Treat an environment variable as a boolean flag: set and not one of
+/// the false-y spellings ("", "0", "false", "no", "off"). `is_some()`
+/// alone made `GEMSHELL_OPEN_SETTINGS=0` open the panel.
+pub fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"),
+        Err(_) => false,
+    }
+}
+
 /// Read a file as a string; None on any error.
 pub fn read_to_string(p: &std::path::Path) -> Option<String> {
     fs::read_to_string(p).ok()

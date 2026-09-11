@@ -8,7 +8,7 @@
 
 // `Font as _` — the local `pub struct Font` shadows the ab_glyph trait
 // name; importing the trait anonymously keeps its methods in scope.
-use ab_glyph::{Font as _, FontArc, Glyph, Point, PxScale};
+use ab_glyph::{Font as _, FontArc, Glyph, Point, PxScale, ScaleFont as _};
 use std::collections::HashMap;
 
 /// One placed glyph: atlas UVs + pixel metrics.
@@ -55,11 +55,13 @@ impl Font {
         let mut cy: u32 = 1;
         let mut row_h: u32 = 0;
 
+        let scale = PxScale::from(px);
+        let scaled = face.as_scaled(scale);
         for c in CHARSET.chars() {
             let id = face.glyph_id(c);
             let glyph = Glyph {
                 id,
-                scale: PxScale::from(px),
+                scale,
                 position: Point {
                     x: 0.0,
                     y: 0.0,
@@ -68,7 +70,7 @@ impl Font {
             let Some(outline) = face.outline_glyph(glyph) else {
                 // no outline (space / missing glyph) — still reserve the
                 // advance so text layout works
-                let advance = face.h_advance_unscaled(id) * px;
+                let advance = scaled.h_advance(id);
                 glyphs.insert(
                     c,
                     Placed { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, w: 0, h: 0, advance, x_off: 0.0, y_top: 0.0 },
@@ -97,6 +99,14 @@ impl Font {
             // negative min.y (i.e. everything above the baseline) out of
             // its own raster and produced an all-zero atlas — the
             // on-glass "no text" (2026-09-12).
+            //
+            // The ADVANCE had a second, independent bug: it used
+            // `h_advance_unscaled` (raw font units, ~600) * px, giving
+            // ~16 000 px per glyph. `Op::Text` then only ever showed the
+            // first character and `Op::TextCentered` computed a pen
+            // thousands of px off-screen (all launcher labels/titles
+            // invisible). Use the SCALED advance; the units/em division
+            // lives in ab_glyph (2026-09-11).
             let mut buf = vec![0f32; (w * h) as usize];
             outline.draw(|x, y, cv| {
                 if x < w && y < h {
@@ -114,7 +124,7 @@ impl Font {
                 out[o + 2] = a;
                 out[o + 3] = a;
             }
-            let advance = face.h_advance_unscaled(id) * px;
+            let advance = scaled.h_advance(id);
             let x_off = bounds.min.x; // raster left edge, relative to pen
             let y_top = -bounds.min.y; // raster top edge, above baseline
             glyphs.insert(

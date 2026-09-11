@@ -310,7 +310,7 @@ impl Compositor {
         let apps = apps::scan(&home);
         log::info!("{} apps from .desktop files", apps.len());
         let icons = icons::load(&home);
-        log::info!("{} icons loaded", icons.map.len());
+        log::info!("{} PNG + {} SVG icons indexed", icons.map.len(), icons.svg.len());
 
         let compositor = Compositor {
             gbm_dev,
@@ -354,7 +354,7 @@ impl Compositor {
                 egui_events: Vec::new(),
                 egui_pointer: None,
                 settings_snapshot_ms: 0,
-                touch_trail: std::env::var_os("GEMSHELL_TOUCH_TRAIL").is_some(),
+                touch_trail: util::env_flag("GEMSHELL_TOUCH_TRAIL"),
                 trail: Vec::new(),
             };
         Ok((display, compositor))
@@ -367,11 +367,10 @@ impl Compositor {
     /// Upload app icon textures (premultiplied) once at startup.
     pub fn upload_app_icons(&mut self) {
         // snapshot the app list: the loop below mutably borrows
-        // self.renderer while reading app/icon data
+        // self.renderer/self.icons while reading app data
         let apps = self.apps.clone();
-        let iconset = &self.icons;
         for (i, app) in apps.iter().enumerate() {
-            let Some(icon) = icons::for_app(iconset, &app.icon, &app.path) else {
+            let Some(icon) = icons::for_app(&mut self.icons, &app.icon, &app.path) else {
                 continue;
             };
             let scale = 96.0f32 / icon.w.max(icon.h) as f32;
@@ -422,10 +421,14 @@ impl Compositor {
         // this and therefore connect to US, not the host compositor.
         std::env::set_var("WAYLAND_DISPLAY", &sock_name);
         self.upload_app_icons();
-        // Dev convenience: open the in-process settings panel immediately
-        // (bin/gemshell-nested.sh / bin/gemshell-dev.sh screenshots).
-        if std::env::var_os("GEMSHELL_OPEN_SETTINGS").is_some() {
+        // Dev convenience: open the in-process settings panel / launcher
+        // immediately (bin/gemshell-nested.sh / bin/gemshell-dev.sh
+        // screenshots). An env var set to 0/empty/false counts as OFF.
+        if util::env_flag("GEMSHELL_OPEN_SETTINGS") {
             self.open_settings();
+        }
+        if util::env_flag("GEMSHELL_OPEN_LAUNCHER") {
+            self.launcher_open = true;
         }
         // Dev convenience: GEMSHELL_AUTOSTART=<client> launches a
         // client right away (bin/gemshell-nested.sh).
@@ -459,7 +462,24 @@ impl Compositor {
         let sock_idx = pfd.len() - 1;
 
         loop {
-            let timeout = if self.dirty || self.animating() { 0 } else { 16 };
+            // Frame pacing: 0 when a frame is due, else the remainder of
+            // the ~60 Hz interval, else a 1 s idle tick so status/clock
+            // updates (delivered over a channel, which does NOT wake
+            // poll) are still picked up. The old code re-rendered every
+            // 16 ms forever even when nothing changed — ~60 % of a core
+            // (fixed 2026-09-12).
+            let timeout = if self.in_flight {
+                let elapsed = util::now_ms().saturating_sub(self.present_time_ms);
+                if elapsed >= 16 {
+                    0
+                } else {
+                    (16 - elapsed) as i32
+                }
+            } else if self.dirty || self.animating() {
+                0
+            } else {
+                1000
+            };
             let rc =
                 unsafe { libc::poll(pfd.as_mut_ptr(), pfd.len() as libc::nfds_t, timeout as libc::c_int) };
             if rc < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
@@ -578,15 +598,12 @@ impl Compositor {
 
             self.step_animation();
 
-            // Frame clock: there is no page flip on this path (the panel
-            // scans the LK fb directly; present() ends with glFinish, so
-            // a presented frame is on glass immediately). Pace at ~60 Hz
-            // like gemwl's frame timer: a frame is "done" 16 ms after it
-            // was presented. (pfd[1] = the gbm render-node fd never
-            // reports flips; it stays in the poll set harmlessly.)
-            if self.in_flight && util::now_ms() - self.present_time_ms >= 16 {
+            // A frame is "done" 16 ms after it was presented (present()
+            // already ended with glFinish, so it is on glass). Do NOT set
+            // `dirty` here: only render again if something actually
+            // changed (input/status/animation).
+            if self.in_flight && util::now_ms().saturating_sub(self.present_time_ms) >= 16 {
                 self.in_flight = false;
-                self.dirty = true;
             }
 
             if self.dirty && !self.in_flight {
@@ -610,10 +627,21 @@ impl Compositor {
     }
 
     fn animating(&self) -> bool {
-        (self.ws_pos - self.ws_target).abs() > 0.002 || self.launcher_scroll.abs() > 0.5
+        (self.ws_pos - self.ws_target).abs() > 0.002 || self.screenshot_pending()
+    }
+
+    /// A one-shot `GEMSHELL_SCREENSHOT` is still pending: keep the frame
+    /// clock alive until it fires (otherwise the new idle-blocking loop
+    /// would never render the delayed shot).
+    fn screenshot_pending(&self) -> bool {
+        std::env::var_os("GEMSHELL_SCREENSHOT").is_some()
+            && !SHOT_DONE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn step_animation(&mut self) {
+        if self.screenshot_pending() {
+            self.dirty = true;
+        }
         if (self.ws_pos - self.ws_target).abs() > 0.002 {
             self.ws_pos += (self.ws_target - self.ws_pos) * 0.35;
             if (self.ws_pos - self.ws_target).abs() <= 0.002 {
@@ -621,10 +649,12 @@ impl Compositor {
             }
             self.dirty = true;
         }
-        if self.launcher_scroll.abs() > 0.5 && !matches!(self.gesture, Gesture::LauncherScroll { .. }) {
-            self.launcher_scroll *= 0.8;
-            self.dirty = true;
-        }
+        // NOTE: launcher_scroll is deliberately NOT decayed here. It is a
+        // persisted list position, not a spring; the old `*= 0.8` snapped
+        // the grid back to the top the moment the finger lifted, so apps
+        // past row ~3 could never be reached. (It is also kept out of
+        // `animating()` so a scrolled launcher does not hold the frame
+        // clock at 60 Hz forever.) [2026-09-12]
     }
 
     fn note_client(&mut self, client: Client) {
@@ -1128,7 +1158,14 @@ impl Compositor {
             }
             Gesture::LauncherScroll { finger, last_y } if finger == id => {
                 self.launcher_scroll -= (y - last_y) * 0.9;
-                self.launcher_scroll = self.launcher_scroll.clamp(-600.0, 0.0);
+                // Clamp to the actual content height so the last row is
+                // always reachable. `scroll` is the downward content
+                // offset, so dragging up (y decreasing) increases it; the
+                // old hard clamp was `[-600, 0]` — the wrong sign, so a
+                // swipe-up was clamped straight back to 0 and only three
+                // rows were ever reachable (2026-09-12).
+                let max = (ui::launcher_content_h(self.apps.len()) - H as f32).max(0.0);
+                self.launcher_scroll = self.launcher_scroll.clamp(0.0, max);
                 if let Gesture::LauncherScroll { last_y: ly, .. } = &mut self.gesture {
                     *ly = y;
                 }
@@ -1189,6 +1226,15 @@ impl Compositor {
                 }
             }
             Gesture::LauncherScroll { .. } => {
+                // A tap (no drag) on a tile launches; a tap elsewhere
+                // closes the drawer. Without this the launcher could only
+                // be closed by a second power-button/taskbar tap and taps
+                // on icons did nothing (2026-09-12).
+                if !was_moved && self.fingers.is_empty() {
+                    if let Some((x, y)) = pos {
+                        self.handle_tap(x, y);
+                    }
+                }
                 if self.fingers.is_empty() {
                     self.gesture = Gesture::None;
                 }
@@ -1233,6 +1279,13 @@ impl Compositor {
 
     fn handle_tap(&mut self, x: f32, y: f32) {
         if self.launcher_open {
+            // Explicit Close button (top-right).
+            let (bx, by) = ui::launcher_close_pos();
+            if (x - bx).abs() < 100.0 && (y - by).abs() < 50.0 {
+                self.launcher_open = false;
+                self.dirty = true;
+                return;
+            }
             let n = self.apps.len();
             for i in 0..n {
                 let (cx, cy) = ui::launcher_tile_pos(i, self.launcher_scroll);
@@ -1242,6 +1295,9 @@ impl Compositor {
                     return;
                 }
             }
+            // Tap outside any tile closes the drawer.
+            self.launcher_open = false;
+            self.dirty = true;
             return;
         }
         if self.switcher_open {

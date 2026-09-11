@@ -35,6 +35,7 @@ pub enum Section {
     Wifi,
     Bluetooth,
     Audio,
+    Display,
 }
 
 impl Section {
@@ -43,6 +44,7 @@ impl Section {
             Section::Wifi => "Wi-Fi",
             Section::Bluetooth => "Bluetooth",
             Section::Audio => "Audio",
+            Section::Display => "Display",
         }
     }
 }
@@ -63,6 +65,9 @@ pub struct SettingsState {
     pub wifi: WifiState,
     pub bt: BtState,
     pub audio: AudioState,
+    /// Screen backlight, raw sysfs value + its max (Display tab).
+    pub brightness: i32,
+    pub brightness_max: i32,
 }
 
 impl Default for SettingsState {
@@ -77,6 +82,8 @@ impl Default for SettingsState {
             wifi: WifiState::default(),
             bt: BtState::default(),
             audio: AudioState::default(),
+            brightness: 0,
+            brightness_max: 100,
         }
     }
 }
@@ -117,6 +124,9 @@ impl ShellUi {
         self.state.wifi = data.wifi();
         self.state.bt = data.bluetooth();
         self.state.audio = data.audio();
+        let s = data.status();
+        self.state.brightness = s.brightness;
+        self.state.brightness_max = s.brightness_max;
         self.state.need_refresh = false;
     }
 
@@ -128,6 +138,9 @@ impl ShellUi {
             state.wifi = data.wifi();
             state.bt = data.bluetooth();
             state.audio = data.audio();
+            let s = data.status();
+            state.brightness = s.brightness;
+            state.brightness_max = s.brightness_max;
             state.need_refresh = false;
         }
         let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
@@ -179,6 +192,7 @@ fn build(ctx: &Context, data: &dyn DataProvider, st: &mut SettingsState) {
                 Section::Wifi => wifi_ui(ui, data, st),
                 Section::Bluetooth => bt_ui(ui, data, st),
                 Section::Audio => audio_ui(ui, data, st),
+                Section::Display => display_ui(ui, data, st),
             });
     });
 
@@ -200,7 +214,7 @@ fn header(ui: &mut egui::Ui, st: &mut SettingsState) {
 
 fn tabs(ui: &mut egui::Ui, st: &mut SettingsState) {
     ui.horizontal(|ui| {
-        for s in [Section::Wifi, Section::Bluetooth, Section::Audio] {
+        for s in [Section::Wifi, Section::Bluetooth, Section::Audio, Section::Display] {
             if ui
                 .selectable_label(st.section == s, RichText::new(s.title()).size(19.0))
                 .clicked()
@@ -402,19 +416,57 @@ fn audio_ui(ui: &mut egui::Ui, data: &dyn DataProvider, st: &mut SettingsState) 
     ui.add_space(4.0);
     ui.separator();
     ui.label(RichText::new("Output").size(19.0).color(FG));
+    if st.audio.sinks.is_empty() {
+        muted(ui, "No output devices found.");
+    }
     for s in st.audio.sinks.clone() {
         let selected = s.default;
-        if ui
-            .radio(selected, RichText::new(&s.name).size(18.0))
-            .clicked()
-            && !selected
-        {
+        // Prefer the human description; fall back to the node name. The
+        // device impl resolves `gemini_speakers` -> "Built-in Speakers".
+        let label = s.name.clone();
+        if ui.radio(selected, RichText::new(label).size(18.0)).clicked() && !selected {
+            // The amp actually flips in `gemini-speakerd`, which follows
+            // the PipeWire default sink (services/gemini-pda.nix); the
+            // panel only has to select the sink.
             if let Err(e) = data.set_default_sink(&s.id) {
                 st.status = e.to_string();
             }
             st.audio = data.audio();
         }
     }
+    ui.add_space(6.0);
+    muted(ui, "Internal speakers and the 3.5 mm jack share the codec outputs; picking a sink switches the speaker amp.");
+}
+
+// ---------- Display ----------
+
+fn display_ui(ui: &mut egui::Ui, data: &dyn DataProvider, st: &mut SettingsState) {
+    let max = st.brightness_max.max(1);
+    let mut pct = ((st.brightness.max(0) as i64 * 100) / max as i64).clamp(0, 100) as i32;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Screen brightness").size(19.0).color(FG));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            muted(ui, format!("{pct}%"));
+        });
+    });
+    if ui
+        .add(egui::Slider::new(&mut pct, 0..=100).suffix("%").show_value(false))
+        .changed()
+    {
+        if let Err(e) = data.set_brightness(pct) {
+            st.status = e.to_string();
+        }
+        st.brightness = pct * max / 100;
+    }
+    if !st.status.is_empty() {
+        muted(ui, st.status.clone());
+    }
+    ui.add_space(6.0);
+    muted(ui, "Keyboard: Fn+B / Fn+N dim / brighten, Fn+C / Fn+V volume.");
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(RichText::new("Power").size(19.0).color(FG));
+    muted(ui, "Silver button sleeps/wakes (gemini-sleepd).");
 }
 
 // ---------- password dialog ----------
