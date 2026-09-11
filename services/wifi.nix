@@ -104,6 +104,41 @@ in
         gemini-wifi-auto).
       '';
     };
+
+    smartAutoconnect = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Run the smartphone-like Wi-Fi autoconnect loop
+          (services/scripts/wifi-smart): every pollSeconds, scan and make
+          the device associate with the strongest visible network that
+          has an autoconnect profile, even if NetworkManager is already
+          connected to a weaker known one. NM by itself only follows
+          connection.autoconnect-priority then most-recently-used, and it
+          never preempts an active profile.
+        '';
+      };
+      pollSeconds = lib.mkOption {
+        type = lib.types.int;
+        default = 30;
+        description = "Seconds between Wi-Fi smart-autoconnect rounds.";
+      };
+      margin = lib.mkOption {
+        type = lib.types.int;
+        default = 20;
+        description = ''
+          Signal-strength percentage by which a visible known network
+          must beat the current one before the device roams to it
+          (hysteresis, so a near-tie does not flap between two bands).
+        '';
+      };
+      cooldownSeconds = lib.mkOption {
+        type = lib.types.int;
+        default = 60;
+        description = "Seconds to idle after the loop switches network.";
+      };
+    };
   };
 
   config = {
@@ -235,10 +270,21 @@ in
       # mac-randomization handling — keep scan MACs stable (was the
       # behaviour of the standalone stack).
       wifi.scanRandMacAddress = false;
+      # Never give up on autoconnect: NM's per-profile default is 4 tries
+      # (autoconnect-retries = -1 -> global default 4). 0 = retry forever
+      # [nm-settings(5): "Zero means forever"]. Set per-profile below for
+      # the home networks and globally here so user-added profiles are
+      # covered too (NetworkManager.conf(5): autoconnect-retries-default).
+      # [2026-09-11]
+      settings.main."autoconnect-retries-default" = 0;
       # The home networks, declared as NM profiles. These mirror
       # etc/wifi/profiles.conf (the legacy CLI store, seeded by
-      # gemini-wifi-nvram); keep both in sync. NM autoconnects to the
-      # strongest saved network at boot (autoconnect default). Profiles
+      # gemini-wifi-nvram); keep both in sync. NM autoconnects by
+      # connection.autoconnect-priority and then most-recently-used — NOT
+      # by signal, and it never preempts an active profile [corrected
+      # 2026-09-11: the old "strongest saved network" claim here was
+      # wrong]. Strength preference is enforced by gemini-wifi-smart
+      # (below). Profiles
       # are written to /run/NetworkManager/system-connections (volatile,
       # re-seeded each boot from this config); edits made with nmcli are
       # persisted by NM in /etc/NetworkManager/system-connections — the
@@ -250,6 +296,7 @@ in
           connection = {
             id = "The Lab";
             type = "wifi";
+            autoconnect-retries = 0; # never give up (see settings.main above)
           };
           wifi = {
             ssid = "The Lab";
@@ -270,6 +317,7 @@ in
           connection = {
             id = "The Lab 2.4GHz";
             type = "wifi";
+            autoconnect-retries = 0; # never give up (see settings.main above)
           };
           wifi = {
             ssid = "The Lab 2.4GHz";
@@ -296,6 +344,32 @@ in
     systemd.services.NetworkManager = lib.mkIf cfg.useNetworkManager {
       after = [ "gemini-wifi-internal.service" ];
       wants = [ "gemini-wifi-internal.service" ];
+    };
+
+    # Smartphone-like autoconnect: prefer the strongest known network and
+    # roam to it, instead of NM's priority/most-recent rule, and keep
+    # scanning forever when nothing known is in range. The rationale and
+    # the 2026-09-11 receipt (a signal-10 known AP stalling the boot by
+    # ~3 min while a signal-85 network was available) live in
+    # services/scripts/wifi-smart. NM mode only.
+    systemd.services.gemini-wifi-smart = lib.mkIf (cfg.useNetworkManager && cfg.smartAutoconnect.enable) {
+      description = "Wi-Fi smart autoconnect (prefer strongest known network)";
+      after = [ "NetworkManager.service" "gemini-wifi-internal.service" ];
+      wants = [ "NetworkManager.service" "gemini-wifi-internal.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${utils}/bin/wifi-smart";
+        Restart = "always";
+        RestartSec = 10;
+        Environment = [
+          "GEMINI_WIFI_POLL=${toString cfg.smartAutoconnect.pollSeconds}"
+          "GEMINI_WIFI_MARGIN=${toString cfg.smartAutoconnect.margin}"
+          "GEMINI_WIFI_COOLDOWN=${toString cfg.smartAutoconnect.cooldownSeconds}"
+        ];
+      };
+      # nmcli (nm + timeout/head/rm) + awk.
+      path = [ pkgs.networkmanager pkgs.coreutils pkgs.gawk ];
     };
 
     # No cellular modem on this unit — don't run ModemManager (the NM

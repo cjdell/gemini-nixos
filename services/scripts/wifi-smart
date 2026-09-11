@@ -1,0 +1,159 @@
+#!/bin/sh
+# wifi-smart — smartphone-like Wi-Fi autoconnect for the Gemini PDA.
+#
+# Why this exists (2026-09-11): NetworkManager autoconnects to a saved
+# profile by connection.autoconnect-priority and then by most-recently-
+# used — it does NOT prefer the strongest network, and it will not
+# replace an already-active profile (NetworkManager.conf(5): "Autoconnect
+# thus never replaces or competes with an already active profile"). With
+# several known networks the device could therefore sit retrying a far,
+# barely-visible profile and delay or miss the strong one (observed
+# 2026-09-11: ~3 min stalled on a signal-10 "49 Grafton Street" while
+# "The Lab" sat at 85). This loop makes the radio behave like a phone:
+#
+#   * every POLL seconds, force a scan;
+#   * among the visible SSIDs that have an autoconnect=yes profile, find
+#     the strongest by signal;
+#   * if not connected, activate it;
+#   * if connected to a weaker known network by more than MARGIN, switch;
+#   * if nothing known is visible, do nothing and keep scanning — never
+#     give up. The NM global autoconnect-retries-default=0 set by
+#     services/wifi.nix covers the NM-side retries.
+#
+# Env knobs (set by the systemd unit; see services/wifi.nix):
+#   GEMINI_WIFI_POLL      seconds between rounds            (default 30)
+#   GEMINI_WIFI_MARGIN    signal % the challenger must beat (default 20)
+#   GEMINI_WIFI_SETTLE    seconds to wait after a rescan    (default 5)
+#   GEMINI_WIFI_COOLDOWN  seconds to idle after a switch    (default 60)
+#   GEMINI_WIFI_IFACE     interface to manage               (default wlan0)
+#
+# Usage:
+#   wifi-smart once     one round, log what it did, exit (diagnostics)
+#   wifi-smart          run the loop (systemd unit)
+#
+# Only meaningful in NetworkManager mode (services/wifi.nix).
+
+set -u
+
+POLL=${GEMINI_WIFI_POLL:-30}
+MARGIN=${GEMINI_WIFI_MARGIN:-20}
+SETTLE=${GEMINI_WIFI_SETTLE:-5}
+COOLDOWN=${GEMINI_WIFI_COOLDOWN:-60}
+IFACE=${GEMINI_WIFI_IFACE:-wlan0}
+
+log() { echo "wifi-smart: $*"; }
+
+# say — log a steady-state message only when it changes (avoids a
+# journal line every round forever).
+LAST=""
+say() { [ "$1" = "$LAST" ] || { log "$1"; LAST="$1"; }; }
+
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT INT TERM
+KNOWN="$TMPD/known"
+RES="$TMPD/res"
+
+ACTION=0
+
+do_round() {
+    ACTION=0
+
+    # 1. Interface present and NM-managed? (absent => CONSYS not up yet /
+    #    USB dongle unplugged: wait.)
+    state=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null \
+        | awk -F: -v d="$IFACE" '$1 == d { print $2; exit }')
+    if [ -z "$state" ]; then
+        say "$IFACE not present yet"
+        return
+    fi
+    case "$state" in
+        connecting*)
+            say "$IFACE busy ($state)"
+            return
+            ;;
+        unmanaged)
+            say "$IFACE unmanaged by NetworkManager"
+            return
+            ;;
+    esac
+
+    # 2. Known networks = autoconnect=yes wifi profiles, as SSID<TAB>name.
+    : > "$KNOWN"
+    nmcli -t -f NAME,TYPE,AUTOCONNECT connection show 2>/dev/null \
+        | while IFS=: read -r name type ac; do
+              [ "$type" = "802-11-wireless" ] || continue
+              [ "$ac" = "yes" ] || continue
+              ssid=$(nmcli -g 802-11-wireless.ssid connection show "$name" 2>/dev/null | head -n1)
+              [ -n "$ssid" ] && printf '%s\t%s\n' "$ssid" "$name"
+          done > "$KNOWN"
+
+    if [ ! -s "$KNOWN" ]; then
+        say "no autoconnect Wi-Fi profiles"
+        return
+    fi
+
+    # 3. Scan; per SSID pick the strongest BSSID; note the in-use one.
+    nmcli device wifi rescan >/dev/null 2>&1 || true
+    sleep "$SETTLE"
+    nmcli -t -f SSID,SIGNAL,IN-USE device wifi list 2>/dev/null \
+        | awk -F: -v kf="$KNOWN" '
+              BEGIN {
+                  while ((getline l < kf) > 0) {
+                      n = index(l, "\t")
+                      if (n) name[substr(l, 1, n - 1)] = substr(l, n + 1)
+                  }
+              }
+              {
+                  ssid = $1; sig = $2 + 0; use = $3
+                  if (ssid == "" || !(ssid in name)) next
+                  if (sig > bestsig)      { bestsig = sig; bestssid = ssid }
+                  if (use ~ /\*/)         { cursig  = sig; curssid  = ssid }
+              }
+              END { printf "%s|%d|%s|%d\n", bestssid, bestsig + 0, curssid, cursig + 0 }
+          ' > "$RES"
+
+    best_ssid=""; best_sig=0; cur_ssid=""; cur_sig=0
+    IFS='|' read -r best_ssid best_sig cur_ssid cur_sig < "$RES"
+
+    if [ -z "$best_ssid" ]; then
+        say "no known network in range"
+        return
+    fi
+    if [ "$cur_ssid" = "$best_ssid" ]; then
+        LAST=""   # connected to the best: reset steady-state logging
+        return
+    fi
+
+    best_name=$(awk -F'\t' -v s="$best_ssid" '$1 == s { print $2; exit }' "$KNOWN")
+    [ -n "$best_name" ] || return
+
+    if [ -z "$cur_ssid" ]; then
+        log "not connected — activating strongest known '$best_ssid' ($best_sig%)"
+    elif [ "$best_sig" -ge $((cur_sig + MARGIN)) ]; then
+        log "roaming '$cur_ssid' ($cur_sig%) -> '$best_ssid' ($best_sig%)"
+    else
+        LAST=""   # current network is good enough (hysteresis)
+        return
+    fi
+
+    if timeout 60 nmcli --wait 45 connection up "$best_name" >/dev/null 2>&1; then
+        ACTION=1
+    else
+        log "activation of '$best_name' failed — will retry"
+    fi
+}
+
+case "${1:-daemon}" in
+    once)   do_round; exit 0 ;;
+    daemon) : ;;
+    *)      echo "usage: wifi-smart [once]" >&2; exit 1 ;;
+esac
+
+while :; do
+    do_round
+    if [ "$ACTION" = 1 ]; then
+        sleep "$COOLDOWN"
+    else
+        sleep "$POLL"
+    fi
+done
