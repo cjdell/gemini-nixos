@@ -5,6 +5,77 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 (b) — gemshell: apps launch, settings responsive, single chrome, UI scale (+ Fn keys verified)
+
+Second glass-report batch, same day. Six user-visible fixes + one
+feature; all deployed and verified on the unit (gens 46–48).
+
+**Apps did not launch at all (gen46).** GTK4's
+`gdk/wayland/gdkdisplay-wayland.c` refuses the whole display unless the
+compositor exposes **`wl_data_device_manager`** ("The Wayland compositor
+does not provide one or more of the required interfaces, not using
+Wayland display"); the app then exits with "Failed to open display".
+Added the global + minimal dispatch for `wl_data_device_manager` /
+`wl_data_source` / `wl_data_device` (clipboard is a no-op for now).
+Receipt on glass: gnome-calculator RUNNING (the
+`MESA-EGL: failed to get driver name for fd -1` warnings are libmutter
+preferring the render node; harmless).
+
+**Settings froze for seconds and handled taps 30 s+ late (gen46).** The
+panel synchronously ran a ~1–2 s `nmcli`/`bluetoothctl`/`wpctl` snapshot
+**on the compositor thread** on open and every 3 s, and every slider step
+queued another. New `compositor::data::CachedData`: reads come from an
+in-memory snapshot (instant), mutations run on a worker, refreshes are
+coalesced (`refresh_pending`), mutations are coalesced **by kind,
+last-wins**, and pending mutations run *before* a snapshot, so a fast
+devmem brightness write is never stuck behind a slow `nmcli`. Brightness/
+volume/mute do not request a snapshot. Poll 3 s → 8 s. Device timings:
+`nmcli ... device wifi list` (without `--rescan no`) was the worst at
+~5.1 s; `data.wifi()` runs three nmcli calls ≈750 ms, so a snapshot is
+≈1–2 s — all now off the UI thread.
+
+**Two sets of window chrome / two close buttons (gen48).** GTK4 does NOT
+speak `zxdg_decoration_manager_v1`; `gdk_wayland_display_prefers_ssd()`
+only consults the **KDE** `org_kde_kwin_server_decoration_manager`
+(`gtk/gtkwindow.c:3998` → `gtk_window_should_use_csd()`), which gemshell
+does not advertise, so GTK always draws its own header bar — while
+`Window.csd` defaulted false so gemshell drew the SSD titlebar too. Fix:
+regular toplevels default to **CSD**; `draw_window`, `content_rect`/
+`local_coords` and the titlebar hit-test branch on it. `xdg-decoration`
+stays advertised for Qt/wlroots clients, answered client-side; an
+explicit `set_mode(ServerSide)` gets `csd = false` + the SSD titlebar.
+`xdg_toplevel.move` (CSD header drag) moves the window with the finger
+down. Receipt: the (33,36,41) SSD titlebar is gone from the device
+screenshot; one white libadwaita header bar with its controls remains.
+
+**Variable UI scale (gen48).** Settings > Display: 100% / 150% / 200%.
+Layout is in logical units (`Compositor::{lw,lh,ui_scale}` = `W/ui_scale`
+× `H/ui_scale`); `Renderer::ui_scale` maps logical across the physical
+viewport in the vertex shader. Glyphs are rasterized at `26*SUP`
+(`SUP=2`) with metrics `/SUP`, and egui's `pixels_per_point = PPP ×
+ui_scale`, so text is crisp at 150/200% (and downscaled at 100%). Touch is
+converted physical → logical at ingest. Persists to
+`$HOME/.config/gemshell/scale`. Device receipt: at 200% the launcher
+tile-bg bbox is 1520×240+320+280 vs the 100% 3-tile row — tiles double.
+
+**Fn brightness/volume keys: verified working, no compositor bug.** The
+`gemini` layout maps `XF86MonBrightnessDown/Up` to Fn+B / Fn+N and
+`XF86Audio{Lower,Raise}Volume` to Fn+C / Fn+V (level 3, Mod5 = Fn =
+KEY_RIGHTALT); `handle_key` already acted on them. On-device receipt via
+`bin/kb-inject.c` (built on the device with `nix-shell -p gcc`): Fn+C ×5
+→ volume 0.88→0.38, Fn+V ×2 → 0.58, Fn+B ×5 → brightness 2306→0, Fn+N ×3
+→ 290. The earlier "keys do nothing" was the old build / the blank UI.
+
+Also: `bin/gemshell-dev.sh run` now forwards its extra-env/settle args
+(it silently ignored them, so the first on-device launcher screenshot had
+no `GEMSHELL_SCREENSHOT`); `spawn_cmd` logs the spawn outcome and pid so a
+failing Exec is visible in the journal.
+
+Deploys: gen46 `f6cs9r7isk7n…`, gen48 `5i6scaxd3126…`; gemshell changed
+only, kernel/mesa untouched, no boot.img flash, para unchanged. Left
+safe: installed `gemini-gemshell.service` active, transient stopped, UI
+scale reset to 100%, idle CPU 0.2 %.
+
 ## 2026-09-11 — gemshell glass-report fixes (TEXT root cause, SVG icons, launcher, ~60%→0.2% idle CPU, brightness/audio) + gen44
 
 User report from the glass (against the pre-egui build from the device

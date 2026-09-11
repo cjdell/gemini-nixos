@@ -425,8 +425,9 @@ no CPU rasterization:
 - Screens: **Wi-Fi** (radio toggle, network cards with signal/security,
   Connect / password dialog, Disconnect), **Bluetooth** (power, known
   devices, Connect, scan), **Audio** (volume slider, mute, output/sink
-  radio list → `set_default_sink`), **Display** (brightness slider →
-  `set_brightness`, Fn-key hint). The Audio list includes the
+  radio list → `set_default_sink`), **Display** (interface scale
+  100% / 150% / 200% + brightness slider → `set_brightness`, Fn-key hint).
+  The Audio list includes the
   L/R-correcting `gemini_speakers` filter node as **Built-in Speakers**
   next to the hardware **Headphones / Jack** sink; `wpctl status` only
   shows the filter under its node name, so the provider resolves
