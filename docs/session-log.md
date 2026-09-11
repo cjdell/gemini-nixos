@@ -5,6 +5,81 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — Wi-Fi: smartphone-like autoconnect (never give up + prefer strongest known network)
+
+Ask: "the device is struggling to connect to the wifi network" → then
+"the network worked fine, we're just out of range; the device must keep
+trying the strongest network it knows the password for and never give
+up, like a smartphone."
+
+**Root cause of the "struggle" (on glass, boot 2026-09-11 22:11):** NM
+autoconnected to the saved profile **`49 Grafton Street`** (a real known
+network, but far out of range: scan signal **10/100**, ch36
+`18:e8:29:6e:4c:4c`) and retried it for ~3 min while **`The Lab`** sat at
+signal 85. wpa_supplicant receipts:
+`CTRL-EVENT-ASSOC-REJECT bssid=18:e8:29:6e:4c:4c status_code=16`
+(repeated; driver log `aisFsmSteps: Failed to connect 49 Grafton Street
+more than 5 times ... scan again`, `... blacklist 1`). NM:
+`Activation: failed for connection '49 Grafton Street'`, then
+`(wifi) association took too long` / `asking for new secrets` ×3, and
+only at **22:14:18** `Associated with 40:f2:01:55:d9:49` (The Lab).
+`seen-bssids` had the far BSSID recorded against the profile
+(`c8a225e4…=18:E8:29:6E:4C:4C`), so NM kept treating it as a candidate.
+Reproduced live: `nmcli --wait 50 con up '49 Grafton Street'` → timeout
+with the same `ASSOC-REJECT 16` loop.
+
+**Why NM does this (docs, 2026-09-11):** `connection(5)` — "If multiple
+profiles are ready to autoconnect … the one with the better
+connection.autoconnect-priority is chosen. If the priorities are equal,
+then the most recently connected profile is activated." It does **not**
+rank by signal, and "Autoconnect … never replaces or competes with an
+already active profile." Default `autoconnect-retries` is 4 (`-1` →
+global 4).
+
+**Fix, two parts (both in `services/wifi.nix`, commit `36bbe59`):**
+1. **Never give up.** `connection.autoconnect-retries = 0` on the two
+   home profiles + global `[main] autoconnect-retries-default = 0`
+   (`NetworkManager.conf(5)`; covers user-added profiles too,
+   `49 Grafton Street` stays `-1`). Verified on device:
+   `NetworkManager --print-config` → `autoconnect-retries-default=0`.
+2. **Prefer the strongest known network.** New device loop
+   `services/scripts/wifi-smart` (sh), unit `gemini-wifi-smart`,
+   options `services.geminiWifi.smartAutoconnect.{enable,pollSeconds,margin,cooldownSeconds}`
+   (default on, NM mode only). Every 30 s it rescans, finds the strongest
+   visible SSID that has an `autoconnect=yes` profile, connects if
+   disconnected, and roams to it if it beats the current network by
+   `margin` (default 20 % signal, hysteresis). Nothing known in range →
+   keeps scanning. `wifi-smart once` is the diagnostic one-shot; it only
+   activates visible known networks, so it cannot wedge.
+
+**Validation on glass before deploy** (script copied to /tmp, real wlan0):
+- default margin: stays on `The Lab` (87 % vs `The Lab 2.4GHz` 100 %;
+  13 < 20 → hysteresis held);
+- `GEMINI_WIFI_MARGIN=10 wifi-smart once` → `roaming 'The Lab' (87%) ->
+  'The Lab 2.4GHz' (100%)`, and NM moved to it;
+- `nmcli device disconnect wlan0` then `once` → `not connected —
+  activating strongest known 'The Lab 2.4GHz' (100%)`;
+- device left back on `The Lab` (5 GHz) before the deploy.
+
+**Deploy (rule 0):** clean toplevel `2h0qb9lip72wj084y178yyli9d3bakal…`
+(gen **53**, 22:25), `bin/deploy.sh deploy`, rootfs/boot.img untouched
+(NO flash — profile-only switch, para untouched). On glass the unit
+started (`the following new units were started: gemini-wifi-smart.service`)
+and, because the NM restart left wlan0 disconnected, immediately
+activated the strongest known network (`The Lab 2.4GHz`, 100 %); it has
+been quiet/stable since. `wifi-smart` logs only actions, so a healthy
+link produces no journal noise.
+
+**Doc correction [2026-09-11]:** the old `services/wifi.nix` comment
+"NM autoconnects to the strongest saved network at boot (autoconnect
+default)" was wrong (priority → recency, no preemption) — corrected in
+place. Band note: the loop ranks raw signal, so at close range it now
+prefers the 2.4 GHz profile (100 %) over 5 GHz (≈87 %); tune
+`smartAutoconnect.margin` to change roam eagerness, or add a band bonus
+if 5 GHz throughput is preferred.
+
+No pins changed (rule 9); no kernel/delta change.
+
 ## 2026-09-12 — gemshell: status-bar window controls, real `xdg_toplevel.close`, settings render path, Fn stuck-mod
 
 Fourth glass report. Builds green (x86_64 nested `0yi8y633…`; aarch64

@@ -15,6 +15,11 @@ re-login gotcha** (see §Volume).
 is scancode-based and cannot see XKB level 3) — §DOSBox-X; deployed to
 the device as **gen 19** (rev `48d64b9`) and headless-verified (UK table
 + mapper seed); the interactive Fn-key test is owed.
+**2026-09-11 (Wi-Fi autoconnect):** `gemini-wifi-smart` (option
+`services.geminiWifi.smartAutoconnect.*`, §Wi-Fi) makes the device prefer
+the strongest known network and never give up, with
+`autoconnect-retries = 0`; deployed on glass as **gen 53** and verified
+active. Root cause + receipts in `docs/session-log.md` 2026-09-11.
 **2026-09-10q:** internal-speaker L/R swap fixed by a virtual sink +
 `gemini-speakerd` couples the speaker amp to the selected output device
 (§Speakers — **amp coupling verified on glass 2026-09-10q**: headphones
@@ -168,6 +173,33 @@ wifi.nix now defaults `services.geminiWifi.useNetworkManager = true`:
 On-glass check: `nmcli dev status` shows wlan0; `nmcli con up "The
 Lab"`; phosh quick settings lists networks; unplug USB-C host link →
 wifi stays up.
+
+#### Smart autoconnect — prefer the strongest known network (2026-09-11)
+
+NM autoconnects by `connection.autoconnect-priority` and then
+most-recently-used, and "never replaces or competes with an already
+active profile" (`connection(5)`) — it does **not** rank by signal. On
+glass (2026-09-11) the device stalled ~3 min on a known but far
+signal-10 AP (`49 Grafton Street`, `ASSOC-REJECT status_code=16`) while a
+signal-85 network sat available.
+
+Two fixes in `services/wifi.nix`:
+
+- `connection.autoconnect-retries = 0` on the home profiles and the
+  global `[main] autoconnect-retries-default = 0`
+  (`NetworkManager.conf(5)`) → NM retries **forever** (the default is 4).
+- `services/scripts/wifi-smart`, unit `gemini-wifi-smart`, options
+  `services.geminiWifi.smartAutoconnect.*` (default on). Every 30 s it
+  rescans and activates the strongest visible SSID that has an
+  `autoconnect=yes` profile — connecting if disconnected, or roaming to
+  it if it beats the current network by `margin` (default 20 % signal,
+  hysteresis). Out of range of everything known it just keeps scanning.
+  `wifi-smart once` runs one diagnostic round.
+
+Band note: the loop ranks raw signal, so at close range it prefers the
+2.4 GHz profile (≈100 %) over 5 GHz (≈87 %); raise
+`smartAutoconnect.margin` to make it stickier or add a band bonus if
+5 GHz throughput is preferred.
 
 ### Backlight access (session-less desktop problem)
 

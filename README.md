@@ -45,7 +45,9 @@ layout were reclaimed into it — see
   alternatives/rollback.
 - **Wi-Fi** — internal MT6630 CONSYS (`wlan0`, with the factory NVRAM
   MAC preserved) plus USB dongles (RTL8821CU), managed by
-  **NetworkManager**.
+  **NetworkManager**, with a smartphone-like autoconnect loop that
+  prefers the strongest known network and keeps scanning when none is in
+  range.
 - **Bluetooth** — MT6630 CONSYS `hci_stp` (persistent bluetoothd, CLI
   and blueman GUI) and **A2DP audio**, with the stutter and
   after-playback crackle root-caused and fixed.
@@ -145,7 +147,7 @@ the operational cheat sheet is in `AGENTS.md`.
 | `pipewire` / `wireplumber` / `pipewire-pulse` | The PipeWire media stack as one root system session; `pcm.gemini16` pins the analog path to S16_LE at the alsa-lib boundary |
 | `gemini-audio-defaults`, `speaker`, `audio-output`, `gemini-speakerd` | Playback route at boot; speaker-vs-headphone output; the speaker amp follows the PipeWire default sink; the L↔R-correcting virtual sink |
 | `gemini-power-profile.service` | GNOME "Power Mode" → A72 cluster (performance ⇒ A72 up) |
-| `gemini-wifi-nvram`, `gemini-wifi-internal`, `gemini-wifi-auto`, `wifi`/`wifi-internal` | Factory NVRAM record (stable MAC), internal CONSYS stack with the correct load order, saved-profile auto-connect, and the USB/internal CLIs |
+| `gemini-wifi-nvram`, `gemini-wifi-internal`, `gemini-wifi-auto`, `gemini-wifi-smart`, `wifi`/`wifi-internal`/`wifi-smart` | Factory NVRAM record (stable MAC), internal CONSYS stack with the correct load order, saved-profile auto-connect, smartphone-like strongest-known-network autoconnect (never gives up), and the USB/internal/smart CLIs |
 | `gemini-sleepd.service` | Silver side-button light clamshell sleep/wake (`gemcli sleep key`); the only sleep path |
 | `gemcli` | Rust device-control CLI (backlight/battery/guard/a72/wdt/boot/gpu/speaker/profile/status + a read-only `selfcheck` parity harness) |
 | `gemini-utils.nix` / `services/scripts/` | The verified bring-up CLIs, ported verbatim |
