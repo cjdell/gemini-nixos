@@ -1664,7 +1664,15 @@ impl Compositor {
             app: None,
             is_popup: false,
             parent: None,
-            csd: false,
+            // CSD by default. GTK4 does NOT use xdg-decoration at all (it
+            // only speaks the KDE org_kde_kwin_server_decoration_manager),
+            // and with no KDE global GTK uses client-side decorations and
+            // draws its own header bar. Defaulting to CSD here means gemshell
+            // never draws the SSD titlebar on top of a client's own chrome
+            // (the "2 close buttons" report). A client that explicitly asks
+            // for server-side via xdg-decoration (`set_mode(ServerSide)`)
+            // gets `csd = false` and the compositor titlebar instead.
+            csd: true,
             decoration: None,
         });
         self.dirty = true;
@@ -1683,10 +1691,14 @@ impl Compositor {
         self.dirty = true;
     }
 
-    /// A client created `zxdg_toplevel_decoration_v1` for `win`. Default
-    /// to CSD: GTK/libadwaita apps draw a header bar regardless of the
-    /// decoration mode, so advertising server-side would give two title
-    /// bars. Clients that prefer SSD send `set_mode(server_side)` next.
+    /// A client created `zxdg_toplevel_decoration_v1` for `win`.
+    ///
+    /// Reply **client-side** by default: GTK4 does not use this protocol at
+    /// all (it decides CSD from the KDE decoration manager, which we do not
+    /// advertise, so it always self-decorates), and Qt/wlroots clients that
+    /// want server-side will follow up with `set_mode(ServerSide)`. Replying
+    /// the accepted default keeps gemshell from drawing a second titlebar
+    /// over a client's own header bar (2026-09-11).
     pub fn set_decoration(&mut self, win: u32, dec: ZxdgToplevelDecorationV1) {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.decoration = Some(dec.clone());
@@ -1708,7 +1720,8 @@ impl Compositor {
     pub fn clear_decoration(&mut self, win: u32) {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.decoration = None;
-            w.csd = false;
+            // Leave `csd` alone: destroying the decoration object says
+            // nothing about whether the client still self-decorates.
             self.dirty = true;
         }
     }

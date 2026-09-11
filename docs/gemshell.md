@@ -78,17 +78,19 @@ Three more glass reports; build + host verified, deployed to the unit:
   Brightness/volume/mute do not request a snapshot at all. Poll interval
   3 s → 8 s. The panel stays responsive during a `wpctl` call because
   the compositor never blocks on it.
-- **Two sets of window chrome (two close buttons).** GTK4 assumes CSD
-  when the compositor does not advertise `xdg-decoration`, so it drew its
-  own header bar while gemshell drew the SSD titlebar. Added
-  `zxdg_decoration_manager_v1` (default **client-side**: GNOME/libadwaita
-  apps draw a header bar regardless, so advertising server-side would
-  give two bars). `Window.csd` makes the SSD titlebar
-  (`draw_window`), the content offset (`content_rect` /
-  `local_coords`) and the titlebar hit-test switch. Clients that prefer
-  SSD send `set_mode(server_side)` and get the compositor titlebar.
-  `xdg_toplevel.move` (a CSD header-bar drag) now moves the window with
-  the finger that is down.
+- **Two sets of window chrome (two close buttons).** GTK4 does **not**
+  speak `zxdg_decoration_manager_v1`; it decides CSD from the **KDE**
+  `org_kde_kwin_server_decoration_manager` (`gdk_wayland_display_prefers_ssd()`
+  → `gtk_window_should_use_csd()`), which gemshell does not advertise, so
+  GTK always self-decorates — while gemshell drew the SSD titlebar too.
+  Fix: windows default to **CSD** (`Window.csd`), so gemshell does not
+  draw a titlebar over a client's own header bar. `draw_window`,
+  `content_rect`/`local_coords` and the titlebar hit-test all branch on
+  `csd`. `zxdg_decoration_manager_v1` **is** still advertised for
+  Qt/wlroots clients and answered client-side; a client that explicitly
+  asks for server-side (`set_mode(ServerSide)`) gets `csd = false` and the
+  compositor titlebar. `xdg_toplevel.move` (a CSD header-bar drag) moves
+  the window with the finger that is down.
 
 ### Variable UI scale
 
