@@ -92,6 +92,53 @@ Three more glass reports; build + host verified, deployed to the unit:
   compositor titlebar. `xdg_toplevel.move` (a CSD header-bar drag) moves
   the window with the finger that is down.
 
+### 2026-09-12 third glass-report batch
+
+Three further glass reports. Builds green (x86_64 nested + aarch64
+`gemshell-0.1.0`, `0yi8y633…`/device build `b44hsvc9…`); on-glass deploy
+owed.
+
+- **"Apps launch maximized and can't be shrunk or closed."** New
+toplevels open maximized (2026-09-11) and a CSD app's own header-bar
+buttons were the only chrome, so a maximized window had no reachable
+restore/close affordance. Two fixes:
+  - **Status-bar window controls** for the focused window, left of the
+    clock: **minimize** · **restore/maximize** · **close**
+    (`ui::draw_window_controls`, hit-tested in `handle_tap` via
+    `ui::window_control_zones()` at cx 112/172/232, same `ZONE_HALF`
+    radius as the status zones; `Compositor::focused_window()`).
+  - **`Close` now actually closes.** The old `close_window()` dropped
+    the server-side `xdg_toplevel` resource and never sent
+    `xdg_toplevel.close`, so the compositor forgot the window while the
+    app kept running. New `request_close()` sends `t.close()`; the frame
+    is removed by the client's `XdgToplevel::Destroy` dispatch. Nested
+    receipt: a minimal GTK4 app logged `CLOSE_REQUEST_RECEIVED` +
+    `APP_SHUTDOWN`; forwarded touch reaching widgets was proved
+    separately (a trivial GTK4 button fired `clicked` from a `wl_touch`).
+    `Delete` (XF86_Tools) and the SSD titlebar ✕ now route through it.
+- **Settings still slow (~2 s to close after a button press).** The
+  compositor already renders only on `dirty`, but while the panel was up
+  it still re-rendered the **whole scene** (window textures, status bar,
+  taskbar) beneath the modal — the expensive part on the A53s.
+  `render_frame` now runs the egui panel **first** and, while
+  `settings_open`, skips the hidden scene (keeps the wallpaper). The
+  settings card is a full-screen **opaque** `CentralPanel` (verified: all
+  four corners are the panel BG `18,21,26`). `Close` clears the panel
+  primitives on the same frame, so the modal is gone in that present.
+  The loop re-arms `dirty` only while `settings_open &&
+  shell.wants_repaint()` (egui animations/hover) instead of a fixed 60 Hz
+  clock. (On-glass latency measurement still owed — the frame-time claim
+  is a code-path argument, not a device measurement.)
+- **`c`/`v`/`b`/`n` change volume/brightness without Fn.** Fn is
+  `KEY_RIGHTALT` (level-3, Mod5); the media syms on C/V/B/N
+  (`XF86AudioLowerVolume`/`Raise`/`MonBrightnessDown`/`Up`) are level 3.
+  `Input::process_key` now reconciles a stuck Mod5 against the input
+  core's real key state: on any non-RALT key, if xkb still holds Mod5
+  but `EVIOCGKEY(96)` reports RALT up, it forces the RALT key-up before
+  resolving the keysym. Root cause is not proven (the poll loop can drop
+  an RALT-up while a frame renders); this is a self-healing safety net.
+  Only on a real evdev fd — nested mode (`kbd_fd = -1`) skips it.
+
 ### Variable UI scale
 
 Settings > Display offers **100% / 150% / 200%**. Design:
@@ -542,9 +589,13 @@ suite (hundreds of MB), and nothing else runs by default. Measure
    to an edge (snap preview + snap); double-tap titlebar maximize;
    2-finger swipe switches workspaces (slide); 2-finger up = next app;
    3-finger up/down launcher/home; one-finger scroll inside an app.
+   With a maximized app focused, the **status-bar ✕ / restore /
+   minimize** controls (left of the clock) must close, un-maximize and
+   minimize it; the app's own CSD ✕ must really quit it.
 5. Keyboard: Fn+Tab switcher, Fn+←/→ snap, Fn+↑/↓ workspaces,
    Fn+M maximize, Fn+⌫ close, Fn+B/N brightness (panel dims),
-   Fn+C/V/T volume.
+   Fn+C/V/T volume. **Regression:** plain `c`/`v`/`b`/`n` (no Fn) must
+   insert letters, never change volume/brightness.
 6. Run gemdemo under gemshell (GL client path) at 60 fps.
 7. Record: RSS (compositor), fps, boot time, anything that needed a fix
    here + in the session log.

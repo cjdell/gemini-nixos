@@ -129,6 +129,19 @@ fn eviocgabs(code: u16) -> u64 {
     (2u64 << 30) | (24u64 << 16) | (0x45u64 << 8) | (0x40 + code as u64)
 }
 
+/// `EVIOCGKEY(96)`: the input core's current key bitmap.
+/// `KEY_CNT = KEY_MAX + 1 = 0x300` bits → 96 bytes (the kernel caps at
+/// `BITS_TO_LONGS(KEY_CNT) * sizeof(long)`, which is 96 either arch).
+const EVIOCGKEY_LEN: usize = 0x300 / 8;
+const EVIOCGKEY: libc::c_ulong =
+    (2u64 << 30) | ((EVIOCGKEY_LEN as u64) << 16) | (0x45u64 << 8) | 0x18u64;
+
+/// Fn on the Gemini keymatrix is `KEY_RIGHTALT` (AltGr / level 3).
+const KEY_RIGHTALT: u32 = 100;
+/// Wayland modmask bit for Mod5 (the slot `ISO_Level3_Shift` lands in on
+/// the gemini layout; matches `compositor::MOD5`).
+const MOD5: u32 = 1 << 8;
+
 /// An input event the compositor acts on.
 pub enum Event {
     /// A key press/release (or a repeat tick, `pressed` true).
@@ -514,8 +527,40 @@ impl Input {
             self.pressed.retain(|&k| k != code);
         }
         unsafe { xkb::xkb_state_update_key(self.state, xkb_code, dir) };
+        // Recover a stuck AltGr/Fn. The Fn key is KEY_RIGHTALT; if xkb
+        // still holds Mod5 down but the input core says RALT is up (a
+        // key-up the compositor never consumed — the poll loop can drop
+        // events while a frame renders), force it up so the next c/v/b/n
+        // is a letter, not the Fn media code. On-glass report 2026-09-12:
+        // "CVBN keys change volume/brightness without holding Fn".
+        // Only on a real evdev fd: nested mode forwards the host's
+        // scancodes, so our own bitmap says nothing about them.
+        if self.kbd_fd >= 0
+            && code != KEY_RIGHTALT
+            && self.current_mods() & MOD5 != 0
+            && !self.physical_key_down(KEY_RIGHTALT)
+        {
+            self.pressed.retain(|&k| k != KEY_RIGHTALT);
+            unsafe { xkb::xkb_state_update_key(self.state, KEY_RIGHTALT + 8, xkb::XKB_KEY_UP) };
+        }
         let keysym = unsafe { xkb::xkb_state_key_get_one_sym(self.state, xkb_code) };
         (keysym, self.current_mods())
+    }
+
+    /// Is `code` physically held right now, per the input core
+    /// (`EVIOCGKEY`)? False on a nested/non-evdev fd.
+    fn physical_key_down(&self, code: u32) -> bool {
+        if self.kbd_fd < 0 || (code as usize) >= EVIOCGKEY_LEN * 8 {
+            return false;
+        }
+        let mut buf = [0u8; EVIOCGKEY_LEN];
+        let r = unsafe { libc::ioctl(self.kbd_fd, EVIOCGKEY, buf.as_mut_ptr()) };
+        if r < 0 {
+            return false;
+        }
+        let byte = (code / 8) as usize;
+        let bit = (code % 8) as u8;
+        (buf[byte] >> bit) & 1 == 1
     }
 
     /// Non-blocking drain of both evdev nodes.

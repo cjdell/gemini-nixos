@@ -716,7 +716,11 @@ impl Compositor {
                         n.submit(&rgba, sw, sh);
                     }
                 }
-                self.dirty = false;
+                // Keep rendering while egui asks for another frame
+                // (animations/hover). Cheap under the modal: the hidden
+                // scene is skipped. Note this runs AFTER render_frame, so
+                // it is not clobbered by the frame's own dirty handling.
+                self.dirty = self.settings_open && self.shell.wants_repaint();
                 self.in_flight = true;
                 self.present_time_ms = util::now_ms();
                 let _ = display.flush_clients();
@@ -818,7 +822,7 @@ impl Compositor {
             }
             XF86_Tools | XK_Delete if self.switcher_open == false => {
                 if let Some(f) = self.focus {
-                    self.close_window(f);
+                    self.request_close(f);
                 }
                 true
             }
@@ -1036,10 +1040,19 @@ impl Compositor {
             self.set_ui_scale(scale);
         }
         if self.shell.state.close {
+            // Close on THIS frame: clear the modal and return a frame with
+            // no panel meshes, so the next present is already panel-free.
+            // (Returning the drawn panel made Close feel ~1 frame slow; the
+            // atlas delta is still applied by the renderer.)
             self.settings_open = false;
             self.shell.state.close = false;
+            let mut frame = frame;
+            frame.primitives.clear();
+            self.dirty = true;
+            return Some(frame);
         }
-        self.dirty = true; // keep the ~60 Hz frame clock while open
+        // Repaint on demand only: input sets `dirty`, and the main loop
+        // re-arms it while egui asks for another frame (animations/hover).
         Some(frame)
     }
 
@@ -1138,7 +1151,7 @@ impl Compositor {
         if !is_popup && !csd && y - wy < TITLEBAR_H {
             // close button (top-right 44px)
             if x >= wx + ww - 44.0 {
-                self.close_window(wid);
+                self.request_close(wid);
                 return;
             }
             // double-tap = toggle maximize
@@ -1454,6 +1467,29 @@ impl Compositor {
             return;
         }
         if y < STATUS_H {
+            // Focused-window controls (left of the status bar): a
+            // close / restore / minimize affordance that does not depend
+            // on the app's own CSD buttons. New toplevels open maximized
+            // and GTK's CSD buttons were the only way back, so maximized
+            // apps could not be shrunk or closed (on-glass report
+            // 2026-09-12).
+            if let Some(win) = self.focus {
+                for (name, cx) in ui::window_control_zones() {
+                    if (x - cx).abs() < ui::ZONE_HALF {
+                        match name {
+                            "minimize" => self.minimize(win),
+                            "maximize" => {
+                                self.focus = Some(win);
+                                self.toggle_maximize_focused();
+                            }
+                            "close" => self.request_close(win),
+                            _ => {}
+                        }
+                        self.dirty = true;
+                        return;
+                    }
+                }
+            }
             for (name, cx) in ui::status_zones(self.lw) {
                 if (x - cx).abs() < ui::ZONE_HALF {
                     match name {
@@ -1642,6 +1678,12 @@ impl Compositor {
             .iter()
             .filter(|w| !w.minimized && !w.is_popup && w.workspace as f32 == self.ws_target)
             .collect()
+    }
+
+    /// The window that currently has keyboard/touch focus, if any.
+    pub fn focused_window(&self) -> Option<&Window> {
+        let f = self.focus?;
+        self.windows.iter().find(|w| w.id == f)
     }
 
     pub fn switcher_windows(&self) -> Vec<&Window> {
@@ -2035,6 +2077,29 @@ impl Compositor {
         self.dirty = true;
     }
 
+    /// Ask a client to close its window (`xdg_toplevel.close`). The window
+    /// is actually removed when the client destroys the toplevel, which
+    /// dispatches `XdgToplevelRequest::Destroy` → [`close_window`].
+    /// Dropping the server resource instead (the old behaviour) forgot the
+    /// window while the app kept running — the "Close does nothing"
+    /// report (2026-09-12).
+    pub fn request_close(&mut self, win: u32) {
+        let toplevel = self
+            .windows
+            .iter()
+            .find(|w| w.id == win)
+            .and_then(|w| w.toplevel.as_ref());
+        match toplevel {
+            Some(t) => {
+                // `close` is the generated xdg_toplevel.close() event send.
+                let _ = t.close();
+                self.dirty = true;
+            }
+            // No xdg_toplevel (a popup): just drop it.
+            None => self.close_window(win),
+        }
+    }
+
     pub fn minimize(&mut self, win: u32) {
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == win) {
             w.minimized = true;
@@ -2374,40 +2439,49 @@ impl Compositor {
         // The renderer maps logical units (lw×lh) across the physical
         // viewport; keep it in sync with the Settings scale.
         self.renderer.ui_scale = self.ui_scale;
+        // Run the egui settings panel FIRST: it can close on this frame
+        // (clearing its primitives), and while it is up it is a
+        // full-screen opaque card, so the scene underneath is invisible.
+        let egui_frame = self.run_egui();
+
         let mut ops: Vec<render::Op> = Vec::with_capacity(256);
+        // Always paint the wallpaper: the panel is opaque, but this keeps
+        // a defined frame if it ever has a transparent edge.
         ui::draw_background(&mut ops, self.lw, self.lh);
 
-        // windows per visible workspace (with the slide offset)
-        let p = self.ws_pos;
-        for ws in 0..N_WORKSPACES {
-            let off = (ws as f32 - p) * self.lw;
-            if off < -(self.lw) || off > self.lw {
-                continue;
+        // The panel covers the scene, and the scene is the expensive part
+        // on the A53s — skip the hidden windows/status/taskbar while the
+        // modal is up so a panel tap renders one overlay, not
+        // scene+overlay (settings input latency, 2026-09-12).
+        if !self.settings_open {
+            // windows per visible workspace (with the slide offset)
+            let p = self.ws_pos;
+            for ws in 0..N_WORKSPACES {
+                let off = (ws as f32 - p) * self.lw;
+                if off < -(self.lw) || off > self.lw {
+                    continue;
+                }
+                for win in self.windows.iter().filter(|w| w.workspace == ws && !w.minimized) {
+                    ui::draw_window(&mut ops, self, win, off);
+                }
             }
-            for win in self.windows.iter().filter(|w| w.workspace == ws && !w.minimized) {
-                ui::draw_window(&mut ops, self, win, off);
+
+            if self.snap_preview != Snap::None {
+                ui::draw_snap_preview(&mut ops, self);
+            }
+            ui::draw_status_bar(&mut ops, self);
+            ui::draw_taskbar(&mut ops, self);
+            if self.launcher_open {
+                ui::draw_launcher(&mut ops, self);
+            }
+            if self.switcher_open {
+                ui::draw_switcher(&mut ops, self);
+            }
+            ui::draw_workspace_dots(&mut ops, self);
+            if self.touch_trail {
+                ui::draw_touch_trail(&mut ops, self);
             }
         }
-
-        if self.snap_preview != Snap::None {
-            ui::draw_snap_preview(&mut ops, self);
-        }
-        ui::draw_status_bar(&mut ops, self);
-        ui::draw_taskbar(&mut ops, self);
-        if self.launcher_open {
-            ui::draw_launcher(&mut ops, self);
-        }
-        if self.switcher_open {
-            ui::draw_switcher(&mut ops, self);
-        }
-        ui::draw_workspace_dots(&mut ops, self);
-        if self.touch_trail {
-            ui::draw_touch_trail(&mut ops, self);
-        }
-
-        // The egui settings panel is drawn last, over the scene. Its
-        // meshes are GPU triangles (no CPU rasterization).
-        let egui_frame = self.run_egui();
 
         self.renderer.begin_frame();
         self.renderer.replay(&self.font, &ops);

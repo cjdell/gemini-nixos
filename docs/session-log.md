@@ -5,6 +5,55 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-12 — gemshell: status-bar window controls, real `xdg_toplevel.close`, settings render path, Fn stuck-mod
+
+Fourth glass report. Builds green (x86_64 nested `0yi8y633…`; aarch64
+`b44hsvc9ggb1dydkbziplipf2dvns62f-gemshell-0.1.0`); **on-glass deploy
+owed** (nothing flashed this session).
+
+**"All apps launch maximized and I can't shrink or close them, probably
+because they don't respond to touch at all; settings is still slow (~2 s
+to close a button press)."** and **"the CVBN keys change
+volume/brightness without holding Fn."**
+
+Touch was ruled in/out first, in the x86_64 **nested** loop
+(`bin/gemshell-nested.sh` equivalent, with `WAYLAND_DEBUG=1`): a trivial
+GTK4 test app **did** receive the forwarded `wl_touch` and fire
+`clicked`, so touch-to-widget delivery was fine. The real bugs were:
+
+1. **Close did nothing.** `Compositor::close_window()` removed the
+   server-side window and dropped the `xdg_toplevel` resource; it never
+   sent the **`xdg_toplevel.close` event**, so the app kept running with
+   no window. New `request_close()` sends `t.close()` and lets the
+   client's `XdgToplevel::Destroy` dispatch remove the frame (popups
+   still drop directly). Nested receipt: a minimal GTK4 app logged
+   `CLOSE_REQUEST_RECEIVED` + `APP_SHUTDOWN`. `Delete` (XF86_Tools) and
+   the SSD titlebar ✕ route through it too.
+2. **No reachable restore/minimize for a maximized CSD app.** Added
+   **status-bar window controls** for the focused window, left of the
+   clock: **minimize · restore/maximize · close**
+   (`ui::draw_window_controls` + `ui::window_control_zones` at cx
+   112/172/232, hit-tested in `handle_tap`; `focused_window()`).
+3. **Settings latency.** The modal settings card is a full-screen
+   **opaque** egui `CentralPanel` (all four scene corners sample the
+   panel BG `18,21,26`), yet `render_frame` still re-rendered the whole
+   hidden scene under it. It now runs the egui panel **first**, skips the
+   scene while `settings_open`, clears the panel primitives on the Close
+   frame, and the loop re-arms `dirty` only via `settings_open &&
+   shell.wants_repaint()` instead of a fixed 60 Hz clock. (Nested frame
+   cost was <5 ms; the A53 measurement is still owed.)
+4. **Stuck Fn.** Fn = `KEY_RIGHTALT` (level-3 Mod5). `process_key` now
+   reconciles: on any non-RALT key, if xkb still holds Mod5 but
+   `EVIOCGKEY(96)` says RALT is up, force the RALT key-up first, so plain
+   `c`/`v`/`b`/`n` resolve to letters. Root cause unproven (an RALT-up
+   dropped while a frame renders is the hypothesis); this is a
+   self-healing net, evdev-only.
+
+`docs/gemshell.md` (new “2026-09-12 third glass-report batch” section +
+checklist items) and the gemshell row of `AGENTS.md` updated. Next:
+deploy, then confirm all four on glass (esp. the Fn regression and the
+settings tap latency).
+
 ## 2026-09-11 (c) — gemshell: no app padding, fill work area, drag by client title bar, app-level scaling
 
 Third report from the glass, same day. Deployed (gen51) and verified

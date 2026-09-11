@@ -182,6 +182,8 @@ pub fn draw_status_bar(o: &mut Vec<Op>, comp: &Compositor) {
     let t = format!("{:02}:{:02}", comp.status.hour, comp.status.minute);
     o.push(Op::Text { x: 14.0, baseline: STATUS_H - 12.0, s: t, c: BAR_FG });
 
+    draw_window_controls(o, comp);
+
     let cy = STATUS_H / 2.0;
     let s = 15.0;
     for (name, cx) in status_zones(comp.lw) {
@@ -196,6 +198,49 @@ pub fn draw_status_bar(o: &mut Vec<Op>, comp: &Compositor) {
             "bluetooth" => icon_bluetooth(o, cx, cy, s, comp.status.bluetooth, BAR_FG),
             "sound" => icon_speaker(o, cx, cy, s, comp.status.volume, comp.status.muted, BAR_FG),
             "settings" => icon_gear(o, cx, cy, s, BAR_FG),
+            _ => {}
+        }
+    }
+}
+
+/// Centres of the focused-window controls, left of the status bar (after
+/// the clock). Hit radius is `ZONE_HALF`, same as the status zones.
+pub fn window_control_zones() -> Vec<(&'static str, f32)> {
+    vec![("minimize", 112.0), ("maximize", 172.0), ("close", 232.0)]
+}
+
+/// Close / restore-maximize / minimize for the focused window, drawn in
+/// the status bar. These are the always-available window controls: a
+/// maximized app whose own CSD buttons are awkward to hit can still be
+/// closed or shrunk (on-glass report 2026-09-12).
+fn draw_window_controls(o: &mut Vec<Op>, comp: &Compositor) {
+    let Some(w) = comp.focused_window() else { return };
+    let maximized = w.maximized;
+    let cy = STATUS_H / 2.0;
+    for (name, cx) in window_control_zones() {
+        rounded(o, cx - 24.0, cy - 17.0, 48.0, 34.0, 10.0, ICON_TILE);
+        match name {
+            "minimize" => line(o, cx - 9.0, cy + 6.0, cx + 9.0, cy + 6.0, 3.0, BAR_FG),
+            "maximize" => {
+                if maximized {
+                    // restore: two offset squares
+                    line(o, cx - 8.0, cy - 3.0, cx + 4.0, cy - 3.0, 2.5, BAR_FG);
+                    line(o, cx + 4.0, cy - 3.0, cx + 4.0, cy + 7.0, 2.5, BAR_FG);
+                    line(o, cx + 4.0, cy + 7.0, cx - 8.0, cy + 7.0, 2.5, BAR_FG);
+                    line(o, cx - 8.0, cy + 7.0, cx - 8.0, cy - 3.0, 2.5, BAR_FG);
+                    line(o, cx - 5.0, cy - 6.0, cx + 7.0, cy - 6.0, 2.5, MUTED);
+                    line(o, cx + 7.0, cy - 6.0, cx + 7.0, cy + 4.0, 2.5, MUTED);
+                } else {
+                    line(o, cx - 7.0, cy - 6.0, cx + 7.0, cy - 6.0, 2.5, BAR_FG);
+                    line(o, cx + 7.0, cy - 6.0, cx + 7.0, cy + 7.0, 2.5, BAR_FG);
+                    line(o, cx + 7.0, cy + 7.0, cx - 7.0, cy + 7.0, 2.5, BAR_FG);
+                    line(o, cx - 7.0, cy + 7.0, cx - 7.0, cy - 6.0, 2.5, BAR_FG);
+                }
+            }
+            "close" => {
+                line(o, cx - 8.0, cy - 8.0, cx + 8.0, cy + 8.0, 3.0, BAR_FG);
+                line(o, cx - 8.0, cy + 8.0, cx + 8.0, cy - 8.0, 3.0, BAR_FG);
+            }
             _ => {}
         }
     }

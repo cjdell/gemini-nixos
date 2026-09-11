@@ -136,6 +136,13 @@ impl ShellUi {
         }
     }
 
+    /// Did egui ask for another frame (input, hover or an animation)?
+    /// The compositor uses this instead of repainting the whole scene at
+    /// 60 Hz while the panel is idle (2026-09-12).
+    pub fn wants_repaint(&self) -> bool {
+        self.ctx.has_requested_repaint()
+    }
+
     /// Reload every snapshot from the provider (shell-outs; call on open,
     /// after a mutation, or on a slow timer — never per frame).
     pub fn refresh(&mut self, data: &dyn DataProvider, ui_scale: f32) {
