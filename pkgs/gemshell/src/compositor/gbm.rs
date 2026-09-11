@@ -31,18 +31,42 @@ pub struct Gbm {
 }
 
 impl Gbm {
+    /// Open the gbm device. Tries the nodes in order and reports each
+    /// failure (diagnostic, added 2026-09-11: the service hit a bare
+    /// NULL from gbm_create_device(renderD128) — the direct-open probe
+    /// below tells open() from gbm apart).
     pub fn new(node: &str) -> Result<Self, String> {
-        let node_c = CString::new(node).map_err(|_| "nul in node".to_string())?;
-        let ptr = unsafe { gbm_create_device(node_c.as_ptr()) };
-        if ptr.is_null() {
-            return Err(format!("gbm_create_device({node}) failed — is the card present?"));
+        let nodes = [
+            node,
+            "/dev/dri/renderD129",
+            "/dev/dri/card0",
+            "/dev/dri/card1",
+        ];
+        let mut errs = String::new();
+        for n in nodes {
+            // Direct open probe: separates a device/permission failure
+            // from a gbm-internal failure.
+            let nc = CString::new(n).map_err(|_| "nul in node".to_string())?;
+            let ofd = unsafe { libc::open(nc.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+            if ofd >= 0 {
+                unsafe { libc::close(ofd) };
+            } else {
+                errs.push_str(&format!("{n}: open() failed: {:?}; ", std::io::Error::last_os_error()));
+                continue;
+            }
+            let ptr = unsafe { gbm_create_device(nc.as_ptr()) };
+            if !ptr.is_null() {
+                let fd = unsafe { gbm_device_get_fd(ptr) };
+                if fd >= 0 {
+                    return Ok(Gbm { ptr, fd });
+                }
+                unsafe { gbm_device_destroy(ptr) };
+                errs.push_str(&format!("{n}: open() ok, gbm_create_device ok, get_fd failed; "));
+                continue;
+            }
+            errs.push_str(&format!("{n}: open() ok, gbm_create_device NULL; "));
         }
-        let fd = unsafe { gbm_device_get_fd(ptr) };
-        if fd < 0 {
-            unsafe { gbm_device_destroy(ptr) };
-            return Err("gbm_device_get_fd failed".into());
-        }
-        Ok(Gbm { ptr, fd })
+        Err(format!("gbm: no usable node — {errs}"))
     }
 
     /// Drain the pending flip event(s).
