@@ -110,16 +110,20 @@ in
           # not exist on NixOS; the compositor's fallback walk covers
           # /run/current-system/sw/share/fonts too).
           "GEMSHELL_FONT=${fonts}/share/fonts/truetype/DejaVuSans.ttf"
-          # The DRI driver dir. CRITICAL (discovered on glass 2026-09-11):
-          # mesa 26's GBM/EGL platform (platform_drm.c) finds the GL
-          # driver through libgbm's DRI backend (gbm_dri.c), which
-          # dlopens ${driver}_dri.so from DRI_DRIVER_DIR → XDG_DATA_DIRS/dri
-          # → /usr/lib/dri — NONE of which exist on NixOS, so the GBM
-          # display initialised with ZERO configs (eglChooseConfig
-          # EGL_BAD_MATCH) and the ICD was never reached. Must point at
-          # the FORK's dri dir (mesa-geminipda, the T880 delta) —
-          # /run/opengl-driver's is the stock mesa and would mismatch the
-          # fork's libEGL_mesa ICD.
+          # CRITICAL (discovered on glass 2026-09-11): the EGL vendor
+          # manifest dir. libglvnd only looks in $EGL_VENDOR_PATH (or its
+          # compiled-in default /usr/share/glvnd/egl_vendor.d — which does
+          # not exist on NixOS). Without this it silently loads NO ICD and
+          # falls back to its built-in STUB: eglGetPlatformDisplayEXT
+          # returns a display, eglInitialize "succeeds" (1.5), but
+          # eglChooseConfig has ZERO configs (EGL_BAD_MATCH / 0x3004) and
+          # no loader output appears at all. The NixOS graphics-drivers
+          # bundle at /run/opengl-driver carries the manifest for the
+          # FORK (50_mesa.json → mesa-geminipda's libEGL_mesa, T880 delta).
+          "EGL_VENDOR_PATH=/run/opengl-driver/share/glvnd/egl_vendor.d"
+          # The DRI driver dir (mesa 26's pipe-loader still consults
+          # search-path env vars for <driver>_dri.so; keep it pointed at
+          # the fork's dri dir so the DRI driver matches the ICD).
           "DRI_DRIVER_DIR=${mesa}/lib/dri"
           # Keymap: the gemini layout (Fn = level-3) via the symbols dir.
           "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
