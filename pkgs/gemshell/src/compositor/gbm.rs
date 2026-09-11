@@ -1,79 +1,68 @@
-//! gbm (the KMS buffer allocator) — a hand-rolled FFI shim.
+//! gbm — a hand-rolled FFI shim.
 //!
-//! Usage: `gbm_create_device("/dev/dri/card0")` gives us a device whose
-//! fd reports page-flip events (a u32: GBM_BACK_BUFFER=1 / GBM_FLIP=2).
-//! The EGL side (render.rs) takes the SAME device pointer:
-//! eglGetPlatformDisplay(EGL_PLATFORM_GBM_MESA, gbm_device) +
-//! eglCreatePlatformSurface(EGL_SURFACE_TYPE, gbm_device, config,
-//! EGL_WIDTH/EGL_HEIGHT) — Mesa then allocates its own double-buffered
-//! bo pool on the device, renders into it and page-flips through the
-//! geminipda-drm shadow plane on eglSwapBuffers. We never touch the bo
-//! ourselves; we only poll the device fd for flip pacing.
+//! **mesa 26 API change (verified against the mesa-26.2.2 source,
+//! 2026-09-11):** `gbm_create_device` now takes an **int fd**, not a
+//! node path (src/gbm/main/gbm.c: `gbm_create_device(int fd)`). The
+//! pre-26 `const char *node` signature is gone from the same soname —
+//! passing a path made the lib fstat() a truncated pointer and return
+//! a bare NULL (that was the on-glass "gbm_create_device failed" —
+//! open() and drmOpen() of the node themselves are fine). So: open the
+//! node ourselves, hand the fd to gbm.
 //!
-//! (An explicit gbm_surface_lock_front_buffer + eglCreatePbufferFromGBMB…
-//! style flow would also work, but the platform-surface path is what
-//! weston/mesa-egl do and needs no manual bo bookkeeping.)
+//! Usage: `Gbm::new("/dev/dri/renderD128")` → the device whose fd the
+//! EGL side consumes: eglGetPlatformDisplay(EGL_PLATFORM_GBM_MESA,
+//! gbm_device) — Mesa allocates its own bo pool; we never touch the bo.
 
-use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_int, c_void};
 
 extern "C" {
-    pub fn gbm_create_device(node: *const c_char) -> *mut c_void;
+    /// The mesa 26 signature: an fd, NOT a node name.
+    pub fn gbm_create_device(fd: c_int) -> *mut c_void;
     pub fn gbm_device_destroy(dev: *mut c_void);
     pub fn gbm_device_get_fd(dev: *mut c_void) -> c_int;
-    /// Direct libdrm probe (the gbm lib resolves drmOpen via dlopen —
-    /// if THIS fails too, the problem is libdrm/node, not gbm).
-    fn drmOpen(node: *const c_char, bus_id: *const c_char) -> c_int;
-    fn drmClose(fd: c_int);
 }
 
 /// The gbm device (owned; passed by pointer to EGL).
 pub struct Gbm {
     pub ptr: *mut c_void,
-    /// the device fd (poll it for flip events)
+    /// the device fd (the one gbm was created with — poll it for
+    /// flip/backbuffer events)
     pub fd: c_int,
 }
 
 impl Gbm {
-    /// Open the gbm device. Tries the nodes in order and reports each
-    /// failure (diagnostic, added 2026-09-11: the service hit a bare
-    /// NULL from gbm_create_device(renderD128) — the direct-open probe
-    /// below tells open() from gbm apart).
+    /// Open the gbm device on the given node (falling back through the
+    /// others). The fd is handed to gbm and kept for event polling.
     pub fn new(node: &str) -> Result<Self, String> {
         let nodes = [
             node,
             "/dev/dri/renderD129",
+            "/dev/dri/renderD128",
             "/dev/dri/card0",
             "/dev/dri/card1",
         ];
         let mut errs = String::new();
         for n in nodes {
-            let nc = CString::new(n).map_err(|_| "nul in node".to_string())?;
-            // Probe chain: raw open → libdrm drmOpen (gbm's own call —
-            // the lib resolves it via dlopen) → gbm_create_device.
-            let ofd = unsafe { libc::open(nc.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-            if ofd < 0 {
+            let nc = std::ffi::CString::new(n).map_err(|_| "nul in node".to_string())?;
+            let fd = unsafe { libc::open(nc.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+            if fd < 0 {
                 errs.push_str(&format!("{n}: open() failed: {:?}; ", std::io::Error::last_os_error()));
                 continue;
             }
-            unsafe { libc::close(ofd) };
-            let dfd = unsafe { drmOpen(nc.as_ptr(), std::ptr::null()) };
-            if dfd < 0 {
-                errs.push_str(&format!("{n}: open() ok, drmOpen failed (errno {}); ", std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)));
-                continue;
-            }
-            unsafe { drmClose(dfd) };
-            let ptr = unsafe { gbm_create_device(nc.as_ptr()) };
+            let ptr = unsafe { gbm_create_device(fd) };
             if ptr.is_null() {
-                errs.push_str(&format!("{n}: open+drmOpen ok, gbm_create_device NULL; "));
+                unsafe { libc::close(fd) };
+                errs.push_str(&format!(
+                    "{n}: open() ok, gbm_create_device(fd) NULL (errno {}); ",
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+                ));
                 continue;
             }
-            let fd = unsafe { gbm_device_get_fd(ptr) };
-            if fd >= 0 {
-                return Ok(Gbm { ptr, fd });
-            }
-            unsafe { gbm_device_destroy(ptr) };
-            errs.push_str(&format!("{n}: gbm ok, get_fd failed; "));
+            // gbm_create_device takes ownership of the fd on success.
+            return Ok(Gbm {
+                ptr,
+                fd: unsafe { gbm_device_get_fd(ptr) },
+            });
         }
         Err(format!("gbm: no usable node — {errs}"))
     }
