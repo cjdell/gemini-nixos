@@ -391,6 +391,16 @@ impl Renderer {
             return Err(format!("eglInitialize failed (error 0x{:x})", unsafe { eglGetError() }));
         }
         log::info!("EGL {maj}.{min}");
+        // Vendor + API strings — distinguish the libglvnd STUB display
+        // (no ICD loaded) from a real ICD display (diagnostic, 2026-09-11).
+        let v = unsafe { eglQueryString(display, 0x3053) };
+        let a = unsafe { eglQueryString(display, 0x3054) };
+        let v = if v.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy().into_owned() };
+        let a = if a.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(a) }.to_string_lossy().into_owned() };
+        log::info!("EGL vendor: {v} — api: {a}");
+        let dev0 = unsafe { eglQueryString(display, 0x3050) };
+        let dev0 = if dev0.is_null() { "<null>".to_string() } else { unsafe { std::ffi::CStr::from_ptr(dev0) }.to_string_lossy().into_owned() };
+        log::info!("EGL extensions: {}", if dev0.len() > 300 { format!("{}...", &dev0[..300]) } else { dev0 });
         if unsafe { eglBindAPI(EGL_OPENGL_ES_API) } != EGL_TRUE {
             return Err("eglBindAPI(ES) failed".into());
         }
