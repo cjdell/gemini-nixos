@@ -1,0 +1,497 @@
+//! Input — raw evdev (keyboard + multitouch) + xkbcommon.
+//!
+//! The kernel reports the touch panel in raw portrait coordinates
+//! (identity with the 1080x2160 scene — the DT inverted-x+y transform
+//! was verified on glass 2026-09-10m), so we normalize against the
+//! ABS ranges and map 1:1. The keyboard is the AW9523 gpio-matrix
+//! (Fn = KEY_RIGHTALT, level-3 — xkb layout "gemini" carries the Fn
+//! layer; config/xkb/symbols/gemini).
+//!
+//! This module is purely evdev -> [`Event`] + xkb key state. Gesture
+//! policy (which finger does what, snapping, workspaces) lives in the
+//! compositor (mod.rs) — it needs window/UI state.
+
+use crate::common::util;
+use std::ffi::CString;
+
+// ---- xkbcommon FFI (the xkbcommon crate exposes the same lib; the
+// ---- compositor links libxkbcommon directly, so a local shim keeps
+// ---- the settings binary (which needs no xkb) free of the dep) ----
+mod xkb {
+    pub type xkb_context_t = std::os::raw::c_void;
+    pub type xkb_keymap_t = std::os::raw::c_void;
+    pub type xkb_state_t = std::os::raw::c_void;
+
+    #[repr(C)]
+    pub struct xkb_rule_names {
+        pub rules: *const std::os::raw::c_char,
+        pub model: *const std::os::raw::c_char,
+        pub layout: *const std::os::raw::c_char,
+        pub variant: *const std::os::raw::c_char,
+        pub options: *const std::os::raw::c_char,
+    }
+
+    extern "C" {
+        pub fn xkb_context_new(flags: u32) -> *mut xkb_context_t;
+        pub fn xkb_context_unref(ctx: *mut xkb_context_t);
+        pub fn xkb_keymap_new_from_names(
+            ctx: *mut xkb_context_t,
+            rmlvo: *const xkb_rule_names,
+            format: u32,
+        ) -> *mut xkb_keymap_t;
+        pub fn xkb_keymap_unref(km: *mut xkb_keymap_t);
+        pub fn xkb_keymap_get_as_string(
+            km: *mut xkb_keymap_t,
+            format: u32,
+        ) -> *const std::os::raw::c_char;
+        pub fn xkb_keymap_mod_get_index(
+            km: *mut xkb_keymap_t,
+            name: *const std::os::raw::c_char,
+        ) -> u8;
+        pub fn xkb_state_new(km: *mut xkb_keymap_t) -> *mut xkb_state_t;
+        pub fn xkb_state_unref(st: *mut xkb_state_t);
+        pub fn xkb_state_update_key(st: *mut xkb_state_t, key: u32, dir: u32) -> u32;
+        pub fn xkb_state_key_get_one_sym(st: *mut xkb_state_t, key: u32) -> u32;
+        // NOTE: this store's xkbcommon 1.13.1 (aarch64, nixpkgs 26.11 pin)
+        // exports ONLY the V_0.5.0-era state API: the newer
+        // xkb_state_mods_get_mask / xkb_state_mod_get_* / xkb_state_
+        // group_get_index family is NOT in its dynamic symbol table
+        // (verified 2026-09-11 by readelf on the store .so — the
+        // aarch64 build died with undefined references to each of them
+        // in turn). Build the wl modmap masks per slot with
+        // xkb_state_mod_index_is_active instead.
+        pub fn xkb_state_mod_index_is_active(
+            st: *mut xkb_state_t,
+            mod_index: u8,
+            state: u32,
+        ) -> u32;
+    }
+    pub const XKB_KEY_UP: u32 = 0;
+    pub const XKB_KEY_DOWN: u32 = 1;
+    pub const XKB_STATE_MODS_DEPRESSED: u32 = 1;
+    pub const XKB_STATE_MODS_LATCHED: u32 = 2;
+    pub const XKB_STATE_MODS_LOCKED: u32 = 4;
+    pub const XKB_KEYMAP_FORMAT_TEXT_V1: u32 = 1;
+}
+
+// evdev constants
+const EV_SYN: u16 = 0;
+const EV_KEY: u16 = 1;
+const EV_ABS: u16 = 3;
+const SYN_REPORT: u16 = 0;
+const ABS_MT_POSITION_X: u16 = 53;
+const ABS_MT_POSITION_Y: u16 = 54;
+const ABS_MT_TRACKING_ID: u16 = 57;
+const ABS_MT_SLOT: u16 = 57;
+
+const MAX_SLOTS: usize = 32;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AbsRange {
+    min: f32,
+    max: f32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawEvent {
+    tv_sec: i64,
+    tv_usec: i64,
+    etype: u16,
+    code: u16,
+    value: i32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct AbsInfo {
+    value: i32,
+    min: i32,
+    max: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
+fn eviocgabs(code: u16) -> u64 {
+    // _IOC(_IOC_READ, EVIOC=0x15, nr, sizeof(struct input_absinfo)=24)
+    (0x40u64 << 28) | (24u64 << 16) | (0x15u64 << 8) | code as u64
+}
+
+/// An input event the compositor acts on.
+pub enum Event {
+    /// A key press/release (or a repeat tick, `pressed` true).
+    Key {
+        /// the evdev keycode (xkb keycode = this + 8)
+        code: u32,
+        keysym: u32,
+        pressed: bool,
+        /// wl-style depressed mods (bit i = modmap slot i)
+        mods: u32,
+        /// the pressed keysyms (for wl_keyboard.enter)
+        pressed_keysyms: Vec<u32>,
+        /// set on the first event: the compiled keymap string
+        keymap: Option<String>,
+    },
+    TouchDown { id: u32, x: f32, y: f32 },
+    TouchUp { id: u32 },
+    TouchMotion { id: u32, x: f32, y: f32 },
+}
+
+pub struct Input {
+    pub kbd_fd: std::os::raw::c_int,
+    pub touch_fd: std::os::raw::c_int,
+    pub kbd_name: String,
+    pub touch_name: String,
+    ctx: *mut xkb::xkb_context_t,
+    keymap: *mut xkb::xkb_keymap_t,
+    state: *mut xkb::xkb_state_t,
+    keymap_str: Option<String>,
+    pub pressed: Vec<u32>,
+    /// wl modmap slot -> xkb mod bit
+    slot_bits: [u32; 13],
+    /// wl modmap slot -> xkb mod index (255 = absent)
+    slot_idx: [u8; 13],
+    slot_x: [f32; MAX_SLOTS],
+    slot_y: [f32; MAX_SLOTS],
+    slot_down: [bool; MAX_SLOTS],
+    cur_slot: usize,
+    x_range: AbsRange,
+    y_range: AbsRange,
+}
+
+/// Scan /dev/input for the keyboard + touch nodes (by device name).
+/// Returns (kbd path, touch path, kbd name, touch name).
+pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
+    let mut kbd: Option<(String, String)> = None; // (path, name)
+    let mut touch: Option<(String, String)> = None;
+    let Ok(rd) = std::fs::read_dir("/dev/input") else {
+        return (None, None, String::new(), String::new());
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Some(name) = util::read_to_string(&p.join("device/name")).map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        let lower = name.to_lowercase();
+        if lower.contains("touchscreen") || lower.contains("nt36") {
+            touch = Some((p.to_string_lossy().into_owned(), name));
+        } else if lower.contains("aw9523") || lower.contains("gpio-keys") || lower.contains("keyboard") {
+            if kbd.is_none() {
+                kbd = Some((p.to_string_lossy().into_owned(), name));
+            }
+        }
+    }
+    match (kbd, touch) {
+        (Some((kp, kn)), Some((tp, tn))) => (Some(kp), Some(tp), kn, tn),
+        (k, t) => (
+            k.as_ref().map(|x| x.0.clone()),
+            t.as_ref().map(|x| x.0.clone()),
+            k.map(|x| x.1).unwrap_or_default(),
+            t.map(|x| x.1).unwrap_or_default(),
+        ),
+    }
+}
+
+fn open_ro(path: &str) -> Result<std::os::raw::c_int, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr() as *const std::os::raw::c_char,
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!("open {path}: {}", std::io::Error::last_os_error()));
+    }
+    Ok(fd)
+}
+
+fn abs_range(fd: std::os::raw::c_int, cx: u16, cy: u16) -> Option<(AbsRange, AbsRange)> {
+    let mut ax = AbsInfo::default();
+    let mut ay = AbsInfo::default();
+    let rcx = unsafe { libc::ioctl(fd, eviocgabs(cx) as _, &mut ax as *mut AbsInfo) };
+    let rcy = unsafe { libc::ioctl(fd, eviocgabs(cy) as _, &mut ay as *mut AbsInfo) };
+    if rcx < 0 || rcy < 0 {
+        return None;
+    }
+    Some((
+        AbsRange { min: ax.min as f32, max: ax.max as f32 },
+        AbsRange { min: ay.min as f32, max: ay.max as f32 },
+    ))
+}
+
+impl Input {
+    pub fn open(kbd_path: &str, touch_path: &str, kbd_name: &str, touch_name: &str) -> Result<Self, String> {
+        let kbd_fd = open_ro(kbd_path)?;
+        let touch_fd = open_ro(touch_path)?;
+        log::info!("keyboard: {kbd_name} ({kbd_path})");
+        log::info!("touch: {touch_name} ({touch_path})");
+
+        // xkb keymap: layout from XKB_DEFAULT_LAYOUT (default "gemini");
+        // XKB_CONFIG_EXTRA_PATH carries the gemini symbols dir.
+        let layout = std::env::var("XKB_DEFAULT_LAYOUT").unwrap_or_else(|_| "gemini".into());
+        log::info!("keymap layout: {layout}");
+        let ctx = unsafe { xkb::xkb_context_new(0) };
+        if ctx.is_null() {
+            return Err("xkb_context_new failed".into());
+        }
+        let layout_c = CString::new(layout.clone()).map_err(|_| "nul".to_string())?;
+        let rules_opt = std::env::var("XKB_DEFAULT_RULES")
+            .ok()
+            .and_then(|s| CString::new(s).ok());
+        let options_opt = std::env::var("XKB_DEFAULT_OPTIONS")
+            .ok()
+            .and_then(|s| CString::new(s).ok());
+        let rmlvo = xkb::xkb_rule_names {
+            rules: rules_opt.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null()),
+            model: std::ptr::null(),
+            layout: layout_c.as_ptr(),
+            variant: std::ptr::null(),
+            options: options_opt.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null()),
+        };
+        let keymap = unsafe { xkb::xkb_keymap_new_from_names(ctx, &rmlvo, xkb::XKB_KEYMAP_FORMAT_TEXT_V1) };
+        if keymap.is_null() {
+            return Err(format!("xkb_keymap_new_from_names failed (layout={layout})"));
+        }
+        let keymap_str = unsafe {
+            let s = xkb::xkb_keymap_get_as_string(keymap, xkb::XKB_KEYMAP_FORMAT_TEXT_V1);
+            if s.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned()
+            }
+        };
+        log::info!("keymap compiled ({layout}): {} bytes", keymap_str.len());
+        let state = unsafe { xkb::xkb_state_new(keymap) };
+        if state.is_null() {
+            return Err("xkb_state_new failed".into());
+        }
+        let mut slot_bits = [0u32; 13];
+        let mut slot_idx = [32u8; 13]; // slot -> xkb mod index (255 = absent)
+        for (slot, name) in ["", "Shift", "Lock", "Control", "Mod1", "Mod2", "Mod3", "Mod4", "Mod5"]
+            .iter()
+            .enumerate()
+        {
+            if slot == 0 {
+                continue;
+            }
+            let idx =
+                unsafe { xkb::xkb_keymap_mod_get_index(keymap, CString::new(*name).unwrap().as_ptr()) };
+            if idx < 32 {
+                slot_bits[slot] |= 1 << idx;
+                slot_idx[slot] = idx;
+            }
+        }
+        let (xr, yr) =
+            abs_range(touch_fd, ABS_MT_POSITION_X, ABS_MT_POSITION_Y).unwrap_or((
+                AbsRange { min: 0.0, max: 1079.0 },
+                AbsRange { min: 0.0, max: 2159.0 },
+            ));
+        log::info!(
+            "touch ranges x [{:.0}..={:.0}] y [{:.0}..={:.0}]",
+            xr.min,
+            xr.max,
+            yr.min,
+            yr.max
+        );
+
+        Ok(Input {
+            kbd_fd,
+            touch_fd,
+            kbd_name: kbd_name.to_string(),
+            touch_name: touch_name.to_string(),
+            ctx,
+            keymap,
+            state,
+            keymap_str: Some(keymap_str),
+            pressed: Vec::new(),
+            slot_bits,
+            slot_idx,
+            slot_x: [0.0; MAX_SLOTS],
+            slot_y: [0.0; MAX_SLOTS],
+            slot_down: [false; MAX_SLOTS],
+            cur_slot: 0,
+            x_range: xr,
+            y_range: yr,
+        })
+    }
+
+    /// Non-blocking drain of both evdev nodes.
+    pub fn read_events(&mut self, scene_w: f32, scene_h: f32) -> Vec<Event> {
+        let mut out = Vec::new();
+        self.read_keyboard(&mut out);
+        self.read_touch(&mut out, scene_w, scene_h);
+        out
+    }
+
+    fn read_keyboard(&mut self, out: &mut Vec<Event>) {
+        let mut ev = RawEvent::default();
+        loop {
+            let n = unsafe {
+                libc::read(
+                    self.kbd_fd,
+                    &mut ev as *mut _ as *mut _,
+                    std::mem::size_of::<RawEvent>(),
+                )
+            };
+            if n != std::mem::size_of::<RawEvent>() as isize {
+                break;
+            }
+            if ev.etype != EV_KEY {
+                continue;
+            }
+            let code = ev.code as u32;
+            let dir = if ev.value == 0 { xkb::XKB_KEY_UP } else { xkb::XKB_KEY_DOWN };
+            unsafe { xkb::xkb_state_update_key(self.state, code, dir) };
+            if ev.value == 0 {
+                self.pressed.retain(|&k| k != code);
+            } else if ev.value == 1 {
+                self.pressed.push(code);
+            }
+            let keysym = unsafe { xkb::xkb_state_key_get_one_sym(self.state, code) };
+            if keysym == 0 {
+                continue;
+            }
+            // The depressed-mods mask, per slot (see the FFI note: the
+            // state mask getters are absent from this store's xkbcommon;
+            // the state was updated just above).
+            let (mods, _, _) = self.mods_masks();
+            let pressed_keysyms: Vec<u32> = self
+                .pressed
+                .iter()
+                .map(|&k| unsafe { xkb::xkb_state_key_get_one_sym(self.state, k) })
+                .collect();
+            let keymap = if out.iter().all(|e| !matches!(e, Event::Key { .. })) {
+                self.keymap_str.clone()
+            } else {
+                None
+            };
+            out.push(Event::Key {
+                code: code as u32,
+                keysym,
+                pressed: ev.value != 0,
+                mods,
+                pressed_keysyms,
+                keymap,
+            });
+        }
+    }
+
+    fn read_touch(&mut self, out: &mut Vec<Event>, scene_w: f32, scene_h: f32) {
+        let mut ev = RawEvent::default();
+        let mut frame: Option<(usize, f32, f32)> = None;
+        loop {
+            let n = unsafe {
+                libc::read(
+                    self.touch_fd,
+                    &mut ev as *mut _ as *mut _,
+                    std::mem::size_of::<RawEvent>(),
+                )
+            };
+            if n != std::mem::size_of::<RawEvent>() as isize {
+                break;
+            }
+            match (ev.etype, ev.code) {
+                (EV_ABS, ABS_MT_SLOT) => self.cur_slot = ev.value as usize % MAX_SLOTS,
+                (EV_ABS, ABS_MT_POSITION_X) => {
+                    self.slot_x[self.cur_slot] =
+                        self.norm(ev.value as f32, self.x_range) * scene_w;
+                }
+                (EV_ABS, ABS_MT_POSITION_Y) => {
+                    self.slot_y[self.cur_slot] =
+                        self.norm(ev.value as f32, self.y_range) * scene_h;
+                }
+                (EV_ABS, ABS_MT_TRACKING_ID) => {
+                    let s = self.cur_slot;
+                    if ev.value >= 0 && !self.slot_down[s] {
+                        self.slot_down[s] = true;
+                        out.push(Event::TouchDown {
+                            id: s as u32,
+                            x: self.slot_x[s],
+                            y: self.slot_y[s],
+                        });
+                    } else if ev.value < 0 && self.slot_down[s] {
+                        self.slot_down[s] = false;
+                        out.push(Event::TouchUp { id: s as u32 });
+                    }
+                    frame = Some((s, self.slot_x[s], self.slot_y[s]));
+                }
+                (EV_SYN, SYN_REPORT) => {
+                    if let Some((s, x, y)) = frame.take() {
+                        if self.slot_down[s] {
+                            out.push(Event::TouchMotion { id: s as u32, x, y });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn norm(&self, v: f32, r: AbsRange) -> f32 {
+        if r.max <= r.min {
+            0.0
+        } else {
+            (v - r.min) / (r.max - r.min)
+        }
+    }
+
+    pub fn keymap_string(&self) -> Option<String> {
+        self.keymap_str.clone()
+    }
+
+    /// The currently depressed mods, wl-style (bit i = modmap slot i).
+    pub fn current_mods(&self) -> u32 {
+        let mut mods = 0u32;
+        for slot in 1..13 {
+            if self.slot_idx[slot] < 32
+                && unsafe {
+                    xkb::xkb_state_mod_index_is_active(
+                        self.state,
+                        self.slot_idx[slot],
+                        xkb::XKB_STATE_MODS_DEPRESSED,
+                    )
+                } != 0
+            {
+                mods |= 1 << slot;
+            }
+        }
+        mods
+    }
+
+    /// The full wl_keyboard modifiers-event masks (depressed, latched,
+    /// locked) in modmap slot space — per-slot via
+    /// xkb_state_mod_index_is_active (see the FFI note for why the mask
+    /// getters are off the table on this store's xkbcommon).
+    pub fn mods_masks(&self) -> (u32, u32, u32) {
+        let mut out = [0u32; 3];
+        for slot in 1..13 {
+            if self.slot_idx[slot] >= 32 {
+                continue;
+            }
+            for (i, mode) in [xkb::XKB_STATE_MODS_DEPRESSED, xkb::XKB_STATE_MODS_LATCHED, xkb::XKB_STATE_MODS_LOCKED]
+                .iter()
+                .enumerate()
+            {
+                if unsafe {
+                    xkb::xkb_state_mod_index_is_active(self.state, self.slot_idx[slot], *mode)
+                } != 0
+                {
+                    out[i] |= 1 << slot;
+                }
+            }
+        }
+        (out[0], out[1], out[2])
+    }
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        unsafe {
+            xkb::xkb_state_unref(self.state);
+            xkb::xkb_keymap_unref(self.keymap);
+            xkb::xkb_context_unref(self.ctx);
+        }
+    }
+}

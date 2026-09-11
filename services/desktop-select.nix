@@ -52,16 +52,19 @@ in
     enable = lib.mkEnableOption "the Gemini desktop/session selector (boot marker -> GDM/console)";
 
     mode = lib.mkOption {
-      type = lib.types.enum [ "gnome" "cosmic" "niri" "console" ];
+      type = lib.types.enum [ "gnome" "cosmic" "niri" "gemshell" "console" ];
       default = "gnome";
       description = ''
         Desktop to start when the persistent marker
         ({file}`/var/lib/gemini/desktop`) is absent — a fresh install.
         `gnome`, `cosmic` and `niri` are GDM Wayland sessions on the
         geminipda-drm KMS device (all must be enabled at build time, see
-        services.desktopManager.* / programs.niri.enable); `console`
-        starts no display manager and stays on the framebuffer console.
-        Change at runtime with `gemcli session set <mode>`.
+        services.desktopManager.* / programs.niri.enable); `gemshell`
+        runs the native Rust compositor as a system service (services/
+        gemshell.nix — same sentinel mechanism as console: GDM skipped,
+        no tty1 getty); `console` starts no display manager and stays on
+        the framebuffer console. Change at runtime with
+        `gemcli session set <mode>`.
       '';
     };
 

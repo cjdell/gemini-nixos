@@ -185,6 +185,12 @@
       # gemdemo — minimal GLES 3.1 + ALSA template (docs/gemdemo.md; in
       # the rootfs via services/gemini-pda.nix — standalone builds/checks).
       gemdemo = eval.pkgs.callPackage ./pkgs/gemdemo.nix { };
+      # gemshell — the native Wayland compositor + gemsettings client
+      # (docs/gemshell.md; in the system via services/gemshell.nix when
+      # services.gemshellDesktop.enable — standalone builds/checks).
+      gemshell = eval.pkgs.callPackage ./pkgs/gemshell.nix {
+        mesa = mesa;
+      };
       # gemini-exodus — GEMINI: EXODUS (Director's Cut): the cinematic
       # spacesynth + GPU stress test restored from the 0.2.0 engine and
       # upgraded (docs/gemini-exodus.md; in the rootfs via
@@ -251,6 +257,10 @@
         # (docs/gemdemo.md; in the rootfs via services/gemini-pda.nix —
         # standalone build/iteration target).
         gemdemo = gemdemo;
+        # Native Wayland compositor + gemsettings client
+        # (docs/gemshell.md; in the system via services/gemshell.nix —
+        # standalone build/iteration target).
+        gemshell = gemshell;
         # GEMINI: EXODUS (Director's Cut) — cinematic spacesynth + GPU
         # stress test (docs/gemini-exodus.md; in the rootfs via
         # services/gemini-pda.nix).

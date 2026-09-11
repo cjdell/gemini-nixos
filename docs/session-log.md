@@ -5,6 +5,70 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — gemshell: the Rust compositor reaches BUILD-LEVEL (aarch64 build green; session wiring in; on-glass owed)
+
+The gemshell compositor (this repo's custom Rust desktop —
+docs/gemshell.md) went from "source exists, doesn't compile" to
+**compiling + linking for aarch64 in the nix build**, and got wired
+into the system as the fourth desktop mode.
+
+- **Compiles:** the whole crate (wayland-server 0.31 / xdg-shell / wl_shm
+  + EGL/GBM renderer + evdev input + shell UI + the gemsettings
+  client) now passes `cargo check` (host, x86_64) and the real
+  **`nix build .#packages.aarch64-linux.gemshell`** (remote builder,
+  ~6 min): store path `js6rq8h7v1xfg61q1fhyzg4sadqixshm-gemshell-0.1.0`
+  (bin `gemshell` 3.0 MiB + `gemsettings` 579 KiB; NEEDED =
+  wayland-server/xkbcommon/gbm/EGL/GLESv2; RUNPATH pinned per the
+  gemdemo receipt). The wayland 0.31 API rework (the 210-error first
+  compile) is done: `Resource::Request`/`DataInit` dispatch, WEnum
+  wrappers, `configure(width,height,states)` arg order, `keys` arrays
+  as `Vec<u8>`, per-client inner locks (the 17 `Dispatch` bound errors
+  came from the wayland object's `D: Resource` generic, not the
+  handler).
+- **Build gotchas** (all found only by the aarch64 build — the host
+  check never links; receipts in docs/gemshell.md "Build gotchas"):
+  (1) libglvnd's `libEGL.so.1` doesn't export `eglGetPlatformDisplayEXT`/
+  `eglCreatePlatformSurface` (readelf-verified) → resolved via
+  `eglGetProcAddress` (EGL 1.5); (2) the store's **xkbcommon 1.13.1
+  aarch64 exports only the V_0.5.0-era state API** — `xkb_state_*_mods*`/
+  `group_get_index` are all gone → wl modmap masks now built per slot
+  with `xkb_state_mod_index_is_active`; (3) `c_char` is `u8` on aarch64
+  (the FFI said `i8`); (4) the native link set is declared in
+  `pkgs/gemshell/build.rs` (wayland-server/client, xkbcommon, gbm, EGL,
+  GLESv2, png, z).
+- **Session wiring (all build-level):**
+  - `pkgs/gemshell.nix` — the package (rustPlatform, Cargo.lock pinned,
+    RUSTFLAGS `-L ${wayland}/lib`, patchelf RUNPATH).
+  - `services/gemshell.nix` — `services.gemshellDesktop` module: the
+    compositor as a SYSTEM service (User=cjdell, XDG_RUNTIME_DIR=/run/
+    gemshell) gated by `ConditionPathExists=/run/gemini-console` (the
+    SAME sentinel as console mode), + a `gemini-gemshell-panfrost-load`
+    unit (blacklist→load after `gemini-gpu-poweron`, same shape as
+    gnome.nix), force-disables the nested gemwl/phosh/LXQt stack +
+    standard pipewire, adds gemshell+gemdemo to the system profile.
+  - `services/desktop-select.nix` + `gemini-desktop-apply` +
+    `pkgs/gemcli/src/session.rs` — **`gemshell` is now a fifth mode**
+    (gemcli session list/set; the apply script creates the sentinel,
+    NO tty1 getty — the compositor owns the panel; GDM skipped).
+  - `config/gemini.nix` — module imported + `services.gemshellDesktop.
+    enable = true` (co-install model: inert unless the marker says
+    gemshell); cjdell gains the `input` + `bluetooth` groups (evdev
+    nodes + bluetoothctl for the compositor).
+  - `flake.nix` — `packages.aarch64-linux.gemshell` (+ the let-binding
+    sharing the flake's `mesa` binding so the ICD/kmsro pair is the
+    same store path as the system's).
+- **Verified:** `nix eval .#nixosConfigurations.gemini.config.systemd.
+  services."gemini-gemshell".wantedBy` → `["multi-user.target"]`,
+  top-level config eval green; gemcli's session-mode unit test updated
+  (five modes). **NOT on glass** — the bring-up checklist (docs/
+  gemshell.md) is the next session: flash a toplevel with the marker
+  set to gemshell (or `gemcli session set gemshell --reboot` from the
+  device after a deploy), eyes on the panel (rule 5: flicker → stop →
+  TWRP), then touch/keyboard/launcher/gemsettings/gemdemo.
+- No flashes this session (host-side build + config work only; device
+  untouched — glass state unchanged, whatever the previous session left
+  it as).
+
 ## 2026-09-11 — README/AGENTS restructure (human README, operational detail to AGENTS)
 
 Docs-only. The README had grown into an agent/ops dump. Split it:

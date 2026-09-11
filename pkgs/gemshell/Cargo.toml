@@ -1,0 +1,51 @@
+# gemshell — the native Gemini PDA Wayland compositor + desktop shell.
+#
+# Two binaries from one crate (shared helpers in src/common):
+#   gemshell     the compositor (KMS/GBM + Mesa GL, wl_shm + xdg-shell,
+#                multitouch gestures, status bar, taskbar, launcher,
+#                workspaces, snapping) — the "gemshell" session
+#   gemsettings  the settings client (Wi-Fi / Bluetooth / Audio) — an
+#                xdg_toplevel wl_shm client, CPU-drawn UI
+#
+# Design + receipts: docs/gemshell.md. Build: pkgs/gemshell.nix
+# (native aarch64 via the flake; x86_64 `cargo check` loop =
+# bin/gemshell-host-check.sh).
+
+[package]
+name = "gemshell"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Gemini PDA Wayland compositor + desktop shell (gemshell session)"
+
+[[bin]]
+name = "gemshell"
+path = "src/main.rs"
+
+[[bin]]
+name = "gemsettings"
+path = "src/settings.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[dependencies]
+# --- Wayland server (compositor) ---
+wayland-server = { version = "0.31", features = ["system", "log"] }
+wayland-protocols = { version = "0.32", features = ["client", "server"] }
+# --- Wayland client (gemsettings) ---
+wayland-client = { version = "0.31", features = ["system", "log"] }
+# --- keyboard ---
+xkbcommon = { version = "0.9", default-features = false }
+xkeysym = "0.2"
+# --- GL (compositor rendering) ---
+gl = "0.14"
+# --- misc ---
+png = "0.17"
+ab_glyph = "0.2"
+libc = "0.2"
+memmap2 = "0.9"
+log = "0.4"
+env_logger = "0.11"

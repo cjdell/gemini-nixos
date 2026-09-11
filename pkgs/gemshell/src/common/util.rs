@@ -1,0 +1,45 @@
+//! Tiny filesystem/time helpers.
+
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Milliseconds since the unix epoch (monotonic enough for UI timing).
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Read a file as a string; None on any error.
+pub fn read_to_string(p: &std::path::Path) -> Option<String> {
+    fs::read_to_string(p).ok()
+}
+
+/// First existing path in `candidates`.
+pub fn first_existing(candidates: &[&std::path::Path]) -> Option<std::path::PathBuf> {
+    candidates.iter().find(|p| p.exists()).map(|p| p.to_path_buf())
+}
+
+/// `which` for one tool over $PATH (the first executable match).
+pub fn which(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Local time (hour, minute) — no chrono (the device runs UTC; the
+/// settings app is expected to be used with the system clock = UTC
+/// until a tz is picked; `time.timeZone` applies to glibc-aware tools,
+/// but this is a raw clock read: matches what `date` shows in a
+/// systemd-journald timestamp).
+pub fn clock_hm() -> (u32, u32) {
+    let s = now_ms() / 1000;
+    let secs_of_day = (s % 86400) as u32;
+    (secs_of_day / 3600, (secs_of_day % 3600) / 60)
+}

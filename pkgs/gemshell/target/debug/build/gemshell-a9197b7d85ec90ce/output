@@ -1,0 +1,9 @@
+cargo:rustc-link-lib=wayland-server
+cargo:rustc-link-lib=wayland-client
+cargo:rustc-link-lib=xkbcommon
+cargo:rustc-link-lib=gbm
+cargo:rustc-link-lib=EGL
+cargo:rustc-link-lib=GLESv2
+cargo:rustc-link-lib=png
+cargo:rustc-link-lib=z
+cargo:rerun-if-changed=build.rs

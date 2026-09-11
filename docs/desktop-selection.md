@@ -1,4 +1,4 @@
-# Desktop/session selection — GNOME, COSMIC, niri, or the framebuffer console
+# Desktop/session selection — GNOME, COSMIC, niri, gemshell, or the framebuffer console
 
 Last updated: 2026-09-11
 
@@ -75,6 +75,8 @@ gemini-desktop-apply.service         oneshot, Before=display-manager.service,
         |
         | gnome|cosmic|niri : AccountsService SetSession/SetSessionType
         |                for cjdell (Wayland)  + rm /run/gemini-console
+        | gemshell     : touch /run/gemini-console (NO getty, NO chvt —
+        |                gemini-gemshell.service starts on that sentinel)
         |
         | console      : touch /run/gemini-console
         |                + start getty@tty1 (autologin cjdell)
@@ -111,17 +113,19 @@ display-manager start.
 | `gnome` | `mutter` on card0 (panfrost/kmsro) | GDM autologin → `gnome` session | **Verified on glass** (docs/gnome-feasibility.md). Default. |
 | `cosmic` | `cosmic-comp` on card0 | GDM autologin → `cosmic` session | COSMIC 1.6.0. **Unverified on glass** — see checklist. |
 | `niri` | `niri` on card0 (smithay) | GDM autologin → `niri` session | niri 26.04. **Unverified on glass** — see checklist. |
+| `gemshell` | the `gemshell` compositor on card0 (a SYSTEM service, User=cjdell — not a GDM session) | display-manager skipped; `gemini-gemshell.service` (ConditionPathExists=/run/gemini-console) | Native Rust Wayland compositor + gemsettings (docs/gemshell.md). **Build-level only** (2026-09-11) — on-glass checklist owed. No tty1 getty (the compositor owns the panel). |
 | `console` | none (fbcon tty1) | display-manager skipped; `getty@tty1` | No desktop; serial console (ttyS0) unaffected. |
 
 ## gemcli commands
 
 ```
 gemcli session status          # marker, console sentinel, AccountsService session
-gemcli session list            # the four modes
+gemcli session list            # the five modes
 gemcli session set niri        # persist; takes effect next boot
-gemcli session set niri --apply    # also update AccountsService now
+gemcli session set niri --apply    # also update the applier now
 gemcli session set niri --reboot   # persist + reboot (clean switch)
 gemcli session set cosmic      # (same, for COSMIC)
+gemcli session set gemshell    # native compositor from next boot
 gemcli session set console     # no desktop from next boot
 gemcli session apply           # re-run the applier for the current marker
 ```
@@ -188,7 +192,11 @@ panfrost/kmsro pairing the verified GNOME path uses.
 6. `gemcli session set gnome --reboot` — verify the return trip.
 7. `gemcli session set console --reboot` — verify no GDM, fbcon tty1
    autologin; then back to `gnome`.
-8. Log the version lines + outcomes in `docs/session-log.md` (rule 0).
+8. `gemcli session set gemshell --reboot` — verify no GDM, no tty1
+   getty, `gemini-gemshell.service` active and the panel shows the
+   gemshell scene (its own checklist: docs/gemshell.md);
+   `gemcli session set gnome --reboot` for the return trip.
+9. Log the version lines + outcomes in `docs/session-log.md` (rule 0).
 
 ### niri-specific checks
 
@@ -226,5 +234,5 @@ panfrost/kmsro pairing the verified GNOME path uses.
 | `services/scripts/gemini-desktop-apply` | boot applier (marker → AccountsService / console sentinel) |
 | `config/gemini.nix` | `services.desktopManager.cosmic.enable = true` + `programs.niri.enable = true` + selector wiring |
 | `services/gnome.nix` | leaves `displayManager.defaultSession` unset (selector owns it) |
-| `pkgs/gemcli/src/session.rs` | `gemcli session` (modes gnome/cosmic/niri/console) |
+| `pkgs/gemcli/src/session.rs` | `gemcli session` (modes gnome/cosmic/niri/gemshell/console) |
 | `pkgs/gemcli/src/main.rs` | `session set <mode>` clap value_parser (gnome/cosmic/niri/console) |

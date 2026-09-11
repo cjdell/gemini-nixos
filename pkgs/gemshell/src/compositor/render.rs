@@ -1,0 +1,807 @@
+//! GL rendering — EGL (Mesa, via libglvnd) on the gbm device, GLES.
+//!
+//! Immediate-mode quad drawing: one program (textured quad, y-down
+//! pixel coords), every draw call renders one shape (a quad, or a fan
+//! of quads for circles/arcs/lines). ~100 small draw calls per frame —
+//! trivial for the T880.
+//!
+//! - solid shapes use a 4x4 white texture, straight-alpha blend
+//! - window content: straight RGBA (converted from SHM XRGB/ARGB)
+//! - glyph atlas: premultiplied white (r=g=b=a=coverage)
+//! - icons: premultiplied RGBA
+//!
+//! The blend function is switched per category (premultiplied shapes
+//! use (ONE, ONE_MINUS_SRC_ALPHA); straight uses (SRC_ALPHA,
+//! ONE_MINUS_SRC_ALPHA)).
+
+use std::collections::HashMap;
+use std::ffi::{CString};
+use std::os::raw::{c_char, c_int, c_void};
+
+type EGLDisplay = *mut c_void;
+type EGLContext = *mut c_void;
+type EGLSurface = *mut c_void;
+type EGLConfig = c_void;
+
+extern "C" {
+    fn eglInitialize(d: EGLDisplay, major: *mut c_int, minor: *mut c_int) -> u32;
+    fn eglBindAPI(api: u32) -> u32;
+    fn eglChooseConfig(
+        d: EGLDisplay,
+        attrib_list: *const c_int,
+        configs: *mut EGLConfig,
+        config_count: c_int,
+        num_configs: *mut c_int,
+    ) -> u32;
+    fn eglCreateContext(
+        d: EGLDisplay,
+        config: *mut EGLConfig,
+        share_context: EGLContext,
+        attrib_list: *const c_int,
+    ) -> EGLContext;
+    fn eglMakeCurrent(d: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) -> u32;
+    fn eglSwapBuffers(d: EGLDisplay, surface: EGLSurface) -> u32;
+    fn eglGetError() -> c_int;
+    fn eglDestroySurface(d: EGLDisplay, s: EGLSurface) -> u32;
+    fn eglDestroyContext(d: EGLDisplay, c: EGLContext) -> u32;
+    fn eglTerminate(d: EGLDisplay) -> u32;
+    fn eglGetProcAddress(name: *const c_char) -> *mut c_void;
+}
+
+// EGL enums
+const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
+const EGL_SURFACE_TYPE: u32 = 0x3031;
+const EGL_OPENGL_ES_API: u32 = 0x30A0;
+const EGL_OPENGL_ES3_BIT: c_int = 0x00004000;
+const EGL_RENDERABLE_TYPE: c_int = 0x3095;
+const EGL_WIDTH: c_int = 0x303D;
+const EGL_HEIGHT: c_int = 0x303E;
+const EGL_CONTEXT_CLIENT_VERSION: c_int = 0x3098;
+const EGL_NONE: c_int = 0;
+const EGL_TRUE: u32 = 1;
+
+// GL enums
+const GL_FLOAT: u32 = 0x1406;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_RGBA: u32 = 0x1908;
+const GL_NEAREST: u32 = 0x2600;
+const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
+const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
+const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+const GL_CLAMP_TO_EDGE: u32 = 0x812F;
+const GL_BLEND: u32 = 0x0BE0;
+const GL_ONE: u32 = 1;
+const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
+const GL_SRC_ALPHA: u32 = 0x0302;
+const GL_DEPTH_TEST: u32 = 0x0B71;
+const GL_CULL_FACE: u32 = 0x0B44;
+const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
+const GL_ARRAY_BUFFER: u32 = 0x8892;
+const GL_DYNAMIC_DRAW: u32 = 0x88E8;
+const GL_TRIANGLE_STRIP: u32 = 5;
+const GL_VERTEX_SHADER: u32 = 0x8B31;
+const GL_FRAGMENT_SHADER: u32 = 0x8B30;
+const GL_COMPILE_STATUS: u32 = 0x8B81;
+const GL_LINK_STATUS: u32 = 0x8B82;
+const GL_VERSION: u32 = 0x1F02;
+
+extern "C" {
+    fn glCreateShader(t: u32) -> u32;
+    fn glShaderSource(s: u32, n: c_int, strings: *const *const c_char, lengths: *const c_int);
+    fn glCompileShader(s: u32);
+    fn glGetShaderiv(s: u32, p: u32, v: *mut c_int);
+    fn glGetShaderInfoLog(s: u32, max: c_int, len: *mut c_int, log: *mut c_void);
+    fn glCreateProgram() -> u32;
+    fn glAttachShader(p: u32, s: u32);
+    fn glLinkProgram(p: u32);
+    fn glGetProgramiv(p: u32, p2: u32, v: *mut c_int);
+    fn glGetProgramInfoLog(p: u32, max: c_int, len: *mut c_int, log: *mut c_void);
+    fn glUseProgram(p: u32);
+    fn glGetUniformLocation(p: u32, name: *const c_char) -> c_int;
+    fn glUniform2f(l: c_int, x: f32, y: f32);
+    fn glUniform4f(l: c_int, r: f32, g: f32, b: f32, a: f32);
+    fn glGenTextures(n: c_int, t: *mut u32);
+    fn glDeleteTextures(n: c_int, t: *const u32);
+    fn glBindTexture(t: u32, tex: u32);
+    fn glTexImage2D(
+        t: u32,
+        level: c_int,
+        internal: c_int,
+        w: c_int,
+        h: c_int,
+        border: c_int,
+        format: u32,
+        ty: u32,
+        data: *const c_void,
+    );
+    fn glTexSubImage2D(
+        t: u32,
+        level: c_int,
+        x: c_int,
+        y: c_int,
+        w: c_int,
+        h: c_int,
+        format: u32,
+        ty: u32,
+        data: *const c_void,
+    );
+    fn glTexParameteri(t: u32, p: u32, v: c_int);
+    fn glGenBuffers(n: c_int, b: *mut u32);
+    fn glBindBuffer(t: u32, b: u32);
+    fn glBufferData(t: u32, size: i64, data: *const c_void, usage: u32);
+    fn glVertexAttribPointer(i: c_int, size: c_int, ty: u32, normalized: u32, stride: u32, offset: u32);
+    fn glEnableVertexAttribArray(i: c_int);
+    fn glDrawArrays(mode: u32, first: c_int, count: c_int);
+    fn glClearColor(r: f32, g: f32, b: f32, a: f32);
+    fn glClear(mask: u32);
+    fn glEnable(cap: u32);
+    fn glDisable(cap: u32);
+    fn glBlendFunc(s: u32, d: u32);
+    fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
+    fn glGetString(name: u32) -> *const c_char;
+}
+
+const VERT: &str = r#"
+attribute vec2 aPos;
+attribute vec2 aUv;
+uniform vec2 uRes;
+varying vec2 vUv;
+void main() {
+    vec2 ndc = (aPos / uRes) * 2.0 - 1.0;
+    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    vUv = aUv;
+}
+"#;
+
+const FRAG: &str = r#"
+precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uTex;
+uniform vec4 uColor;
+void main() {
+    gl_FragColor = texture2D(uTex, vUv) * uColor;
+}
+"#;
+
+/// An rgba color, 0..=1.
+#[derive(Clone, Copy, Debug)]
+pub struct Color(pub [f32; 4]);
+
+impl Color {
+    pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Color([r, g, b, a])
+    }
+}
+
+/// pos.xy + uv.xy per vertex, y-down pixel coordinates.
+#[derive(Clone, Copy)]
+struct Vert {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+}
+
+impl Vert {
+    fn as_f32(&self) -> [f32; 4] {
+        [self.x, self.y, self.u, self.v]
+    }
+}
+
+/// A recorded draw operation (the compositor records a frame into a
+/// Vec<Op> while immutably borrowing window state, then replays it).
+#[derive(Clone)]
+pub enum Op {
+    Rect { x: f32, y: f32, w: f32, h: f32, c: Color },
+    RectTex {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        tex: u32,
+        c: Color,
+        premult: bool,
+    },
+    Circle { cx: f32, cy: f32, r: f32, c: Color },
+    Arc { cx: f32, cy: f32, r0: f32, r1: f32, a0: f32, a1: f32, c: Color },
+    Line { x0: f32, y0: f32, x1: f32, y1: f32, t: f32, c: Color },
+    Text { x: f32, baseline: f32, s: String, c: Color },
+    TextCentered { x: f32, w: f32, baseline: f32, s: String, c: Color },
+    TextClipped { x: f32, w: f32, baseline: f32, s: String, c: Color },
+}
+
+pub struct Renderer {
+    pub width: u32,
+    pub height: u32,
+    display: EGLDisplay,
+    context: EGLContext,
+    surface: EGLSurface,
+    program: u32,
+    a_pos: c_int,
+    a_uv: c_int,
+    u_res: c_int,
+    u_color: c_int,
+    vbo: u32,
+    white_tex: u32,
+    pub glyph_tex: u32,
+    /// window id -> (texture, width, height)
+    win_tex: HashMap<u32, (u32, u32, u32)>,
+    verts: Vec<Vert>,
+    colors: Vec<Color>,
+}
+
+impl Renderer {
+    pub fn new(
+        gbm_device: *mut c_void,
+        width: u32,
+        height: u32,
+        glyph_pixels: &[u8],
+        glyph_size: u32,
+    ) -> Result<Self, String> {
+        // --- EGL ---
+        // The two platform entry points (eglGetPlatformDisplayEXT /
+        // eglCreatePlatformSurface) are NOT exported by libglvnd's
+        // libEGL (verified 2026-09-11: readelf on the store libEGL.so.1
+        // — the core API only), so per the EGL 1.5 spec they are
+        // resolved through eglGetProcAddress, which libglvnd's dispatch
+        // answers from the vendor ICD (mesa-geminipda exports both).
+        type PlatformDisplayFn =
+            unsafe extern "C" fn(u32, *mut c_void, *const c_int) -> EGLDisplay;
+        type PlatformSurfaceFn =
+            unsafe extern "C" fn(EGLDisplay, u32, *mut c_void, *mut c_void, *const c_int) -> EGLSurface;
+        let eglGetPlatformDisplayEXT: PlatformDisplayFn = unsafe {
+            std::mem::transmute(eglGetProcAddress(
+                b"eglGetPlatformDisplayEXT\0".as_ptr() as *const c_char,
+            ))
+        };
+        let eglCreatePlatformSurface: PlatformSurfaceFn = unsafe {
+            std::mem::transmute(eglGetProcAddress(
+                b"eglCreatePlatformSurface\0".as_ptr() as *const c_char,
+            ))
+        };
+        let mut attrs = [
+            EGL_RENDERABLE_TYPE,
+            EGL_OPENGL_ES3_BIT,
+            EGL_WIDTH,
+            width as c_int,
+            EGL_HEIGHT,
+            height as c_int,
+            EGL_NONE,
+        ];
+        let display = unsafe { eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA, gbm_device, std::ptr::null()) };
+        if display.is_null() {
+            return Err(format!(
+                "eglGetPlatformDisplay(GBM) failed (error 0x{:x})",
+                unsafe { eglGetError() }
+            ));
+        }
+        let (mut maj, mut min) = (0i32, 0i32);
+        if unsafe { eglInitialize(display, &mut maj, &mut min) } != EGL_TRUE {
+            return Err(format!("eglInitialize failed (error 0x{:x})", unsafe { eglGetError() }));
+        }
+        log::info!("EGL {maj}.{min}");
+        if unsafe { eglBindAPI(EGL_OPENGL_ES_API) } != EGL_TRUE {
+            return Err("eglBindAPI(ES) failed".into());
+        }
+        let mut config: EGLConfig = unsafe { std::mem::zeroed() };
+        let mut nconf = 0i32;
+        if unsafe {
+            eglChooseConfig(
+                display,
+                attrs.as_ptr(),
+                &mut config as *mut EGLConfig,
+                1,
+                &mut nconf,
+            )
+        } != EGL_TRUE
+            || nconf < 1
+        {
+            return Err(format!("eglChooseConfig failed (error 0x{:x})", unsafe {
+                eglGetError()
+            }));
+        }
+        let mut ctx_attrs = [EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE];
+        let context = unsafe {
+            eglCreateContext(
+                display,
+                &config as *const c_void as *mut c_void,
+                std::ptr::null_mut(),
+                ctx_attrs.as_ptr(),
+            )
+        };
+        if context.is_null() {
+            return Err(format!("eglCreateContext failed (error 0x{:x})", unsafe {
+                eglGetError()
+            }));
+        }
+        let surface = unsafe {
+            eglCreatePlatformSurface(
+                display,
+                EGL_SURFACE_TYPE,
+                gbm_device,
+                &config as *const c_void as *mut c_void,
+                std::ptr::null(),
+            )
+        };
+        if surface.is_null() {
+            return Err(format!(
+                "eglCreatePlatformSurface(GBM) failed (error 0x{:x})",
+                unsafe { eglGetError() }
+            ));
+        }
+        if unsafe { eglMakeCurrent(display, surface, surface, context) } != EGL_TRUE {
+            return Err(format!("eglMakeCurrent failed (error 0x{:x})", unsafe {
+                eglGetError()
+            }));
+        }
+
+        // --- GL ---
+        gl::load_with(|name| unsafe {
+            let c = CString::new(name).unwrap();
+            eglGetProcAddress(c.as_ptr()) as *const c_void
+        });
+
+        let version = unsafe { glGetString(GL_VERSION) };
+        let version = if version.is_null() {
+            "unknown".to_string()
+        } else {
+            // GL owns this string until the next call — do NOT from_raw
+            unsafe { std::ffi::CStr::from_ptr(version) }.to_string_lossy().into_owned()
+        };
+        log::info!("GL: {version}");
+
+        let program = build_program(VERT, FRAG)?;
+        let loc = |name: &str| unsafe {
+            glGetUniformLocation(program, CString::new(name).unwrap().as_ptr())
+        };
+        let a_pos = loc("aPos");
+        let a_uv = loc("aUv");
+        let u_res = loc("uRes");
+        let u_color = loc("uColor");
+
+        let mut vbo = 0u32;
+        unsafe { glGenBuffers(1, &mut vbo) };
+
+        let mut r = Renderer {
+            width,
+            height,
+            display,
+            context,
+            surface,
+            program,
+            a_pos,
+            a_uv,
+            u_res,
+            u_color,
+            vbo,
+            white_tex: 0,
+            glyph_tex: 0,
+            win_tex: HashMap::new(),
+            verts: Vec::new(),
+            colors: Vec::new(),
+        };
+
+        let white = [255u8; 16 * 4];
+        r.white_tex = r.make_texture(4, 4, &white)?;
+        if !glyph_pixels.is_empty() {
+            r.glyph_tex = r.make_texture(glyph_size, glyph_size, glyph_pixels)?;
+        }
+        Ok(r)
+    }
+
+    fn make_texture(&mut self, w: u32, h: u32, rgba8: &[u8]) -> Result<u32, String> {
+        let mut tex = 0u32;
+        unsafe {
+            glGenTextures(1, &mut tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as c_int);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA as c_int,
+                w as c_int,
+                h as c_int,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                rgba8.as_ptr() as *const c_void,
+            );
+        }
+        Ok(tex)
+    }
+
+    /// (Re)create a window content texture from an SHM buffer
+    /// (XRGB8888 or ARGB8888, little-endian byte order) and return the
+    /// texture id.
+    pub fn window_texture(
+        &mut self,
+        id: u32,
+        w: u32,
+        h: u32,
+        stride: u32,
+        format: u32,
+        data: &[u8],
+    ) -> u32 {
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let s = (y * stride + x * 4) as usize;
+                let d = ((y * w + x) * 4) as usize;
+                // wl_shm XRGB8888/ARGB8888 memory layout (little-endian)
+                // is [B, G, R, X/A] — build a standard [R, G, B, A]
+                let b = data[s];
+                let g = data[s + 1];
+                let r = data[s + 2];
+                let a = if format == 0x34325258 { 255 } else { data[s + 3] }; // XRGB8888
+                rgba[d] = r;
+                rgba[d + 1] = g;
+                rgba[d + 2] = b;
+                rgba[d + 3] = a;
+            }
+        }
+        match self.win_tex.get(&id) {
+            Some(&(tex, tw, th)) if tw == w && th == h => {
+                unsafe {
+                    glBindTexture(GL_TEXTURE_2D, tex);
+                    glTexSubImage2D(
+                        GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        w as c_int,
+                        h as c_int,
+                        GL_RGBA,
+                        GL_UNSIGNED_BYTE,
+                        rgba.as_ptr() as *const c_void,
+                    );
+                }
+                tex
+            }
+            _ => {
+                if let Some(&(tex, _, _)) = self.win_tex.get(&id) {
+                    unsafe { glDeleteTextures(1, &tex) };
+                }
+                let tex = match self.make_texture(w, h, &rgba) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!("window texture: {e}");
+                        return self.white_tex;
+                    }
+                };
+                self.win_tex.insert(id, (tex, w, h));
+                tex
+            }
+        }
+    }
+
+    pub fn drop_window_texture(&mut self, id: u32) {
+        if let Some((tex, _, _)) = self.win_tex.remove(&id) {
+            unsafe { glDeleteTextures(1, &tex) };
+        }
+    }
+
+    // ---------- immediate drawing ----------
+
+    fn frame_setup(&mut self) {
+        unsafe {
+            glViewport(0, 0, self.width as c_int, self.height as c_int);
+            glClearColor(0.055, 0.07, 0.085, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glUseProgram(self.program);
+            glUniform2f(self.u_res, self.width as f32, self.height as f32);
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo);
+            glEnableVertexAttribArray(self.a_pos);
+            glEnableVertexAttribArray(self.a_uv);
+            glVertexAttribPointer(self.a_pos, 2, GL_FLOAT, 0, 16, 0);
+            glVertexAttribPointer(self.a_uv, 2, GL_FLOAT, 0, 16, 8);
+        }
+    }
+
+    fn draw(&mut self, tex: u32, c: Color, premult: bool) {
+        if self.verts.is_empty() {
+            return;
+        }
+        unsafe {
+            glBlendFunc(
+                if premult { GL_ONE } else { GL_SRC_ALPHA },
+                GL_ONE_MINUS_SRC_ALPHA,
+            );
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glUniform4f(self.u_color, c.0[0], c.0[1], c.0[2], c.0[3]);
+            let bytes: Vec<f32> = self
+                .verts
+                .iter()
+                .flat_map(|v: &Vert| v.as_f32())
+                .collect();
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                (bytes.len() * 4) as i64,
+                bytes.as_ptr() as *const c_void,
+                GL_DYNAMIC_DRAW,
+            );
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, self.verts.len() as c_int);
+        }
+        self.verts.clear();
+    }
+
+    fn quad(&mut self, x: f32, y: f32, w: f32, h: f32, u0: f32, v0: f32, u1: f32, v1: f32) {
+        self.verts.extend([
+            Vert { x, y, u: u0, v: v0 },
+            Vert { x: x + w, y, u: u1, v: v0 },
+            Vert { x, y: y + h, u: u0, v: v1 },
+            Vert { x: x + w, y: y + h, u: u1, v: v1 },
+        ]);
+    }
+
+    /// Solid rectangle (straight alpha).
+    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Color) {
+        self.quad(x, y, w, h, 0.0, 0.0, 1.0, 1.0);
+        self.draw(self.white_tex, c, false);
+    }
+
+    /// Textured rectangle (glyphs: premultiplied; window content:
+    /// straight). `premult` selects the blend mode.
+    pub fn rect_tex(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        tex: u32,
+        c: Color,
+        premult: bool,
+    ) {
+        self.quad(x, y, w, h, u0, v0, u1, v1);
+        self.draw(tex, c, premult);
+    }
+
+    /// Filled circle (fan of quads, straight alpha).
+    pub fn circle(&mut self, cx: f32, cy: f32, r: f32, c: Color) {
+        const SEG: usize = 24;
+        for i in 0..SEG {
+            let a0 = i as f32 / SEG as f32 * std::f32::consts::TAU;
+            let a1 = (i + 1) as f32 / SEG as f32 * std::f32::consts::TAU;
+            let p0 = (cx + r * a0.cos(), cy + r * a0.sin());
+            let p1 = (cx + r * a1.cos(), cy + r * a1.sin());
+            self.verts.extend([
+                Vert { x: cx, y: cy, u: 0.0, v: 0.0 },
+                Vert { x: p0.0, y: p0.1, u: 0.0, v: 0.0 },
+                Vert { x: cx, y: cy, u: 0.0, v: 0.0 },
+                Vert { x: p1.0, y: p1.1, u: 0.0, v: 0.0 },
+            ]);
+        }
+        self.draw(self.white_tex, c, false);
+    }
+
+    /// Annular arc (ring segment), straight alpha. Angles in radians
+    /// (y-down: 0 = right, PI/2 = down).
+    pub fn arc(&mut self, cx: f32, cy: f32, r0: f32, r1: f32, a0: f32, a1: f32, c: Color) {
+        const SEG: usize = 10;
+        for i in 0..SEG {
+            let t0 = a0 + (a1 - a0) * i as f32 / SEG as f32;
+            let t1 = a0 + (a1 - a0) * (i + 1) as f32 / SEG as f32;
+            let p = |a: f32, r: f32| (cx + r * a.cos(), cy + r * a.sin());
+            let (q0o, q1o, q1i, q0i) = (p(t0, r0), p(t1, r0), p(t1, r1), p(t0, r1));
+            self.verts.extend([
+                Vert { x: q0o.0, y: q0o.1, u: 0.0, v: 0.0 },
+                Vert { x: q1o.0, y: q1o.1, u: 0.0, v: 0.0 },
+                Vert { x: q0i.0, y: q0i.1, u: 0.0, v: 0.0 },
+                Vert { x: q1i.0, y: q1i.1, u: 0.0, v: 0.0 },
+            ]);
+        }
+        self.draw(self.white_tex, c, false);
+    }
+
+    /// Thick line (a quad along the segment), straight alpha.
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, t: f32, c: Color) {
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let nx = -dy / len * t * 0.5;
+        let ny = dx / len * t * 0.5;
+        self.verts.extend([
+            Vert { x: x0 + nx, y: y0 + ny, u: 0.0, v: 0.0 },
+            Vert { x: x1 + nx, y: y1 + ny, u: 0.0, v: 0.0 },
+            Vert { x: x0 - nx, y: y0 - ny, u: 0.0, v: 0.0 },
+            Vert { x: x1 - nx, y: y1 - ny, u: 0.0, v: 0.0 },
+        ]);
+        self.draw(self.white_tex, c, false);
+    }
+
+    /// Draw `s` at pen (x = left, baseline = y) in color c.
+    pub fn text(&mut self, font: &crate::common::font::Font, x: f32, baseline: f32, s: &str, c: Color) {
+        let mut pen = x;
+        for ch in s.chars() {
+            if let Some(g) = font.glyph(ch) {
+                let top = baseline - g.y_top;
+                self.rect_tex(
+                    pen + g.x_off,
+                    top,
+                    g.w as f32,
+                    g.h as f32,
+                    g.u0,
+                    g.v0,
+                    g.u1,
+                    g.v1,
+                    self.glyph_tex,
+                    c,
+                    true,
+                );
+            }
+            pen += font
+                .glyph(ch)
+                .map(|g| g.advance)
+                .unwrap_or_else(|| font.size * 0.6);
+        }
+    }
+
+    /// Centered text inside [x, x+w], baseline at y.
+    pub fn text_centered(
+        &mut self,
+        font: &crate::common::font::Font,
+        x: f32,
+        w: f32,
+        baseline: f32,
+        s: &str,
+        c: Color,
+    ) {
+        let tw = font.text_width(s);
+        self.text(font, x + (w - tw) / 2.0, baseline, s, c);
+    }
+
+    /// Text clipped to [x, x+w] (left aligned) — for window titles.
+    pub fn text_clipped(
+        &mut self,
+        font: &crate::common::font::Font,
+        x: f32,
+        w: f32,
+        baseline: f32,
+        s: &str,
+        c: Color,
+    ) {
+        let mut pen = x;
+        for ch in s.chars() {
+            let Some(g) = font.glyph(ch) else { break };
+            let gx = pen + g.x_off;
+            if gx >= x + w {
+                break;
+            }
+            let gw = (g.w as f32).min(x + w - gx);
+            let top = baseline - g.y_top;
+            self.rect_tex(
+                gx,
+                top,
+                gw,
+                g.h as f32,
+                g.u0,
+                g.v0,
+                g.u0 + (g.u1 - g.u0) * gw / g.w as f32,
+                g.v1,
+                self.glyph_tex,
+                c,
+                true,
+            );
+            pen += g.advance;
+            if pen > x + w {
+                break;
+            }
+        }
+    }
+
+    /// Begin the frame (viewport + clear).
+    pub fn begin_frame(&mut self) {
+        self.frame_setup();
+    }
+
+    /// Replay recorded ops.
+    pub fn replay(&mut self, font: &crate::common::font::Font, ops: &[Op]) {
+        for op in ops {
+            match op {
+                Op::Rect { x, y, w, h, c } => self.rect(*x, *y, *w, *h, *c),
+                Op::RectTex {
+                    x, y, w, h, u0, v0, u1, v1, tex, c, premult,
+                } => self.rect_tex(*x, *y, *w, *h, *u0, *v0, *u1, *v1, *tex, *c, *premult),
+                Op::Circle { cx, cy, r, c } => self.circle(*cx, *cy, *r, *c),
+                Op::Arc {
+                    cx, cy, r0, r1, a0, a1, c,
+                } => self.arc(*cx, *cy, *r0, *r1, *a0, *a1, *c),
+                Op::Line { x0, y0, x1, y1, t, c } => self.line(*x0, *y0, *x1, *y1, *t, *c),
+                Op::Text { x, baseline, s, c } => self.text(font, *x, *baseline, s, *c),
+                Op::TextCentered { x, w, baseline, s, c } => {
+                    self.text_centered(font, *x, *w, *baseline, s, *c)
+                }
+                Op::TextClipped { x, w, baseline, s, c } => {
+                    self.text_clipped(font, *x, *w, *baseline, s, *c)
+                }
+            }
+        }
+    }
+
+    /// Public texture creation (app icons).
+    pub fn make_texture_pub(&mut self, w: u32, h: u32, rgba8: &[u8]) -> Result<u32, String> {
+        self.make_texture(w, h, rgba8)
+    }
+
+    /// The window content texture id (for switcher thumbnails).
+    pub fn window_texture_id(&self, id: u32) -> Option<u32> {
+        self.win_tex.get(&id).map(|t| t.0)
+    }
+
+    /// Present the frame (page-flip via the gbm shadow plane).
+    pub fn swap(&mut self) -> Result<(), String> {
+        if unsafe { eglSwapBuffers(self.display, self.surface) } != EGL_TRUE {
+            return Err(format!(
+                "eglSwapBuffers failed (error 0x{:x})",
+                unsafe { eglGetError() }
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn build_program(vert: &str, frag: &str) -> Result<u32, String> {
+    unsafe {
+        let make = |src: &str, ty: u32| -> Result<u32, String> {
+            let s = glCreateShader(ty);
+            let c = CString::new(src).unwrap();
+            let len = [c.as_bytes().len() as c_int];
+            glShaderSource(s, 1, c.as_ptr() as *const *const c_char, len.as_ptr());
+            glCompileShader(s);
+            let mut ok = 0i32;
+            glGetShaderiv(s, GL_COMPILE_STATUS, &mut ok);
+            if ok == 0 {
+                let mut log = vec![0u8; 512];
+                let mut l = 0i32;
+                glGetShaderInfoLog(s, 512, &mut l, log.as_mut_ptr() as *mut c_void);
+                let msg = String::from_utf8_lossy(&log[..l.max(0) as usize]).into_owned();
+                return Err(format!("shader compile: {msg}"));
+            }
+            Ok(s)
+        };
+        let vs = make(VERT, GL_VERTEX_SHADER)?;
+        let fs = make(frag, GL_FRAGMENT_SHADER)?;
+        let p = glCreateProgram();
+        glAttachShader(p, vs);
+        glAttachShader(p, fs);
+        glLinkProgram(p);
+        let mut ok = 0i32;
+        glGetProgramiv(p, GL_LINK_STATUS, &mut ok);
+        if ok == 0 {
+            let mut log = vec![0u8; 512];
+            let mut l = 0i32;
+            glGetProgramInfoLog(p, 512, &mut l, log.as_mut_ptr() as *mut c_void);
+            return Err(format!(
+                "program link: {}",
+                String::from_utf8_lossy(&log[..l.max(0) as usize])
+            ));
+        }
+        Ok(p)
+    }
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        unsafe {
+            eglMakeCurrent(self.display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+            eglDestroySurface(self.display, self.surface);
+            eglDestroyContext(self.display, self.context);
+            eglTerminate(self.display);
+        }
+    }
+}

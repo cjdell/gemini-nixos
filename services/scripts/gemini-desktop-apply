@@ -34,6 +34,13 @@
 #                    configured (getty.nix), so bring up an autologin
 #                    getty on tty1 explicitly (autologin comes from
 #                    services.getty.autologinUser).
+#   gemshell       : create the sentinel TOO — but start NO getty and do
+#                    NOT chvt: the gemshell compositor (a system service
+#                    with ConditionPathExists=/run/gemini-console, see
+#                    services/gemshell.nix) owns the panel directly and a
+#                    tty1 console would fight the shadow-plane blit for
+#                    the same scanout memory. GDM is skipped by the same
+#                    condition as in console mode.
 #
 # Exit 0 = applied, 1 = bad mode / failure (display-manager then still
 # runs, i.e. the safe fallback, because no sentinel is created).
@@ -51,6 +58,13 @@ if [ -r "$MARKER" ]; then
 fi
 
 case "$mode" in
+    gemshell)
+        # Sentinel only: display-manager skips (its Condition), and
+        # gemini-gemshell.service starts (its Condition) — NO tty1
+        # getty (the compositor owns the panel; see the header).
+        : > "$SENTINEL"
+        echo "gemini-desktop: gemshell — display-manager skipped, compositor owns the panel"
+        ;;
     console)
         : > "$SENTINEL"
         # Bring up the tty1 console getty (see the header for why it is
@@ -73,7 +87,7 @@ case "$mode" in
         echo "gemini-desktop: $mode — AccountsService session set for $USER_NAME (uid $uid)"
         ;;
     *)
-        echo "gemini-desktop: unknown mode '$mode' — want gnome|cosmic|niri|console" >&2
+        echo "gemini-desktop: unknown mode '$mode' — want gnome|cosmic|niri|gemshell|console" >&2
         exit 1
         ;;
 esac

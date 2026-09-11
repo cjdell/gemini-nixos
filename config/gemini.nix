@@ -87,12 +87,18 @@ in
     # kernel driver (/dev/dri/card0). Mutually exclusive with gemwl/phosh/
     # LXQt, which it force-disables. docs/gnome-feasibility.md.
     ../services/gnome.nix
-    # Desktop/session selector (2026-09-10): a persistent marker
-    # (/var/lib/gemini/desktop) picks which GDM session auto-logs in
-    # (gnome, cosmic or niri) or whether to stay on the fbcon console.
-    # They are ALL co-installed; only one owns the panel per boot.
-    # `gemcli session set gnome|cosmic|niri|console`. docs/desktop-selection.md.
+    # Desktop/session selector (2026-09-10; +gemshell 2026-09-11): a
+    # persistent marker (/var/lib/gemini/desktop) picks which GDM session
+    # auto-logs in (gnome, cosmic or niri), whether the native Rust
+    # compositor (gemshell) owns the panel, or whether to stay on the
+    # fbcon console. They are ALL co-installed; only one owns the panel
+    # per boot. `gemcli session set gnome|cosmic|niri|gemshell|console`.
+    # docs/desktop-selection.md.
     ../services/desktop-select.nix
+    # gemshell — the native Rust Wayland compositor as a boot session
+    # (co-installed, marker-selected; inert unless the marker says
+    # `gemshell`). docs/gemshell.md.
+    ../services/gemshell.nix
   ];
 
   system.stateVersion = "26.11";
@@ -161,6 +167,12 @@ in
   # install); `gemcli session set` overrides it persistently.
   services.geminiDesktop.enable = true;
   services.geminiDesktop.mode = "gnome";
+
+  # The gemshell compositor is CO-INSTALLED (the marker decides per
+  # boot); its units are inert unless `gemcli session set gemshell`.
+  # 2026-09-11: build-level (on-glass bring-up checklist owed —
+  # docs/gemshell.md).
+  services.gemshellDesktop.enable = true;
 
   # ---- Console --------------------------------------------------------
   # The kernel config bakes the console setup
@@ -258,6 +270,10 @@ in
       # service desktop — there is no logind session to tag)
       "audio" # /dev/snd* — the PipeWire session runs as cjdell too
       "networkmanager"
+      # gemshell compositor (system service, User=cjdell): the evdev
+      # nodes (/dev/input) + bluetoothctl (2026-09-11).
+      "input"
+      "bluetooth"
     ];
     # Same operator key as root: `ssh cjdell@10.15.19.82` debugs the
     # desktop session as the session user (root stays the admin path).
