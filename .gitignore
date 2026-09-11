@@ -23,3 +23,6 @@ pkgs/gemdemo/target/
 
 # mtkclient writes this DA/eMMC identity file into the cwd (repo root)
 hwparam.json
+
+# gemshell build artifacts
+pkgs/gemshell/target/

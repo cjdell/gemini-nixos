@@ -1,1 +1,0 @@
-Dispatch<wayland_protocols::xdg::shell::server::xdg_positioner::XdgPositioner, PositionerData>
