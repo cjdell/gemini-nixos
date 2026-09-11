@@ -79,12 +79,40 @@ argument and always compiled the global `VERT` — latent because only one
 program existed; the new egui program exposed it (link error "fragment
 input vColor has no matching output"). Fixed.
 
-**Not touched / owed:** nothing flashed; device state unchanged. On-glass
-pass owed: orientation/handedness (try `GEMSHELL_ROTATE`/`_TOUCH_ROTATE`
-90 vs 270), the egui panel over touch + hardware keyboard, and an
-aarch64 build + `bin/deploy.sh`/`bin/gemshell-dev.sh` run. Historical
-session-log entries above still cite `pkgs/gemcli/src/…` — those paths
-now live under `pkgs/gemshell/crates/gemdata-device/src/`.
+**On-glass follow-up (same day, after `bin/deploy.sh deploy` → gens
+39–42).** Three more fixes, all verified on the glass:
+
+- **Rotation 180° out.** `GEMSHELL_ROTATE`/`GEMSHELL_TOUCH_ROTATE =
+  90` rendered the scene 180° out. The 270 branch is the 180°
+  counterpart and the exact inverse of the touch-270 mapping, so the
+  defaults moved to **270** together (confirmed correct by the user).
+- **Input freeze.** The evdev nodes were opened without `O_NONBLOCK`, so
+  the drain loop's follow-up `read()` blocked and the whole compositor
+  froze on the first input event (verified live: main thread blocked in
+  `evdev_read` on fd 3, `syscall=63`). Added `O_NONBLOCK`.
+- **Touch completely dead — THE root cause.** `ABS_MT_SLOT` was defined
+  as **57**, but 57 is `ABS_MT_TRACKING_ID` (SLOT is 0x2f = **47**).
+  Because the SLOT arm is matched first, every tracking-id event was
+  swallowed as a slot change, so a finger-down was never registered.
+  Fixed the constant (0x2f). Also corrected the protocol-B **order**:
+  `nvt36xxx_report` sends `TRACKING_ID` before `POSITION_X/Y`, so the
+  old code emitted the down with the previous contact's coordinates;
+  `read_touch` now records per-slot state and emits at `SYN_REPORT`.
+  Proof via the repo injector on glass:
+  `tapxy 1035 2115` → journal `touch-trail: down id=0 scene=(44,1036)`.
+
+**Touch test aid (`GEMSHELL_TOUCH_TRAIL=1`, set in
+`services/gemshell.nix`):** every finger draws a coloured trail on the
+scene (`ui::draw_touch_trail`), normal gestures are bypassed, and a
+3-finger touch clears the canvas — so touch is verifiable by drawing.
+Remove the env to restore normal gestures. `bin/touch-inject.c` gained a
+multi-point stroke mode (`tapxy X Y [X2 Y2 …]`) for scripted strokes.
+
+**Not touched / owed:** nothing flashed (deploys only). On-glass still
+owed: the egui settings panel over touch + the hardware keyboard, and a
+`bin/gemshell-dev.sh` run. Historical session-log entries above still
+cite `pkgs/gemcli/src/…` — those paths now live under
+`pkgs/gemshell/crates/gemdata-device/src/`.
 
 ## 2026-09-11 — gemshell ON GLASS: compositor renders; gemsettings; nested x86_64; landscape
 

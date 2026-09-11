@@ -33,7 +33,7 @@ follows: the logical scene is **2160x1080** (`compositor::W/H`), and
 portrait like the fb; `Input::touch_to_scene` applies the matching
 inverse rotation.
 
-- `GEMSHELL_ROTATE` (default 90) — display counter-rotation.
+- `GEMSHELL_ROTATE` (default **270**) — display counter-rotation.
 - `GEMSHELL_TOUCH_ROTATE` (default = `GEMSHELL_ROTATE`).
 
 Because display and touch use the same transform, an incorrect direction
@@ -50,6 +50,43 @@ orientation-preserving. It also matches `touch_to_scene` rotation 90
 (`(ny*scene_w, (1-nx)*scene_h)`), so touch and display finally agree.
 The rotation DIRECTION (90 vs 270) is still the calibration knob:
 `GEMSHELL_ROTATE`/`GEMSHELL_TOUCH_ROTATE`.
+
+**2026-09-12 on-glass result:** `90` rendered the scene **180° out**, so
+both defaults moved to **270** (the 180° counterpart, and the exact
+inverse of the touch-270 mapping) — confirmed correct.
+
+### Touch (Protocol-B) — the dead-touch root cause
+
+The NT36772 driver reports Protocol B as
+`ABS_MT_SLOT` → `input_mt_report_slot_state` (`ABS_MT_TRACKING_ID`) →
+`ABS_MT_POSITION_X/Y` (`novatek-nt36xxx.c nvt36xxx_report`). Two bugs
+kept touch dead; both are fixed (2026-09-12):
+
+1. **`ABS_MT_SLOT` was `57`** — 57 is `ABS_MT_TRACKING_ID`; SLOT is
+   `0x2f = 47`. The match lists SLOT first, so every tracking-id event
+   was consumed as a slot change and a finger-down was never
+   registered. This was *the* cause (touch was dead even before any
+   transform issue).
+2. **Emit at SYN_REPORT, not at TRACKING_ID.** Because TRACKING_ID
+   precedes `POSITION_X/Y`, the old code emitted the down with the
+   previous contact's (or `0,0`) coordinates. `read_touch` now records
+   per-slot down/up + changed flags and emits `TouchDown`/`Motion`/`Up`
+   at `SYN_REPORT`, when positions are final.
+
+Also `read_events`' evdev fds MUST be `O_NONBLOCK` — the drain loop's
+follow-up `read()` otherwise blocks and freezes the whole compositor on
+the first event.
+
+### Touch test mode (`GEMSHELL_TOUCH_TRAIL`)
+
+Set `GEMSHELL_TOUCH_TRAIL=1` (the system service sets it by default for
+the bring-up) and every finger draws a coloured trail on the scene
+(`ui::draw_touch_trail`), one colour per finger id, with pen-up breaks;
+normal gestures are bypassed while the mode is on, and a **3-finger
+touch clears** the canvas. This is how touch is verified on the glass —
+remove the env from `services/gemshell.nix` to restore normal gestures.
+For scripted strokes use the repo injector's new multi-point mode:
+`tapxy X Y [X2 Y2 …]` (built from `bin/touch-inject.c`).
 
 ## Nested mode on x86_64 (development)
 
