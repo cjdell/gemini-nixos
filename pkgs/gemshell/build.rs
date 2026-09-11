@@ -16,6 +16,10 @@ fn main() {
         "xkbcommon",
         // hand-declared gbm FFI (src/compositor/gbm.rs)
         "gbm",
+        // hand-declared drmOpen/drmClose probe (src/compositor/gbm.rs;
+        // libdrm is only a transitive dep of libgbm, so link it directly
+        // — the aarch64 link died on `DSO missing from command line`)
+        "drm",
         // hand-declared EGL FFI (src/compositor/render.rs)
         "EGL",
         // hand-declared GL ES FFI (src/compositor/render.rs)

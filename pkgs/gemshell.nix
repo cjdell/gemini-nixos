@@ -38,7 +38,7 @@
 # only pulled the -dev outputs of wayland, so dlopen("libwayland-*.so.0")
 # failed on glass. Pin the REAL lib dirs on the RUNPATH in postFixup
 # (the ELF references pull them into the runtime closure automatically).
-{ lib, rustPlatform, pkg-config, patchelf, wayland, libxkbcommon, libglvnd, libpng, zlib, mesa }:
+{ lib, rustPlatform, pkg-config, patchelf, wayland, libxkbcommon, libglvnd, libpng, zlib, mesa, libdrm }:
 
 rustPlatform.buildRustPackage rec {
   pname = "gemshell";
@@ -52,7 +52,7 @@ rustPlatform.buildRustPackage rec {
   cargoLock.lockFile = ./gemshell/Cargo.lock;
 
   nativeBuildInputs = [ pkg-config patchelf ];
-  buildInputs = [ wayland libxkbcommon libglvnd libpng zlib mesa ];
+  buildInputs = [ wayland libxkbcommon libglvnd libpng zlib mesa libdrm ];
 
   # -lwayland-server/-lwayland-client resolve from the store, not the
   # system path (same trick as gemdemo).
@@ -67,7 +67,7 @@ rustPlatform.buildRustPackage rec {
     # sonames failed on glass). The ELF references pull them into the
     # runtime closure automatically.
     ${patchelf}/bin/patchelf --set-rpath \
-      "${wayland}/lib:${libxkbcommon}/lib:${libglvnd}/lib:${mesa}/lib:${libpng}/lib" \
+      "${wayland}/lib:${libxkbcommon}/lib:${libglvnd}/lib:${mesa}/lib:${libpng}/lib:${libdrm}/lib" \
       $out/bin/gemshell $out/bin/gemsettings
   '';
 
