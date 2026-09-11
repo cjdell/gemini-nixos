@@ -399,13 +399,14 @@ impl Renderer {
         // configs does this display have AT ALL, and what do they say?
         let mut all: [EGLConfig; 64] = unsafe { std::mem::zeroed() };
         let mut nall = 0i32;
-        let ok_all = unsafe { eglChooseConfig(display, &[EGL_NONE].as_ptr(), all.as_mut_ptr(), 64, &mut nall) };
+        let none = [EGL_NONE];
+        let ok_all = unsafe { eglChooseConfig(display, none.as_ptr(), all.as_mut_ptr(), 64, &mut nall) };
         log::info!("eglChooseConfig(EGL_NONE): {} (n={nall})", if ok_all == EGL_TRUE { "ok" } else { "FAIL" });
         if ok_all == EGL_TRUE {
             for (i, cfg) in all.iter().take(nall as usize).enumerate() {
                 let (mut rt, mut st, mut r) = (0i32, 0i32, 0i32);
                 unsafe { eglGetConfigAttribute(display, cfg, EGL_RENDERABLE_TYPE, &mut rt) };
-                unsafe { eglGetConfigAttribute(display, cfg, EGL_SURFACE_TYPE, &mut st) };
+                unsafe { eglGetConfigAttribute(display, cfg, EGL_SURFACE_TYPE as c_int, &mut st) };
                 unsafe { eglGetConfigAttribute(display, cfg, EGL_RED_SIZE, &mut r) };
                 log::info!("  config[{i}]: renderable_type=0x{rt:x} surface_type=0x{st:x} red={r}");
             }
