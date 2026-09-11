@@ -303,7 +303,10 @@ impl Input {
             variant: std::ptr::null(),
             options: options_opt.as_ref().map(|c| c.as_ptr()).unwrap_or(std::ptr::null()),
         };
-        let keymap = unsafe { xkb::xkb_keymap_new_from_names(ctx, &rmlvo, xkb::XKB_KEYMAP_FORMAT_TEXT_V1) };
+        // 3rd arg is COMPILE FLAGS (0 = NO_FLAGS), not the format enum
+        // (XKB_KEYMAP_FORMAT_TEXT_V1 == 1 → "unrecognized keymap
+        // compilation flags: 0x1" from the lib, verified 2026-09-11).
+        let keymap = unsafe { xkb::xkb_keymap_new_from_names(ctx, &rmlvo, 0) };
         if keymap.is_null() {
             return Err(format!("xkb_keymap_new_from_names failed (layout={layout})"));
         }
