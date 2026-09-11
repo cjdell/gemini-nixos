@@ -27,7 +27,7 @@
 #   persisted "performance" profile must not cold-start the cluster while
 #   boot is still busy; a profile change during the settle applies at
 #   once). A72 operations are flock-serialized so a sleep teardown and a
-#   watcher bring-up can never overlap. See pkgs/gemcli/src/profile.rs.
+#   watcher bring-up can never overlap. See pkgs/gemshell/crates/gemdata-device/src/profile.rs.
 #
 # MANUAL USE
 #   gemcli profile status                 # active profile + A72 state

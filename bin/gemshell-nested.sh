@@ -7,12 +7,13 @@
 #   2. runs it with GEMSHELL_NESTED=1 under the CURRENT graphical session
 #      (Wayland; KWin on this box), presenting the scene in an
 #      xdg_toplevel window.
-#   3. optionally autostarts gemsettings (GEMSHELL_AUTOSTART) so the
-#      window has content immediately.
+#   3. opens the egui settings panel at startup (GEMSHELL_OPEN_SETTINGS=1,
+#      the default here) so the UI is visible immediately.
 #
 # Env knobs:
 #   GEMSHELL_NESTED_SCALE   window size / logical scene size (default 0.5)
-#   GEMSHELL_AUTOSTART      client to launch (default gemsettings; "" = none)
+#   GEMSHELL_OPEN_SETTINGS  open the in-process settings panel (default 1)
+#   GEMSHELL_AUTOSTART      extra client to launch (default none)
 #   WAYLAND_DISPLAY         host socket (default wayland-0)
 #   GEMSHELL_BUILD=0        skip the nix build (use the cached path)
 #
@@ -47,11 +48,10 @@ if [ -z "${GEMSHELL_FONT:-}" ]; then
     fi
 fi
 export GEMSHELL_FONT
-# Autostart a client by default so something is on screen.
-if [ -z "${GEMSHELL_AUTOSTART+x}" ]; then
-    GEMSHELL_AUTOSTART=gemsettings
-fi
-export GEMSHELL_AUTOSTART
+# The settings panel is in-process now; open it so the window has
+# content immediately.
+export GEMSHELL_OPEN_SETTINGS="${GEMSHELL_OPEN_SETTINGS:-1}"
+export GEMSHELL_AUTOSTART="${GEMSHELL_AUTOSTART:-}"
 
 # --- build ------------------------------------------------------------------
 if [ "${GEMSHELL_BUILD:-1}" != 0 ]; then
@@ -62,7 +62,6 @@ else
 fi
 echo "== gemshell: $out ==" >&2
 
-# Put gemsettings on PATH for GEMSHELL_AUTOSTART.
 export PATH="$out/bin:$PATH"
 
 exec "$out/bin/gemshell" "$@"

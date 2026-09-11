@@ -1,0 +1,17 @@
+[package]
+name = "gemcli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Gemini PDA device-control CLI — thin frontend over gemdata-device"
+
+[[bin]]
+name = "gemcli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2"
+# The device functions live in the data layer (moved here 2026-09-12):
+# `gemcli` and gemshell share ONE implementation (no duplication).
+gemdata-device = { path = "../gemdata-device" }

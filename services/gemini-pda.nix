@@ -287,7 +287,7 @@ in
   # The clamshell has no suspend path yet (no wake source for s2idle —
   # the PMIC side keys are polled, not IRQ-driven); this daemon owns
   # the button and toggles the LIGHT sleep: `gemcli sleep on|off`
-  # (pkgs/gemcli/src/sleep.rs) powers down everything controllable
+  # (pkgs/gemshell/crates/gemdata-device/src/sleep.rs) powers down everything controllable
   # while the kernel stays up — backlight off FIRST (instant press
   # feedback), keyboard matrix + touch unbound (the closed lid presses
   # the keys — unbound they generate nothing), A53 cpus 1-7 offline,

@@ -113,7 +113,7 @@ display-manager start.
 | `gnome` | `mutter` on card0 (panfrost/kmsro) | GDM autologin → `gnome` session | **Verified on glass** (docs/gnome-feasibility.md). Default. |
 | `cosmic` | `cosmic-comp` on card0 | GDM autologin → `cosmic` session | COSMIC 1.6.0. **Unverified on glass** — see checklist. |
 | `niri` | `niri` on card0 (smithay) | GDM autologin → `niri` session | niri 26.04. **Unverified on glass** — see checklist. |
-| `gemshell` | the `gemshell` compositor on card0 (a SYSTEM service, User=cjdell — not a GDM session) | display-manager skipped; `gemini-gemshell.service` (ConditionPathExists=/run/gemini-console) | Native Rust Wayland compositor + gemsettings (docs/gemshell.md). **Build-level only** (2026-09-11) — on-glass checklist owed. No tty1 getty (the compositor owns the panel). |
+| `gemshell` | the `gemshell` compositor on card0 (a SYSTEM service, User=cjdell — not a GDM session) | display-manager skipped; `gemini-gemshell.service` (ConditionPathExists=/run/gemini-console) | Native Rust Wayland compositor + in-process egui settings panel (docs/gemshell.md). **On glass 2026-09-11; reworked 2026-09-12** (egui UI, gemdata abstraction, present() mirror fix). No tty1 getty (the compositor owns the panel). |
 | `console` | none (fbcon tty1) | display-manager skipped; `getty@tty1` | No desktop; serial console (ttyS0) unaffected. |
 
 ## gemcli commands
@@ -234,5 +234,5 @@ panfrost/kmsro pairing the verified GNOME path uses.
 | `services/scripts/gemini-desktop-apply` | boot applier (marker → AccountsService / console sentinel) |
 | `config/gemini.nix` | `services.desktopManager.cosmic.enable = true` + `programs.niri.enable = true` + selector wiring |
 | `services/gnome.nix` | leaves `displayManager.defaultSession` unset (selector owns it) |
-| `pkgs/gemcli/src/session.rs` | `gemcli session` (modes gnome/cosmic/niri/gemshell/console) |
-| `pkgs/gemcli/src/main.rs` | `session set <mode>` clap value_parser (gnome/cosmic/niri/console) |
+| `pkgs/gemshell/crates/gemdata-device/src/session.rs` | `gemcli session` (modes gnome/cosmic/niri/gemshell/console) |
+| `pkgs/gemshell/crates/gemdata-device/src/main.rs` | `session set <mode>` clap value_parser (gnome/cosmic/niri/console) |

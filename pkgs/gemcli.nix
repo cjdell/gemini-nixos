@@ -1,57 +1,50 @@
 # gemcli — the Gemini PDA device-control CLI, native Rust.
 #
-# Source (pkgs/gemcli/): a clap(derive)-based binary with one subcommand
-# per device function — semantic ports of the verified bring-up shell
-# scripts in services/scripts/ (see docs/gemcli.md for the map and the
-# migration/test recipe):
-#   backlight  <- backlight                  battery <- battstat
-#   charger    <- bq25896-raw.sh             power   <- power
-#   guard      <- battery-guard.sh (daemon)  a72     <- cl2-up.sh + cl2-down.sh
-#   gpu        <- gemini-gpu-poweron.sh      wdt-reboot <- gemini-wdt-reboot
-#   boot       <- gemini-boot-recovery/-debian
-#   speaker    <- speaker (gpio chardev, no C helper)
-# plus `status` (aggregate), `selfcheck` (read-only on-glass parity
-# harness) and `version` (rule-0 identity banner).
+# 2026-09-12 refactor: the device functions were MOVED out of this
+# package into the shared data layer (`pkgs/gemshell/crates/
+# gemdata-device/`), so gemshell and gemcli share ONE implementation
+# (no duplication). gemcli is now a thin clap frontend over
+# `gemdata-device`; its crate lives in the gemshell cargo workspace at
+# `pkgs/gemshell/crates/gemcli`.
 #
-# Runtime access model (no new kernel features): /dev/mem mmap for the
-# SPM/DISP_PWM0/WDT registers (busybox-devmem equivalent), i2c-dev
-# ioctls for the BQ25896/DA9214/RT5735 buses (i2c-tools equivalent,
-# including the adapter-by-DT-base resolution and `-f` force semantics),
-# the gpio chardev v1 linehandle API for the speaker-amp pads, and
-# sysfs for the power supplies + cpu hotplug. Only two crate deps:
-# clap + libc (both hydra-cached; the lockfile pins them — see
-# Cargo.lock). Time is UTC (the device runs UTC); no chrono.
+# This derivation therefore builds the workspace member: `src` is the
+# gemshell workspace and `buildAndTestSubdir` selects the gemcli crate.
+# The nix cargo hook points CARGO_TARGET_DIR at the workspace root, so
+# only gemcli's binary lands in $out/bin (see the hook's comment: "ensure
+# the output doesn't end up in the subdirectory").
 #
-# Build = native aarch64 (this flake's canonical model): rustPlatform
-# from eval.pkgs builds with the aarch64 rustc on the remote builder.
-# cargo test runs in the sandbox (doCheck default; 6 unit tests, pure
-# logic only — no /dev/mem needed).
-#
-# Migration status (2026-09-08): gemcli is added to the rootfs closure
-# (services/gemini-pda.nix systemPackages) NEXT TO the scripts; NO
-# systemd unit has been flipped. Flip order + the on-glass parity pass
-# are in docs/gemcli.md.
+# Subcommand map / parity recipe / migration status: docs/gemcli.md.
+# Runtime access model (unchanged): /dev/mem mmap, i2c-dev ioctls, the
+# gpio chardev v1 linehandle API, sysfs. Only crate deps: clap + libc.
 { lib, rustPlatform }:
 
 rustPlatform.buildRustPackage rec {
   pname = "gemcli";
   version = "0.1.0";
 
-  src = ./gemcli;
+  # The shared workspace (gemdata / gemdata-device / gemcli / gemshell).
+  # `target/` is excluded (a local cargo tree is 500 MB+).
+  src = lib.cleanSourceWith {
+    src = ./gemshell;
+    filter = path: _type: baseNameOf (toString path) != "target";
+  };
+  cargoLock.lockFile = ./gemshell/Cargo.lock;
+  # Build (and test) the gemcli member only.
+  buildAndTestSubdir = "crates/gemcli";
 
-  # Deps pinned by the committed lockfile (clap 4.5 + libc 0.2 + the
-  # clap_derive proc-macro set). Regenerate with `cargo generate-lockfile`
-  # inside pkgs/gemcli and commit the result.
-  cargoLock.lockFile = ./gemcli/Cargo.lock;
+  # The unit tests live with the implementation in gemdata-device (run
+  # via that crate's derivation / the host cargo loop), not the CLI.
+  doCheck = false;
 
   meta = with lib; {
     description = "gemcli — Gemini PDA device control (backlight/battery/A72/WDT/boot/GPU/speaker)";
     longDescription = ''
-      Native-Rust manager for the Gemini PDA device functions the bring-up
-      shell scripts handle. Semantic port of services/scripts/* with
-      script-compatible exit codes; ships alongside the scripts until the
-      on-glass parity pass (docs/gemcli.md) — then the systemd units'
-      ExecStart flip from script to gemcli one at a time.
+      Thin clap frontend over the shared gemdata-device implementation:
+      backlight, battery/charger, the safety guard, A72 bring-up, WDT
+      reboot, boot-target selection, GPU power, speaker amps, sleep,
+      power profile and session selection. Runs alongside the bring-up
+      shell scripts until the on-glass parity pass flips each unit
+      (docs/gemcli.md).
     '';
     homepage = "https://github.com/planet-computers"; # upstream: gemini-nixos repo (local)
     license = licenses.mit;

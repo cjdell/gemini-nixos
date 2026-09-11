@@ -1,14 +1,16 @@
 # gemshell — the native Gemini PDA Wayland compositor + desktop shell.
 #
-# ONE package, two binaries from ONE crate (pkgs/gemshell/, shared
-# `src/common/`):
-#   gemshell     — the compositor: wayland-server (xdg-shell v1, wl_shm,
-#                  seat keyboard+touch) + EGL/GBM on /dev/dri/card0
-#                  (geminipda-drm) through Mesa kmsro->panfrost, evdev
-#                  input (xkbcommon keymap), compositor-drawn shell UI
-#                  (status bar, launcher, workspaces, gestures).
-#   gemsettings  — a plain xdg_toplevel wl_shm CLIENT (Wi-Fi/BT/Audio
-#                  screens; CPU-drawn, no app toolkit).
+# ONE binary: `gemshell` — the compositor (wayland-server: xdg-shell v1,
+# wl_shm, seat keyboard+touch; EGL/GBM through Mesa kmsro->panfrost;
+# evdev input; compositor-drawn shell chrome: status bar, launcher,
+# workspaces, gestures).
+#
+# 2026-09-12: the old `gemsettings` wl_shm client (hand-drawn CPU UI) was
+# REMOVED. The settings panel is now an in-process **egui** overlay
+# (GPU-tessellated meshes, real font shaping — src/shell.rs), fed by the
+# shared `gemdata::DataProvider`. The workspace also builds the data
+# crates (gemdata / gemdata-device / gemdata-dummy) and the gemcli CLI
+# frontend (pkgs/gemcli.nix).
 #
 # Story + on-glass checklist: docs/gemshell.md.
 #
@@ -29,7 +31,8 @@
 #
 # Build = native aarch64 (this flake's canonical model): rustPlatform
 # from eval.pkgs; cargoLock.lockFile pins the crate set (regenerate with
-# `cargo generate-lockfile` inside pkgs/gemshell and commit).
+# `cargo generate-lockfile` inside pkgs/gemshell and commit). egui is
+# pure Rust (bundled fonts), so no extra native build inputs.
 #
 # Host-side iteration: `bash bin/gemshell-host-check.sh` (cargo check on
 # x86_64 in a nix shell; seconds — the fast loop for this crate).
@@ -44,7 +47,12 @@ rustPlatform.buildRustPackage rec {
   pname = "gemshell";
   version = "0.1.0";
 
-  src = ./gemshell;
+  # Exclude the host cargo build tree (571 MB of target/ after a local
+  # `cargo check`) so the store source stays small and deterministic.
+  src = lib.cleanSourceWith {
+    src = ./gemshell;
+    filter = path: _type: baseNameOf (toString path) != "target";
+  };
 
   # wayland-server/client/protocols 0.31/0.32 + xkbcommon 0.9 + gl 0.14
   # + png 0.17 + ab_glyph + memmap2 + log — pinned by the committed
@@ -68,19 +76,20 @@ rustPlatform.buildRustPackage rec {
     # runtime closure automatically.
     ${patchelf}/bin/patchelf --set-rpath \
       "${wayland}/lib:${libxkbcommon}/lib:${libglvnd}/lib:${mesa}/lib:${libpng}/lib:${libdrm}/lib" \
-      $out/bin/gemshell $out/bin/gemsettings
+      $out/bin/gemshell
   '';
 
   doCheck = false; # no host test suite; the on-glass checklist is the test
 
   meta = with lib; {
-    description = "gemshell — native Gemini PDA Wayland compositor + gemsettings client";
+    description = "gemshell — native Gemini PDA Wayland compositor + egui desktop shell";
     longDescription = ''
       A custom, minimal, single-process desktop for the Gemini PDA: a
       Wayland compositor (xdg-shell, wl_shm, keyboard + multitouch) that
       renders through EGL/GBM on the geminipda-drm KMS card (panfrost via
-      Mesa kmsro) and draws its own shell UI, plus gemsettings, a small
-      wl_shm settings client. See docs/gemshell.md.
+      Mesa kmsro), draws its own shell chrome, and hosts an in-process
+      egui settings panel backed by the gemdata::DataProvider abstraction.
+      See docs/gemshell.md.
     '';
     license = licenses.mit;
     # x86_64-linux is the nested development build (bin/gemshell-nested.sh).

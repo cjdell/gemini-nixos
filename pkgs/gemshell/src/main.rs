@@ -19,6 +19,7 @@
 
 mod common;
 mod compositor;
+mod shell;
 
 /// Unbind the fbcon consoles (the gemwl receipt): a bound console would
 /// redraw into the same LK framebuffer gemshell composites into. In

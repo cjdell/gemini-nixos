@@ -5,6 +5,87 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-12 — gemshell rework: egui UI (hardware-tessellated), `gemdata` abstraction, shared gemcli impl, mirror + blank-text fixes
+
+User report from the glass: gemshell is left-right mirrored (top/bottom
+correct), no text appears, and it needs a real UI library plus a data
+abstraction (trait + real + dummy impls). All four addressed; builds
+verified on the host, on-glass pass owed.
+
+**1. Left-right mirror — FIXED (root-caused, not calibrated).**
+`COPY_CS` (the present() compute copy) sampled the scene FBO with
+`texelFetch`, which indexes the texture's BOTTOM-UP storage directly.
+The intended 90° rotation was therefore really a transpose — a rotation
+composed with a horizontal reflection, i.e. exactly a left-right mirror.
+Fix: flip the scene Y before the fetch
+(`t = ivec2(s.x, srcSize.y - 1 - s.y)`). The mapping is now
+orientation-preserving and matches `touch_to_scene` rotation 90
+(`(ny*scene_w, (1-nx)*scene_h)`), so presentation and touch finally
+agree. Direction (90 vs 270) is still the `GEMSHELL_ROTATE` knob.
+(`src/compositor/render.rs`.)
+
+**2. No text — FIXED (root-caused).** `common/font.rs` rasterized glyphs
+with a double origin subtraction: `OutlinedGlyph::draw` already yields
+raster-local pixel coordinates rel. to `px_bounds.min`, but the code
+subtracted `bounds.min` again, so every glyph whose min.y is above the
+baseline (all of them) fell outside its own raster and the atlas was
+all zeros — hence no text anywhere (chrome included). Fix: use the draw
+coordinates directly (`ab_glyph` receipt: outlined.rs `draw`).
+
+**3. Real UI library (egui) — DONE, hardware accelerated.** The separate
+`gemsettings` wl_shm client (hand-drawn CPU UI) is REMOVED. The settings
+panel is now an in-process egui overlay (`src/shell.rs`): egui does font
+loading/shaping/layout/scrolling/focus/text editing and emits GPU-ready
+triangle meshes; `Renderer::draw_egui` uploads the atlas + textures and
+draws indexed meshes with a new GLES program (`EGUI_VERT`/`EGUI_FRAG`),
+clip rects → `glScissor`, egui's premultiplied blend. Nothing is CPU
+rasterized; the scene itself was already GPU. UI runs at PPP=2.0
+(1080×540 points). Fonts: `GEMSHELL_FONT` (DejaVu) registered first,
+egui bundled fonts as fallback. Open from the status-bar gear / wifi /
+bt / speaker zones; Esc/Close dismisses. `GEMSHELL_OPEN_SETTINGS=1`
+opens at startup (used by the nested/dev scripts).
+
+**4. Data abstraction (`gemdata`) — DONE.** New workspace crates:
+`crates/gemdata` (`DataProvider` trait + data types; no UI/GL/wayland),
+`crates/gemdata-device` (real impl: nmcli/bluetoothctl/wpctl/sysfs, each
+behind a pure unit-tested parser), `crates/gemdata-dummy` (in-memory
+fake selected by `GEMSHELL_NESTED`). The compositor status poller now
+reads `DataProvider::status()`; the egui panel is handed `&dyn
+DataProvider` and never shells out itself.
+
+**5. gemcli folded in — ONE implementation.** ALL gemcli device modules
+(a72, backlight, battery, boot, charger, devmem, error, gpio, gpu,
+guard, i2c, power, profile, session, sleep, speaker, status, sysfs,
+util, wdt) moved from `pkgs/gemcli/src/` to
+`pkgs/gemshell/crates/gemdata-device/src/`. `gemcli` is now a thin clap
+frontend over them (`pkgs/gemshell/crates/gemcli/`), still packaged by
+`pkgs/gemcli.nix` via `buildAndTestSubdir = crates/gemcli`; `pkgs/gemcli/`
+is deleted. gemshell depends on `gemdata-device`, so the same functions
+are available to it too. No logic duplicated.
+
+**Build/receipts (host).** `cargo check --workspace` clean; unit tests:
+26 in `gemdata-device` (the moved gemcli tests + new parser tests), 3 in
+`gemdata-dummy`. `nix build .#packages.x86_64-linux.gemshell` green
+(includes egui 0.29 + `epaint_default_fonts`; the nix `src` now filters
+the host `target/` tree). Nested run under the host KWin Wayland with
+`GEMSHELL_OPEN_SETTINGS=1 GEMSHELL_SCREENSHOT=…` wrote a composited
+scene PNG with the panel + text visible (this is how the blank-text and
+mirror fixes were checked off-device; the mirror itself only manifests
+in the device compute present, so it is reasoned + touch-consistency
+checked, not screenshot-verified).
+
+**Found on the way:** `render::build_program` ignored its `vert`
+argument and always compiled the global `VERT` — latent because only one
+program existed; the new egui program exposed it (link error "fragment
+input vColor has no matching output"). Fixed.
+
+**Not touched / owed:** nothing flashed; device state unchanged. On-glass
+pass owed: orientation/handedness (try `GEMSHELL_ROTATE`/`_TOUCH_ROTATE`
+90 vs 270), the egui panel over touch + hardware keyboard, and an
+aarch64 build + `bin/deploy.sh`/`bin/gemshell-dev.sh` run. Historical
+session-log entries above still cite `pkgs/gemcli/src/…` — those paths
+now live under `pkgs/gemshell/crates/gemdata-device/src/`.
+
 ## 2026-09-11 — gemshell ON GLASS: compositor renders; gemsettings; nested x86_64; landscape
 
 The gemshell compositor's first cut built but crash-looped on the PDA.

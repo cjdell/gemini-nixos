@@ -30,7 +30,7 @@ the desktop.
   Deep sleep is a kernel-change follow-up (§Deep sleep).
 - **Implemented on glass (2026-09-08): a reversible LIGHT sleep** driven
   by the silver button — `gemcli sleep on|off|status|key`
-  (`pkgs/gemcli/src/sleep.rs`) + the `gemini-sleepd.service` daemon
+  (`pkgs/gemshell/crates/gemdata-device/src/sleep.rs`) + the `gemini-sleepd.service` daemon
   (services/gemini-pda.nix) that owns the button. It powers down every
   controllable load while the kernel stays up; the same button wakes it.
   No kernel change, no flash — a normal package/system deploy. Since

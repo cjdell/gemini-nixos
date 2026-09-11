@@ -125,6 +125,7 @@ const GL_UNSIGNED_BYTE: u32 = 0x1401;
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_RGBA: u32 = 0x1908;
 const GL_NEAREST: u32 = 0x2600;
+const GL_LINEAR: u32 = 0x2601;
 const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
 const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
 const GL_TEXTURE_WRAP_S: u32 = 0x2802;
@@ -145,6 +146,14 @@ const GL_FRAGMENT_SHADER: u32 = 0x8B30;
 const GL_COMPILE_STATUS: u32 = 0x8B81;
 const GL_LINK_STATUS: u32 = 0x8B82;
 const GL_VERSION: u32 = 0x1F02;
+// egui mesh drawing (glDrawElements + scissor + premultiplied blend)
+const GL_ELEMENT_ARRAY_BUFFER: u32 = 0x8893;
+const GL_TRIANGLES: u32 = 0x0004;
+const GL_UNSIGNED_INT: u32 = 0x1405;
+const GL_SCISSOR_TEST: u32 = 0x0C11;
+const GL_ONE_MINUS_DST_ALPHA: u32 = 0x0305;
+const GL_BLEND_EQUATION: u32 = 0x8009;
+const GL_FUNC_ADD: u32 = 0x8006;
 
 extern "C" {
     fn glCreateShader(t: u32) -> u32;
@@ -217,6 +226,11 @@ extern "C" {
     fn glDeleteShader(s: u32);
     fn glDeleteProgram(p: u32);
     fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, format: u32, ty: u32, data: *mut c_void);
+    // egui meshes: indexed triangles + clip rects
+    fn glDrawElements(mode: u32, count: c_int, ty: u32, indices: *const c_void);
+    fn glScissor(x: c_int, y: c_int, w: c_int, h: c_int);
+    fn glBlendEquation(mode: u32);
+    fn glBlendFuncSeparate(sr: u32, dr: u32, sa: u32, da: u32);
 }
 
 // EGL/GL extension entry points — NOT exported by libglvnd (verified
@@ -243,6 +257,34 @@ type GlEglImageTargetFn = unsafe extern "C" fn(u32, EglImage);
 /// swapped.) The COMPUTE path is also load-bearing: fragment draws/blits
 /// into the 1088x2160 LINEAR fb target clip to ~1024x1024 on this
 /// tiler (gemwl A/B, 2026-09-01).
+/// egui mesh shader: pixel-space triangles -> NDC (Y flipped, scene is
+/// top-left origin), vertex colour (egui's premultiplied sRGBA, 0-255
+/// bytes normalized by the VS) times the sampled texture.
+const EGUI_VERT: &str = r#"
+attribute vec2 aPos;
+attribute vec2 aUv;
+attribute vec4 aColor;     // 0-255; GL normalizes when normalized=0
+uniform vec2 uRes;         // scene size in pixels
+varying vec2 vUv;
+varying vec4 vColor;
+void main() {
+    vec2 ndc = (aPos / uRes) * 2.0 - 1.0;
+    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    vUv = aUv;
+    vColor = aColor / 255.0;
+}
+"#;
+
+const EGUI_FRAG: &str = r#"
+precision mediump float;
+varying vec2 vUv;
+varying vec4 vColor;
+uniform sampler2D uTex;
+void main() {
+    gl_FragColor = vColor * texture2D(uTex, vUv);
+}
+"#;
+
 const COPY_CS: &str = r#"
 #version 310 es
 layout(local_size_x = 16, local_size_y = 8) in;
@@ -267,7 +309,13 @@ void main() {
         s = p;
     }
     if (s.x < 0 || s.y < 0 || s.x >= srcSize.x || s.y >= srcSize.y) return;
-    imageStore(dst, p, texelFetch(src, s, 0).bgra);
+    // The scene FBO texture is stored BOTTOM-UP (a GL framebuffer's
+    // origin is lower-left, so scene top row is the last texel row).
+    // texelFetch indexes that storage directly, so flip the scene Y.
+    // Omitting this turned the intended 90-degree rotation into a
+    // transpose — the on-glass left-right mirror (2026-09-12).
+    ivec2 t = ivec2(s.x, srcSize.y - 1 - s.y);
+    imageStore(dst, p, texelFetch(src, t, 0).bgra);
 }
 "#;
 
@@ -398,6 +446,16 @@ pub struct Renderer {
     rotation: i32,
     eglCreateImageKHR: EglCreateImageFn,
     glEGLImageTargetTexture2DOES: GlEglImageTargetFn,
+    // egui mesh drawing (the shell UI): one program + an element buffer;
+    // texture deltas are uploaded into `egui_textures`.
+    egui_prog: u32,
+    egui_a_pos: c_int,
+    egui_a_uv: c_int,
+    egui_a_color: c_int,
+    egui_u_res: c_int,
+    egui_u_tex: c_int,
+    egui_ebo: u32,
+    egui_textures: HashMap<egui::TextureId, u32>,
 }
 
 impl Renderer {
@@ -591,6 +649,23 @@ impl Renderer {
         let u_res = loc("uRes");
         let u_color = loc("uColor");
 
+        // egui program + element buffer (built here so a shader error
+        // surfaces at startup, not on the first settings tap).
+        let egui_prog = build_program(EGUI_VERT, EGUI_FRAG)?;
+        let egui_attr = |name: &str| unsafe {
+            glGetAttribLocation(egui_prog, CString::new(name).unwrap().as_ptr())
+        };
+        let egui_uniform = |name: &str| unsafe {
+            glGetUniformLocation(egui_prog, CString::new(name).unwrap().as_ptr())
+        };
+        let egui_a_pos = egui_attr("aPos");
+        let egui_a_uv = egui_attr("aUv");
+        let egui_a_color = egui_attr("aColor");
+        let egui_u_res = egui_uniform("uRes");
+        let egui_u_tex = egui_uniform("uTex");
+        let mut egui_ebo = 0u32;
+        unsafe { glGenBuffers(1, &mut egui_ebo) };
+        log::info!("egui program built (aPos={egui_a_pos} aUv={egui_a_uv} aColor={egui_a_color})");
 
         let mut vbo = 0u32;
         unsafe { glGenBuffers(1, &mut vbo) };
@@ -655,6 +730,14 @@ impl Renderer {
                 .unwrap_or(90),
             eglCreateImageKHR,
             glEGLImageTargetTexture2DOES,
+            egui_prog,
+            egui_a_pos,
+            egui_a_uv,
+            egui_a_color,
+            egui_u_res,
+            egui_u_tex,
+            egui_ebo,
+            egui_textures: HashMap::new(),
         };
 
         let white = [255u8; 16 * 4];
@@ -1174,6 +1257,203 @@ impl Renderer {
         }
     }
 
+    /// Draw the egui shell UI (settings panel) on top of the scene.
+    ///
+    /// egui emits premultiplied-sRGBA triangle meshes + a font-atlas
+    /// texture delta; this uploads the atlas/textures and draws the
+    /// meshes with the indexed `EGUI_VERT` shader. All GPU-side: no CPU
+    /// rasterization (2026-09-12). Clip rects become GL scissor rects
+    /// (note GL's bottom-left origin vs egui's top-left).
+    pub fn draw_egui(
+        &mut self,
+        primitives: &[egui::ClippedPrimitive],
+        textures: &egui::TexturesDelta,
+        pixels_per_point: f32,
+    ) {
+        if self.egui_prog == 0 {
+            return;
+        }
+        // egui vertices are in POINTS; the scene is physical pixels.
+        let ppp = if pixels_per_point > 0.0 { pixels_per_point } else { 1.0 };
+        for id in &textures.free {
+            if let Some(tex) = self.egui_textures.remove(id) {
+                unsafe { glDeleteTextures(1, &tex) };
+            }
+        }
+        for (id, delta) in &textures.set {
+            if let Err(e) = self.egui_upload_texture(*id, delta) {
+                log::warn!("egui texture {id:?}: {e}");
+            }
+        }
+
+        unsafe {
+            glUseProgram(self.egui_prog);
+            glUniform2f(
+                self.egui_u_res,
+                self.width as f32 / ppp,
+                self.height as f32 / ppp,
+            );
+            glUniform1i(self.egui_u_tex, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+            glEnable(GL_SCISSOR_TEST);
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.egui_ebo);
+            glEnableVertexAttribArray(self.egui_a_pos);
+            glVertexAttribPointer(self.egui_a_pos, 2, GL_FLOAT, 0, 20, 0);
+            glEnableVertexAttribArray(self.egui_a_uv);
+            glVertexAttribPointer(self.egui_a_uv, 2, GL_FLOAT, 0, 20, 8);
+            glEnableVertexAttribArray(self.egui_a_color);
+            glVertexAttribPointer(self.egui_a_color, 4, GL_UNSIGNED_BYTE, 0, 20, 16);
+        }
+
+        for prim in primitives {
+            let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive else {
+                continue;
+            };
+            if mesh.indices.is_empty() || mesh.vertices.is_empty() {
+                continue;
+            }
+            let r = prim.clip_rect;
+            let x = (r.min.x * ppp).max(0.0) as i32;
+            let y = (r.min.y * ppp).max(0.0) as i32;
+            let x1 = (r.max.x * ppp).min(self.width as f32).max(0.0) as i32;
+            let y1 = (r.max.y * ppp).min(self.height as f32).max(0.0) as i32;
+            let (cw, ch) = ((x1 - x).max(0), (y1 - y).max(0));
+            if cw == 0 || ch == 0 {
+                continue;
+            }
+            unsafe {
+                // GL scissor origin is bottom-left; egui's is top-left.
+                glScissor(x, self.height as i32 - (y + ch), cw, ch);
+                let tex = self
+                    .egui_textures
+                    .get(&mesh.texture_id)
+                    .copied()
+                    .unwrap_or(self.white_tex);
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    (mesh.vertices.len() * std::mem::size_of::<egui::epaint::Vertex>()) as i64,
+                    mesh.vertices.as_ptr() as *const c_void,
+                    GL_DYNAMIC_DRAW,
+                );
+                glBufferData(
+                    GL_ELEMENT_ARRAY_BUFFER,
+                    (mesh.indices.len() * std::mem::size_of::<u32>()) as i64,
+                    mesh.indices.as_ptr() as *const c_void,
+                    GL_DYNAMIC_DRAW,
+                );
+                glDrawElements(
+                    GL_TRIANGLES,
+                    mesh.indices.len() as c_int,
+                    GL_UNSIGNED_INT,
+                    std::ptr::null(),
+                );
+            }
+        }
+        unsafe {
+            glDisable(GL_SCISSOR_TEST);
+        }
+    }
+
+    fn egui_upload_texture(
+        &mut self,
+        id: egui::TextureId,
+        delta: &egui::epaint::ImageDelta,
+    ) -> Result<(), String> {
+        let [w, h] = delta.image.size();
+        // egui only ever emits premultiplied sRGBA; Color32 is [u8;4].
+        let mut rgba: Vec<u8> = Vec::with_capacity(w * h * 4);
+        match &delta.image {
+            egui::epaint::ImageData::Color(img) => {
+                for p in &img.pixels {
+                    rgba.extend_from_slice(&p.to_array());
+                }
+            }
+            egui::epaint::ImageData::Font(img) => {
+                for p in img.srgba_pixels(None) {
+                    rgba.extend_from_slice(&p.to_array());
+                }
+            }
+        }
+        let ptr = rgba.as_ptr() as *const c_void;
+        match delta.pos {
+            None => {
+                let tex = match self.egui_textures.get(&id) {
+                    Some(&t) => {
+                        unsafe {
+                            glBindTexture(GL_TEXTURE_2D, t);
+                            glTexImage2D(
+                                GL_TEXTURE_2D,
+                                0,
+                                GL_RGBA as c_int,
+                                w as c_int,
+                                h as c_int,
+                                0,
+                                GL_RGBA,
+                                GL_UNSIGNED_BYTE,
+                                ptr,
+                            );
+                        }
+                        t
+                    }
+                    None => self.egui_alloc_texture(w, h, ptr)?,
+                };
+                self.egui_textures.insert(id, tex);
+            }
+            Some([x, y]) => {
+                let Some(&tex) = self.egui_textures.get(&id) else {
+                    return Err("partial update for an unknown texture".into());
+                };
+                unsafe {
+                    glBindTexture(GL_TEXTURE_2D, tex);
+                    glTexSubImage2D(
+                        GL_TEXTURE_2D,
+                        0,
+                        x as c_int,
+                        y as c_int,
+                        w as c_int,
+                        h as c_int,
+                        GL_RGBA,
+                        GL_UNSIGNED_BYTE,
+                        ptr,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A LINEAR-filtered texture (egui wants smooth font scaling).
+    fn egui_alloc_texture(&mut self, w: usize, h: usize, data: *const c_void) -> Result<u32, String> {
+        let mut tex = 0u32;
+        unsafe {
+            glGenTextures(1, &mut tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as c_int);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as c_int);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA as c_int,
+                w as c_int,
+                h as c_int,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                data,
+            );
+        }
+        Ok(tex)
+    }
+
     /// Public texture creation (app icons).
     pub fn make_texture_pub(&mut self, w: u32, h: u32, rgba8: &[u8]) -> Result<u32, String> {
         self.make_texture(w, h, rgba8)
@@ -1379,7 +1659,11 @@ fn build_program(vert: &str, frag: &str) -> Result<u32, String> {
             }
             Ok(s)
         };
-        let vs = make(VERT, GL_VERTEX_SHADER)?;
+        // NOTE: use the `vert` PARAMETER. A copy-paste made this build
+        // every program from the global VERT, so the egui program linked
+        // VERT with EGUI_FRAG and failed "fragment input `vColor' has no
+        // matching output" (found by the nested run 2026-09-12).
+        let vs = make(vert, GL_VERTEX_SHADER)?;
         let fs = make(frag, GL_FRAGMENT_SHADER)?;
         let p = glCreateProgram();
         glAttachShader(p, vs);

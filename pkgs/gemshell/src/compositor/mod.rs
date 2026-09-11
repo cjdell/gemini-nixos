@@ -30,6 +30,10 @@ use wayland_protocols::xdg::shell::server::xdg_toplevel::{
 use wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
 
 use crate::common::{apps, font, icons, util};
+use crate::shell;
+use gemdata::DataProvider;
+use gemdata_device::DeviceData;
+use gemdata_dummy::DummyData;
 
 use wayland::{
     keymap_fd, BufferData, ClientState, CompositorData, OutputData, ShmData, SurfaceData,
@@ -206,6 +210,18 @@ pub struct Compositor {
     /// last titlebar double-tap bookkeeping
     last_titlebar_tap_ms: u64,
     last_titlebar_win: Option<u32>,
+    /// The system-data provider — the ONE place gemshell reads/writes
+    /// Wi-Fi, Bluetooth, audio, battery and brightness. Device by
+    /// default; the in-memory dummy in nested mode. See `gemdata`.
+    data: Arc<dyn DataProvider>,
+    /// The egui shell UI (settings panel). GPU-tessellated; see shell.rs.
+    shell: shell::ShellUi,
+    /// egui input accumulated between frames (points space).
+    egui_events: Vec<egui::Event>,
+    /// The last pointer point fed to egui (for click/drag events).
+    egui_pointer: Option<egui::Pos2>,
+    /// When the settings snapshots were last reloaded (ms since start).
+    settings_snapshot_ms: u64,
 }
 
 impl Compositor {
@@ -271,9 +287,17 @@ impl Compositor {
         let _ = handle.create_global::<Compositor, _, _>(4, OutputData {}); // wl_output
         let _ = handle.create_global::<Compositor, _, _>(3, WmBaseData {}); // xdg_wm_base
 
+        // The system-data provider: the real device one, or the in-memory
+        // dummy for the nested x86_64 dev loop (no nmcli/bluetoothctl on
+        // the workstation). Both back the same `gemdata::DataProvider`.
+        let data: Arc<dyn DataProvider> = if nested_mode {
+            Arc::new(DummyData::new())
+        } else {
+            Arc::new(DeviceData::new())
+        };
         let (tx, rx) = mpsc::channel();
-        status::spawn(tx);
-        let status = status::Status::read();
+        status::spawn(data.clone(), tx);
+        let status = status::read(&*data);
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let apps = apps::scan(&home);
@@ -318,6 +342,11 @@ impl Compositor {
                 pressed_keysyms: Vec::new(),
                 last_titlebar_tap_ms: 0,
                 last_titlebar_win: None,
+                data,
+                shell: shell::ShellUi::new(),
+                egui_events: Vec::new(),
+                egui_pointer: None,
+                settings_snapshot_ms: 0,
             };
         Ok((display, compositor))
     }
@@ -384,7 +413,12 @@ impl Compositor {
         // this and therefore connect to US, not the host compositor.
         std::env::set_var("WAYLAND_DISPLAY", &sock_name);
         self.upload_app_icons();
-        // Dev convenience: GEMSHELL_AUTOSTART=gemsettings launches a
+        // Dev convenience: open the in-process settings panel immediately
+        // (bin/gemshell-nested.sh / bin/gemshell-dev.sh screenshots).
+        if std::env::var_os("GEMSHELL_OPEN_SETTINGS").is_some() {
+            self.open_settings();
+        }
+        // Dev convenience: GEMSHELL_AUTOSTART=<client> launches a
         // client right away (bin/gemshell-nested.sh).
         if let Ok(app) = std::env::var("GEMSHELL_AUTOSTART") {
             if !app.is_empty() {
@@ -595,6 +629,15 @@ impl Compositor {
     // keys
 
     fn handle_key(&mut self, code: u32, keysym: u32, pressed: bool, mods: u32) {
+        // While the settings panel is open it owns the keyboard (text
+        // entry, Enter/Esc). Fn media keys are not shortcuts here.
+        if self.settings_open {
+            self.egui_key(keysym, pressed, mods);
+            if pressed && keysym == XK_Escape && self.shell.state.password_for.is_none() {
+                self.shell.state.close = true;
+            }
+            return;
+        }
         if !pressed {
             self.pressed_keysyms.retain(|k| *k != keysym);
             if keysym == XF86_TopMenu && self.switcher_open {
@@ -754,16 +797,108 @@ impl Compositor {
         let max = self.status.brightness_max.max(1);
         let cur_pct = self.status.brightness * 100 / max;
         let target = (cur_pct + delta).clamp(0, 100);
-        if let Some(v) = status::set_brightness(target, max) {
-            self.status.brightness = v;
+        if self.data.set_brightness(target).is_ok() {
+            self.status.brightness = target * max / 100;
             self.dirty = true;
         }
+    }
+
+    // -----------------------------------------------------------------
+    // egui input plumbing
+
+    fn egui_time(&self) -> f64 {
+        self.present_time_ms.saturating_sub(self.start_ms) as f64 / 1000.0
+    }
+
+    /// Feed a scene-pixel point into egui's pointer (egui is in points).
+    fn egui_move_pointer(&mut self, x: f32, y: f32) {
+        let p = egui::pos2(x / shell::PPP, y / shell::PPP);
+        self.egui_pointer = Some(p);
+        self.egui_events.push(egui::Event::PointerMoved(p));
+        self.dirty = true;
+    }
+
+    fn egui_pointer_button(&mut self, x: f32, y: f32, pressed: bool) {
+        let p = egui::pos2(x / shell::PPP, y / shell::PPP);
+        self.egui_pointer = Some(p);
+        self.egui_events.push(egui::Event::PointerMoved(p));
+        self.egui_events.push(egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: self.egui_mods_now(),
+        });
+        self.dirty = true;
+    }
+
+    fn egui_mods_now(&self) -> egui::Modifiers {
+        let (down, _, _) = self.input.mods_masks();
+        egui_mods(down)
+    }
+
+    /// Forward a key event to egui (both the logical key and, for
+    /// printable symbols, a Text event so the password field receives
+    /// the layout's real characters — including the Fn level-3 glyphs).
+    fn egui_key(&mut self, keysym: u32, pressed: bool, mods: u32) {
+        let modifiers = egui_mods(mods);
+        if let Some(key) = egui_key_from_keysym(keysym) {
+            self.egui_events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            });
+        }
+        if pressed && !modifiers.ctrl {
+            if let Some(text) = keysym_text(keysym) {
+                self.egui_events.push(egui::Event::Text(text));
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Run one egui pass for the settings panel. Returns the meshes for
+    /// the renderer (None when the panel is closed).
+    fn run_egui(&mut self) -> Option<shell::UiFrame> {
+        if !self.settings_open {
+            return None;
+        }
+        let now = self.present_time_ms.saturating_sub(self.start_ms);
+        if now.saturating_sub(self.settings_snapshot_ms) > 3000 {
+            self.shell.refresh(&*self.data);
+            self.settings_snapshot_ms = now;
+        }
+        let screen = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(W as f32 / shell::PPP, H as f32 / shell::PPP),
+        );
+        let events = std::mem::take(&mut self.egui_events);
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            time: Some(self.egui_time()),
+            events,
+            ..Default::default()
+        };
+        let frame = self.shell.run(&*self.data, input);
+        if self.shell.state.close {
+            self.settings_open = false;
+            self.shell.state.close = false;
+        }
+        self.dirty = true; // keep the ~60 Hz frame clock while open
+        Some(frame)
     }
 
     // -----------------------------------------------------------------
     // touch + gestures
 
     fn touch_down(&mut self, id: u32, x: f32, y: f32) {
+        // The settings panel is modal: every finger is an egui pointer.
+        if self.settings_open {
+            self.egui_move_pointer(x, y);
+            self.egui_pointer_button(x, y, true);
+            return;
+        }
         self.dismiss_popups_outside(x, y);
 
         let f = Finger {
@@ -890,6 +1025,10 @@ impl Compositor {
     }
 
     fn touch_motion(&mut self, id: u32, x: f32, y: f32) {
+        if self.settings_open {
+            self.egui_move_pointer(x, y);
+            return;
+        }
         let Some(f) = self.fingers.get_mut(&id) else {
             return;
         };
@@ -964,6 +1103,11 @@ impl Compositor {
     }
 
     fn touch_up(&mut self, id: u32) {
+        if self.settings_open {
+            let p = self.egui_pointer.unwrap_or(egui::Pos2::ZERO);
+            self.egui_pointer_button(p.x * shell::PPP, p.y * shell::PPP, false);
+            return;
+        }
         let was_moved = self.fingers.get(&id).map(|f| f.moved).unwrap_or(false);
         let pos = self.fingers.get(&id).map(|f| (f.x, f.y));
         self.fingers.remove(&id);
@@ -1239,20 +1383,16 @@ impl Compositor {
         spawn_cmd(&prog, &argv[1..]);
     }
 
+    /// Open the in-process egui settings panel. No client is launched:
+    /// the shell UI is drawn by this compositor (GPU-tessellated meshes)
+    /// from the shared `DataProvider` snapshots (2026-09-12).
     fn open_settings(&mut self) {
-        let has = self
-            .windows
-            .iter()
-            .any(|w| w.app_id == "gemsettings" || w.title.contains("Settings"));
-        if has {
-            if let Some(w) = self.windows.iter().find(|w| w.app_id == "gemsettings" || w.title.contains("Settings")) {
-                let wid = w.id;
-                self.raise(wid);
-                return;
-            }
-        }
         self.settings_open = true;
-        spawn_cmd("gemsettings", vec!["--section=wifi".to_string()]);
+        self.shell.state.close = false;
+        self.shell.state.status.clear();
+        self.shell.refresh(&*self.data);
+        self.settings_snapshot_ms = util::now_ms().saturating_sub(self.start_ms);
+        self.dirty = true;
     }
 
     // -----------------------------------------------------------------
@@ -1435,9 +1575,6 @@ impl Compositor {
         if self.focus == Some(win) {
             self.focus = self.windows.iter().rev().find(|w| !w.minimized && !w.is_popup).map(|w| w.id);
             self.send_focus_change();
-        }
-        if w.app_id == "gemsettings" {
-            self.settings_open = false;
         }
         self.renderer.drop_window_texture(win);
         self.dirty = true;
@@ -1792,8 +1929,15 @@ impl Compositor {
         }
         ui::draw_workspace_dots(&mut ops, self);
 
+        // The egui settings panel is drawn last, over the scene. Its
+        // meshes are GPU triangles (no CPU rasterization).
+        let egui_frame = self.run_egui();
+
         self.renderer.begin_frame();
         self.renderer.replay(&self.font, &ops);
+        if let Some(frame) = &egui_frame {
+            self.renderer.draw_egui(&frame.primitives, &frame.textures, shell::PPP);
+        }
         if let Err(e) = self.renderer.present() {
             log::error!("present: {e}");
         }
@@ -1851,6 +1995,54 @@ pub fn snap_rect(snap: Snap, _win: Option<u32>) -> (f32, f32, f32, f32) {
         Snap::Bottom => (0.0, (st + sb) / 2.0, sw, (sb - st) / 2.0),
         _ => (0.0, st, sw, sb - st),
     }
+}
+
+/// xkb modifier-state mask -> egui modifiers. Slot numbering from the
+/// xkb modmap: 1=Shift 2=Lock 3=Control 4=Mod1(Alt) 7=Mod4(Super);
+/// Mod5 is the Gemini Fn key (level 3 / AltGr-like).
+fn egui_mods(mods: u32) -> egui::Modifiers {
+    egui::Modifiers {
+        alt: mods & (1 << 4) != 0,
+        ctrl: mods & (1 << 3) != 0,
+        shift: mods & (1 << 1) != 0,
+        mac_cmd: false,
+        command: mods & (1 << 7) != 0,
+    }
+}
+
+/// X11 keysym -> egui logical key, for the editing/navigation keys egui
+/// cares about (printable characters travel as `Event::Text`).
+fn egui_key_from_keysym(keysym: u32) -> Option<egui::Key> {
+    use egui::Key;
+    Some(match keysym {
+        0xff08 => Key::Backspace,
+        0xff09 => Key::Tab,
+        0xff0d | 0xff8d => Key::Enter,
+        0xff1b => Key::Escape,
+        0xffff => Key::Delete,
+        0xff50 => Key::Home,
+        0xff57 => Key::End,
+        0xff55 => Key::PageUp,
+        0xff56 => Key::PageDown,
+        0xff51 => Key::ArrowLeft,
+        0xff52 => Key::ArrowUp,
+        0xff53 => Key::ArrowRight,
+        0xff54 => Key::ArrowDown,
+        _ => return None,
+    })
+}
+
+/// X11 keysym -> the text it produces, if printable. The "gemini" layout
+/// resolves Fn level-3 glyphs to their Unicode keysyms, so this is all
+/// the keyboard plumbing the password field needs.
+fn keysym_text(keysym: u32) -> Option<String> {
+    let c = match keysym {
+        0x20..=0x7e | 0xa0..=0xff => char::from_u32(keysym)?,
+        0x0100..=0xefff | 0x10000..=0x10ffff => char::from_u32(keysym)?,
+        k if k >= 0x0100_0000 => char::from_u32(k - 0x0100_0000)?,
+        _ => return None,
+    };
+    Some(c.to_string())
 }
 
 /// Map a point in nested-window pixels to scene coordinates.

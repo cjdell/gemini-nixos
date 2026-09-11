@@ -152,7 +152,7 @@ in
   # Sound menu also switch the hardware amp. Root because the pads are the
   # kernel gpio chardev; it reaches the cjdell-owned PipeWire session
   # through PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio (set inside gemcli —
-  # pkgs/gemcli/src/speaker.rs). It leaves the amp alone when PipeWire is
+  # pkgs/gemshell/crates/gemdata-device/src/speaker.rs). It leaves the amp alone when PipeWire is
   # down (early boot, sleep), so the boot-time amp state stays whatever
   # gemini-audio-defaults applied. Ordered AFTER gemini-audio-defaults so
   # the boot-time default-sink write is settled before the watcher reads

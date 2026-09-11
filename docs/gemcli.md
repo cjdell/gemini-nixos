@@ -1,5 +1,14 @@
 # gemcli — the Rust device-control CLI
 
+> **2026-09-12 refactor — one implementation with gemshell.** The device
+> modules moved out of `pkgs/gemcli/` into the shared data layer
+> `pkgs/gemshell/crates/gemdata-device/`; `gemcli` is now a thin clap
+> frontend over them (`pkgs/gemshell/crates/gemcli/`). The functions are
+> also available to gemshell (which depends on `gemdata-device`). The
+> paths below that say `pkgs/gemshell/crates/gemdata-device/src/*.rs` now live at
+> `pkgs/gemshell/crates/gemdata-device/src/*.rs`; behavior is unchanged
+> (26 unit tests green).
+
 **Status (2026-09-08): ON GLASS since gen20.** Built + packaged (native
 aarch64, `rc=0`, 8 unit tests green in-sandbox), deployed to the
 device via `bin/deploy.sh` (gens 16–21), **`gemcli selfcheck` = ALL
@@ -20,9 +29,10 @@ codes where a caller depends on them.
 
 | Path | What |
 |---|---|
-| `pkgs/gemcli.nix` | `rustPlatform.buildRustPackage` derivation (native aarch64; `cargoLock` on the committed `Cargo.lock`) |
-| `pkgs/gemcli/Cargo.toml` | crate manifest — deps: **clap 4.5 (derive)** + **libc 0.2** only |
-| `pkgs/gemcli/src/*.rs` | one module per function (see map below) + `main.rs` (clap tree) |
+| `pkgs/gemcli.nix` | `rustPlatform.buildRustPackage` derivation (native aarch64; builds the `crates/gemcli` workspace member via `buildAndTestSubdir`) |
+| `pkgs/gemshell/crates/gemcli/Cargo.toml` | crate manifest — deps: **clap 4.5 (derive)** + `gemdata-device` (which pulls `libc`) |
+| `pkgs/gemshell/crates/gemcli/src/main.rs` | the clap tree; parse → call (no logic) |
+| `pkgs/gemshell/crates/gemdata-device/src/*.rs` | one module per function (see map below) — the shared implementation |
 
 Standalone build (host, distributes to the 192.168.49.191 builder):
 `bash bin/run-job.sh start gemcli-build -- sudo nix build --store
@@ -35,9 +45,11 @@ A72-list + PPD state.ini parser test (2026-09-10), and 4 speaker tests
 (2026-09-11: the `wpctl` default-sink `* ` marker parse + the
 sink→mode mapping).)
 
-Local typecheck/test loop (host, x86_64 cargo): `cd pkgs/gemcli &&
-cargo check && cargo test` (hardware-free unit tests only; keep
-`target/` out of git — `.gitignore` has it).
+Local typecheck/test loop (host, x86_64 cargo): `cd pkgs/gemshell &&
+cargo test -p gemdata-device -p gemcli` (hardware-free unit tests only)
+or the workspace loop `bash bin/gemshell-host-check.sh --test`. Keep
+`target/` out of git — `.gitignore` has it (the nix `src` also filters
+it out).
 
 ## Subcommand ↔ script map
 

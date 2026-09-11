@@ -29,8 +29,9 @@
 let
   cfg = config.services.gemshellDesktop;
   utils = pkgs.callPackage ./gemini-utils.nix { };
-  # The compositor package (compositor + gemsettings client in one store
-  # path). Same callPackage args as the flake package, so the system and
+  # The compositor package (single binary; the settings panel is the
+  # in-process egui overlay since 2026-09-12). Same callPackage args as
+  # the flake package, so the system and
   # `.#packages.aarch64-linux.gemshell` share the store path.
   # The mesa fork (T880 delta) — the compositor's ICD + DRI driver.
   mesa = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
@@ -143,9 +144,12 @@ in
           # too). The service user's real home.
           "HOME=/home/${cfg.user}"
           # Apps launched from the launcher need $SHELL + a sane PATH
-          # (the system-profile bin dir carries the app binaries).
+          # (the system-profile bin dir carries the app binaries). The
+          # explicit store bins are for the gemdata-device DataProvider,
+          # which shells out to nmcli/bluetoothctl/wpctl — do not rely on
+          # the ambient system profile for them (2026-09-12).
           "SHELL=${pkgs.bashInteractive}/bin/bash"
-          "PATH=${pkgs.bashInteractive}/bin:${pkgs.coreutils}/bin:${pkgs.systemd}/bin:/run/current-system/sw/bin:/run/wrappers/bin"
+          "PATH=${lib.makeBinPath [ pkgs.bashInteractive pkgs.coreutils pkgs.systemd pkgs.networkmanager pkgs.bluez pkgs.pipewire ]}:/run/current-system/sw/bin:/run/wrappers/bin"
           # Apps launched by the compositor get .desktop files from the
           # system profile (environment.systemPackages) + the user's
           # dir (src/common/apps.rs scans those).
@@ -193,10 +197,10 @@ in
 
     # ---- Apps ----------------------------------------------------------
     # The launcher scans XDG_DATA_DIRS for .desktop entries; the system
-    # profile (environment.systemPackages) is the app suite. gemsettings
-    # must be on PATH (the compositor spawns it by name). gemdemo is the
-    # GL-client smoke test (docs/gemshell.md checklist item 6).
-    # The UI font for the compositor (GEMSHELL_FONT above).
+    # profile (environment.systemPackages) is the app suite. gemdemo is
+    # the GL-client smoke test (docs/gemshell.md checklist item 6). The
+    # UI font is for the compositor (GEMSHELL_FONT above) and the egui
+    # settings panel.
     fonts.packages = [ fonts ];
     environment.systemPackages = [ gemshell gemdemo fonts ];
   };

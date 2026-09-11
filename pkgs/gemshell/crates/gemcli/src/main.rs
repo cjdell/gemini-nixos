@@ -16,26 +16,14 @@
 //! Version hygiene (AGENTS rule 0): `gemcli version` + `-V` identify
 //! the exact build.
 
-mod a72;
-mod backlight;
-mod battery;
-mod boot;
-mod charger;
-mod devmem;
-mod error;
-mod gpio;
-mod gpu;
-mod guard;
-mod i2c;
-mod power;
-mod profile;
-mod session;
-mod sleep;
-mod speaker;
-mod status;
-mod sysfs;
-mod util;
-mod wdt;
+// The device functions now live in the data layer (`gemdata-device`) so
+// that gemshell and this CLI share ONE implementation (2026-09-12).
+// gemcli is a thin clap frontend: parse → call. No logic lives here.
+use gemdata_device::error;
+use gemdata_device::{
+    a72, backlight, battery, boot, charger, gpu, guard, power, profile, session, sleep, speaker,
+    status, wdt,
+};
 
 use clap::{Parser, Subcommand};
 

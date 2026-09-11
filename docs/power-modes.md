@@ -34,7 +34,7 @@ There is **no cpufreq/DVFS driver** for MT6797 (no
 exposed — `docs/power-sleep.md` §"What limits the awake floor"). The
 A53s run at fixed clocks. The one CPU power lever this port controls is
 the big **A72 cluster (cpu8/cpu9)**, normally **off** (cold-boot state):
-bringing it up is the vendor cold sequence in `pkgs/gemcli/src/a72.rs`
+bringing it up is the vendor cold sequence in `pkgs/gemshell/crates/gemdata-device/src/a72.rs`
 (DA9214 BUCKB rail over i2c6 + WDT-armed PSCI) and adds genuine CPU
 headroom. That is exactly a "performance" mode, and its absence is the
 safe default.
@@ -70,7 +70,7 @@ PPD still persists the active profile across reboots
 ## The actuator: `gemini-power-profile`
 
 `gemini-power-profile.service` runs
-`gemcli profile watch` (`pkgs/gemcli/src/profile.rs`). It polls PPD's
+`gemcli profile watch` (`pkgs/gemshell/crates/gemdata-device/src/profile.rs`). It polls PPD's
 active profile and reconciles the cluster:
 
 | PPD profile | A72 cluster |
@@ -97,7 +97,7 @@ Design notes:
   `a72::up` also retries the contended DA9214 i2c6 bus with backoff and
   arms the WDT.
 - **A72 operations are serialized by an flock**
-  (`/run/gemini-a72.lock`, `pkgs/gemcli/src/a72.rs`). Two concurrent
+  (`/run/gemini-a72.lock`, `pkgs/gemshell/crates/gemdata-device/src/a72.rs`). Two concurrent
   secure A72 ops (a `sleep on` teardown and a watcher bring-up) hung the
   device on glass 2026-09-10q: the second op drove the DA9214 rail and
   the secure SMC while the first was still stepping. The sleep path
@@ -133,9 +133,9 @@ set the PPD profile; the watcher applies it to the cluster within ~2 s
 |---|---|
 | `services/power-profiles.nix` | PPD (patched) + `gemini-power-profile.service` |
 | `patches/power-profiles-daemon-placeholder-performance.patch` | advertise `performance` in the placeholder |
-| `pkgs/gemcli/src/profile.rs` | the watcher + `profile status/set` |
-| `pkgs/gemcli/src/a72.rs` | the WDT-guarded cluster up/down |
-| `pkgs/gemcli/src/sleep.rs` | sleep now powers the A72 down / restores it |
+| `pkgs/gemshell/crates/gemdata-device/src/profile.rs` | the watcher + `profile status/set` |
+| `pkgs/gemshell/crates/gemdata-device/src/a72.rs` | the WDT-guarded cluster up/down |
+| `pkgs/gemshell/crates/gemdata-device/src/sleep.rs` | sleep now powers the A72 down / restores it |
 | `config/gemini.nix` | imports `services/power-profiles.nix` |
 
 ## On-glass verification checklist (do this before calling it done)

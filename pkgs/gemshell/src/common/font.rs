@@ -90,17 +90,17 @@ impl Font {
                     break;
                 }
             }
-            // rasterize (single pass) into the atlas; draw() reports
-            // pixel coords in the glyph's y-down pixel space, where the
-            // bounds' min corner is the raster's top-left
-            let bx = bounds.min.x.round() as i64;
-            let by = bounds.min.y.round() as i64;
+            // Rasterize into the atlas. `OutlinedGlyph::draw` yields
+            // 0-based raster-local pixel coordinates (its bounds origin
+            // is already subtracted internally), so do NOT subtract
+            // bounds.min again: doing so pushed every glyph with a
+            // negative min.y (i.e. everything above the baseline) out of
+            // its own raster and produced an all-zero atlas — the
+            // on-glass "no text" (2026-09-12).
             let mut buf = vec![0f32; (w * h) as usize];
             outline.draw(|x, y, cv| {
-                let dx = x as i64 - bx;
-                let dy = y as i64 - by;
-                if dx >= 0 && dy >= 0 && dx < w as i64 && dy < h as i64 {
-                    let o = (dy * w as i64 + dx) as usize;
+                if x < w && y < h {
+                    let o = (y * w + x) as usize;
                     if cv > buf[o] {
                         buf[o] = cv;
                     }

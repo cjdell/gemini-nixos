@@ -1,6 +1,7 @@
 #!/bin/bash
-# gemshell-host-check.sh — fast x86_64 `cargo check` loop for pkgs/gemshell
-# (both the gemshell compositor and the gemsettings client).
+# gemshell-host-check.sh — fast x86_64 `cargo check` loop for the whole
+# pkgs/gemshell cargo workspace: the gemshell compositor, the gemdata /
+# gemdata-device / gemdata-dummy data crates, and the gemcli CLI.
 #
 # Why the contortions: the crates link libwayland-server/libwayland-client/
 # libxkbcommon via pkg-config at build time (wayland-sys), and the .pc
@@ -19,9 +20,11 @@ PIN="dc5d91f840324650bac8c379428c7037a416959a" # nixpkgs rev pinned in flake.nix
 MODE="${1:---debug}"
 
 case "$MODE" in
-  --release) CARGO_MODE=(--release) ;;
-  --test) CARGO_MODE=(--test --no-run) ;;
-  *) CARGO_MODE=() ;;
+  --release) CARGO_MODE=(check --workspace --release) ;;
+  # The data/CLI crates carry the unit tests; the gemshell bin can't link
+  # on the host (native wayland/EGL libs), so test the libraries only.
+  --test) CARGO_MODE=(test -p gemdata -p gemdata-device -p gemdata-dummy) ;;
+  *) CARGO_MODE=(check --workspace) ;;
 esac
 
 # dev outputs (lib/pkgconfig) for the pkg-config build script
@@ -43,5 +46,5 @@ nix shell "github:NixOS/nixpkgs/${PIN}#cargo" "github:NixOS/nixpkgs/${PIN}#rustc
   --command bash -c "
     export PKG_CONFIG_PATH='${PCC}'
     cd pkgs/gemshell
-    exec cargo check ${CARGO_MODE[*]}
+    exec cargo ${CARGO_MODE[*]}
   "

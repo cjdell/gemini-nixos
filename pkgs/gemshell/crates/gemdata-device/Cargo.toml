@@ -1,0 +1,12 @@
+[package]
+name = "gemdata-device"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "gemdata on-device implementation (nmcli / bluetoothctl / wpctl / sysfs)"
+
+[dependencies]
+gemdata = { path = "../gemdata" }
+# The device-control modules (moved from pkgs/gemcli — ONE implementation,
+# now shared by the gemcli binary and gemshell).
+libc = "0.2"

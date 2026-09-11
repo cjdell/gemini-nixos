@@ -1,0 +1,9 @@
+[package]
+name = "gemdata-dummy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "gemdata in-memory dummy provider for the nested x86_64 dev loop"
+
+[dependencies]
+gemdata = { path = "../gemdata" }

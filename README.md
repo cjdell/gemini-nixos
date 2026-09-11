@@ -38,7 +38,9 @@ layout were reclaimed into it — see
   failed units.
 - **Multiple desktop sessions** — GNOME, COSMIC and niri are
   co-installed GDM Wayland sessions (one owns the panel per boot), plus
-  a console-only mode; `gemcli session set gnome|cosmic|niri|console`.
+  the custom Rust **gemshell** compositor (its own system service, with
+  an in-process egui settings panel since 2026-09-12) and a
+  console-only mode; `gemcli session set gnome|cosmic|niri|gemshell|console`.
   The older nested **Phosh** and **LXQt** desktops remain buildable
   alternatives/rollback.
 - **Wi-Fi** — internal MT6630 CONSYS (`wlan0`, with the factory NVRAM

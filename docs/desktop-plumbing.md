@@ -481,7 +481,7 @@ on|off|status` drives the pads directly.
 **Files:** `services/pipewire/60-gemini-speakers.conf`,
 `services/pipewire/50-gemini-alsa-s16.conf`,
 `services/scripts/audio-output`, `services/audio.nix`
-(`gemini-speakerd`), `pkgs/gemcli/src/speaker.rs`.
+(`gemini-speakerd`), `pkgs/gemshell/crates/gemdata-device/src/speaker.rs`.
 
 #### Correction + fix (2026-09-11, on glass): headphones-only was dead
 
@@ -518,7 +518,7 @@ before matching) + 4 regression unit tests in `speaker.rs`.
    settled before it reads (no transient hardware-sink default can be
    persisted by accident).
 
-**Files changed:** `pkgs/gemcli/src/speaker.rs`,
+**Files changed:** `pkgs/gemshell/crates/gemdata-device/src/speaker.rs`,
 `services/scripts/audio-output`, `services/audio.nix`.
 
 **On glass 2026-09-11 (device system-16 → 17; final toplevel
@@ -701,7 +701,7 @@ gemini-specific.
 ### Sleep integration (silver button)
 
 `gemcli sleep`/`gemini-sleepd` is NM-aware as of the same session
-(`pkgs/gemcli/src/sleep.rs`):
+(`pkgs/gemshell/crates/gemdata-device/src/sleep.rs`):
 
 - `phosh-nested.service` added to the stop/start list — it was missing,
   so a sleep left phoc + the phosh session running against a stopped

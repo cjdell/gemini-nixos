@@ -185,7 +185,7 @@
       # gemdemo — minimal GLES 3.1 + ALSA template (docs/gemdemo.md; in
       # the rootfs via services/gemini-pda.nix — standalone builds/checks).
       gemdemo = eval.pkgs.callPackage ./pkgs/gemdemo.nix { };
-      # gemshell — the native Wayland compositor + gemsettings client
+      # gemshell — the native Wayland compositor + egui desktop shell
       # (docs/gemshell.md; in the system via services/gemshell.nix when
       # services.gemshellDesktop.enable — standalone builds/checks).
       gemshell = eval.pkgs.callPackage ./pkgs/gemshell.nix {
@@ -257,7 +257,7 @@
         # (docs/gemdemo.md; in the rootfs via services/gemini-pda.nix —
         # standalone build/iteration target).
         gemdemo = gemdemo;
-        # Native Wayland compositor + gemsettings client
+        # Native Wayland compositor + egui desktop shell
         # (docs/gemshell.md; in the system via services/gemshell.nix —
         # standalone build/iteration target).
         gemshell = gemshell;
