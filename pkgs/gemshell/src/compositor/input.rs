@@ -79,10 +79,15 @@ const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
 const EV_ABS: u16 = 3;
 const SYN_REPORT: u16 = 0;
-const ABS_MT_POSITION_X: u16 = 53;
-const ABS_MT_POSITION_Y: u16 = 54;
-const ABS_MT_TRACKING_ID: u16 = 57;
-const ABS_MT_SLOT: u16 = 57;
+const ABS_MT_POSITION_X: u16 = 53; // 0x35
+const ABS_MT_POSITION_Y: u16 = 54; // 0x36
+const ABS_MT_TRACKING_ID: u16 = 57; // 0x39
+// ABS_MT_SLOT = 0x2f = 47 (linux/input-event-codes.h). This was
+// mistakenly 57 (= ABS_MT_TRACKING_ID) — and because the SLOT arm is
+// matched FIRST, every TRACKING_ID event was swallowed as a slot change,
+// so a finger-down was never registered and touch was completely dead
+// (root cause on glass, 2026-09-12). 57 is TRACKING_ID, 47 is SLOT.
+const ABS_MT_SLOT: u16 = 47; // 0x2f
 
 const MAX_SLOTS: usize = 32;
 
