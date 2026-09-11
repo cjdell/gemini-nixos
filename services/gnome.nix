@@ -9,12 +9,12 @@
 # no bespoke compositor, no nesting, and future GNOME releases keep
 # working.
 #
-# Relationship to the nested desktops (services/{desktop,phosh,lxqt}.nix):
-#   gemwl + phosh/lxqt own the raw LK framebuffer through /dev/gemfb and
-#   present a nested Wayland session.  GNOME needs the whole screen and a
-#   logind seat, so it REPLACES that stack: this module force-disables
-#   gemwl and the nested sessions.  The two modes are mutually exclusive
-#   by construction; enable exactly one.
+# Relationship to the nested gemwl desktop (services/desktop.nix):
+#   gemwl owns the raw LK framebuffer through /dev/gemfb.  GNOME needs
+#   the whole screen and a logind seat, so it REPLACES that stack: this
+#   module force-disables gemwl.  The two modes are mutually exclusive
+#   by construction; enable exactly one.  [The nested LXQt and Phosh
+#   sessions that used to host on gemwl were removed 2026-09-12.]
 #
 # Why GNOME is off by default: it needs /dev/dri/card0, i.e. the
 # geminipda-drm module in a NEW boot.img.  Booting this config on a kernel
@@ -63,7 +63,7 @@ in
         geminipda-drm KMS device. Requires a boot.img whose kernel
         provides /dev/dri/card0 (the geminipda-drm delta driver); a
         kernel without it yields no session. Mutually exclusive with the
-        nested gemwl/phosh/LXQt stack, which it force-disables.
+        nested gemwl stack, which it force-disables.
       '';
     };
 
@@ -121,13 +121,11 @@ in
     services.displayManager.autoLogin.enable = true;
     services.displayManager.autoLogin.user = cfg.user;
 
-    # ---- Replace the nested stack --------------------------------
-    # GNOME owns the panel; gemwl owns /dev/gemfb and the nested sessions
-    # own gemwl's socket. Force them off so the two models can never
-    # fight over the scanout.
+    # ---- Replace the nested gemwl stack -------------------------
+    # GNOME owns the panel; gemwl owns /dev/gemfb and the nested
+    # sessions that used to connect to it are gone. Force gemwl off so
+    # the two models can never fight over the scanout.
     systemd.services.gemwl.enable = lib.mkForce false;
-    services.phoshDesktop.enable = lib.mkForce false;
-    services.lxqtNested.enable = lib.mkForce false;
 
     # ---- Keep this repo's custom PipeWire ------------------------
     # services/audio.nix runs PipeWire/WirePlumber/pipewire-pulse as a
@@ -187,8 +185,8 @@ in
       # ---- Audio socket redirection (2026-09-10p) ------------------
       # services/audio.nix runs the ONE PipeWire/WirePlumber/pipewire-pulse
       # session for the whole device as a system service with
-      # XDG_RUNTIME_DIR=/run/gemwl-audio (the design from the gemwl/phosh/
-      # LXQt era, where the desktop was a system service with no logind
+      # XDG_RUNTIME_DIR=/run/gemwl-audio (the design from the gemwl
+      # system-service era, where the desktop had no logind
       # session).  GNOME, however, is a REAL logind session via GDM:
       # cjdell's XDG_RUNTIME_DIR is /run/user/1000, so every GNOME audio
       # client (gnome-control-center's Sound panel, gsd-media-keys' Gvc

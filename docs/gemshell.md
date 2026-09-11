@@ -6,7 +6,7 @@ A custom, Rust-based, Wayland-native desktop for the Gemini PDA: the
 `gemshell` compositor (KMS + Mesa OpenGL, a handful of shell services)
 plus an **in-process egui settings panel** (Wi-Fi / Bluetooth / Audio).
 Registered as a choosable session — `gemcli session set gemshell` —
-alongside gnome / cosmic / niri / console
+alongside gnome / console
 (docs/desktop-selection.md).
 
 Status: **on glass (2026-09-11)** — the compositor boots, imports the LK
@@ -547,8 +547,8 @@ getty (no chvt — the compositor owns the panel; a console on tty1
 would fight the shadow-plane blit for the same scanout memory).
 `gemini-gemshell.service` (User=cjdell) runs the compositor after the
 GPU power-on + panfrost-load (same ordering as the GNOME module) and
-force-disables the nested gemwl/phosh/LXQt stack (they would double-
-drive the panel via /dev/gemfb).
+force-disables the legacy gemwl compositor (it would double-drive the
+panel via /dev/gemfb).
 
 cjdell groups gain `input` (/dev/input evdev) and `bluetooth`
 (bluetoothctl) — `video`/`audio`/`networkmanager` already there.

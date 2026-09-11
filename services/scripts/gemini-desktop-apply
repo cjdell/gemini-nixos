@@ -4,10 +4,10 @@
 #
 # Part of the desktop/session selector (services/desktop-select.nix;
 # story + receipts: docs/desktop-selection.md). One Gemini, several
-# panel owners — GNOME, COSMIC and niri are all ordinary GDM Wayland
-# sessions on the geminipda-drm KMS device, exactly one of which GDM
-# auto-logs into; "console" skips the display manager entirely and
-# stays on the fbcon console.
+# panel owners — GNOME is an ordinary GDM Wayland session on the
+# geminipda-drm KMS device, which GDM auto-logs into; "gemshell" and
+# "console" both skip the display manager (gemshell runs the native
+# compositor as a system service, console stays on the fbcon console).
 #
 # Inputs (all overridable by env; the unit sets GEMINI_DESKTOP_DEFAULT
 # + GEMINI_DESKTOP_USER from services.geminiDesktop.*):
@@ -17,7 +17,7 @@
 #   GEMINI_DESKTOP_DEFAULT  fallback mode          (default gnome)
 #
 # Modes:
-#   gnome | cosmic | niri : set the AccountsService `Session`/`SessionType` for
+#   gnome          : set the AccountsService `Session`/`SessionType` for
 #                    the auto-login user — the exact mechanism NixOS's
 #                    `services.displayManager.defaultSession` uses
 #                    (set-session.py, account-service-util.nix) — and
@@ -75,10 +75,10 @@ case "$mode" in
         fi
         echo "gemini-desktop: console — display-manager skipped, fbcon on tty1"
         ;;
-    gnome|cosmic|niri)
+    gnome)
         rm -f "$SENTINEL"
         uid=$(id -u "$USER_NAME")
-        # All are Wayland sessions. Same two setters set-session.py
+        # Wayland session. Same two setters set-session.py
         # calls via AccountsService; busctl keeps the script python-free.
         busctl call org.freedesktop.Accounts "/org/freedesktop/Accounts/User$uid" \
             org.freedesktop.Accounts.User SetSession s "$mode"
@@ -87,7 +87,7 @@ case "$mode" in
         echo "gemini-desktop: $mode — AccountsService session set for $USER_NAME (uid $uid)"
         ;;
     *)
-        echo "gemini-desktop: unknown mode '$mode' — want gnome|cosmic|niri|gemshell|console" >&2
+        echo "gemini-desktop: unknown mode '$mode' — want gnome|gemshell|console" >&2
         exit 1
         ;;
 esac

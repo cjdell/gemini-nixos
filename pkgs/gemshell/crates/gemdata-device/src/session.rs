@@ -1,25 +1,24 @@
-//! Desktop/session selection — GNOME, COSMIC, niri, gemshell, or the
-//! framebuffer console.
+//! Desktop/session selection — GNOME, gemshell, or the framebuffer
+//! console.
 //!
-//! GNOME, COSMIC and niri are all ordinary GDM Wayland sessions on the
-//! geminipda-drm KMS device, co-installed; exactly one owns the panel
-//! per boot. This module owns the PERSISTENT marker
-//! `/var/lib/gemini/desktop` (one line:
-//! gnome|cosmic|niri|gemshell|console) that the boot-time
-//! `gemini-desktop-apply.service` reads before display-manager.service
-//! starts:
+//! GNOME is an ordinary GDM Wayland session on the geminipda-drm KMS
+//! device; gemshell is a native compositor run as a system service that
+//! owns the panel directly; console stays on the fbcon. Exactly one owns
+//! the panel per boot. This module owns the PERSISTENT marker
+//! `/var/lib/gemini/desktop` (one line: gnome|gemshell|console) that the
+//! boot-time `gemini-desktop-apply.service` reads before
+//! display-manager.service starts:
 //!
-//!   gnome|cosmic|niri  the service sets AccountsService `Session` /
-//!                      `SessionType=wayland`, which GDM auto-logs into;
-//!   gemshell           the service creates /run/gemini-console (GDM
-//!                      skipped, same as console) and NO tty1 getty —
-//!                      gemini-gemshell.service starts on that same
-//!                      sentinel (services/gemshell.nix) and owns the
-//!                      panel directly;
-//!   console            the service creates /run/gemini-console, and
-//!                      display-manager.service carries
-//!                      ConditionPathExists=!/run/gemini-console, so GDM
-//!                      is skipped and the fbcon console stays.
+//!   gnome    the service sets AccountsService `Session` /
+//!            `SessionType=wayland`, which GDM auto-logs into;
+//!   gemshell the service creates /run/gemini-console (GDM skipped, same
+//!            as console) and NO tty1 getty — gemini-gemshell.service
+//!            starts on that same sentinel (services/gemshell.nix) and
+//!            owns the panel directly;
+//!   console  the service creates /run/gemini-console, and
+//!            display-manager.service carries
+//!            ConditionPathExists=!/run/gemini-console, so GDM is skipped
+//!            and the fbcon console stays.
 //!
 //! `gemcli session` is the runtime half that plain NixOS options cannot
 //! provide. Story + receipts: docs/desktop-selection.md;
@@ -32,10 +31,11 @@ use crate::error::{cmsg, Res};
 use crate::util;
 
 /// Valid modes, in display order.
-pub const MODES: [&str; 5] = ["gnome", "cosmic", "niri", "gemshell", "console"];
+pub const MODES: [&str; 3] = ["gnome", "gemshell", "console"];
 /// Persistent marker (one line).
 pub const MARKER: &str = "/var/lib/gemini/desktop";
-/// Flag file created in console mode; conditions display-manager off.
+/// Flag file created in console/gemshell mode; conditions display-manager
+/// off.
 pub const SENTINEL: &str = "/run/gemini-console";
 /// Auto-login user (services.geminiDesktop.user / config users.users).
 pub const USER: &str = "cjdell";
@@ -95,8 +95,6 @@ pub fn list() {
     for m in MODES {
         let desc = match m {
             "gnome" => "GNOME on GDM (Wayland, geminipda-drm KMS + panfrost)",
-            "cosmic" => "COSMIC on GDM (Wayland, geminipda-drm KMS + panfrost)",
-            "niri" => "niri on GDM (scrollable-tiling Wayland, geminipda-drm KMS + panfrost)",
             "gemshell" => "native Rust compositor (system service, geminipda-drm KMS + panfrost)",
             "console" => "no desktop — framebuffer console on tty1",
             _ => "",
@@ -129,7 +127,7 @@ fn busctl_session(path: &str, prop: &str) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    // busctl prints e.g. `s "cosmic"`.
+    // busctl prints e.g. `s "gnome"`.
     let s = String::from_utf8_lossy(&out.stdout);
     s.split('"').nth(1).map(str::to_string)
 }
@@ -181,15 +179,12 @@ pub fn set(mode: &str, apply_now: bool, reboot: bool) -> Res<()> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn modes_are_the_five_known() {
-        assert_eq!(
-            super::MODES,
-            ["gnome", "cosmic", "niri", "gemshell", "console"]
-        );
+    fn modes_are_the_three_known() {
+        assert_eq!(super::MODES, ["gnome", "gemshell", "console"]);
         assert!(super::valid("gnome"));
-        assert!(super::valid("niri"));
         assert!(super::valid("gemshell"));
         assert!(super::valid("console"));
         assert!(!super::valid("kde"));
+        assert!(!super::valid("cosmic"));
     }
 }

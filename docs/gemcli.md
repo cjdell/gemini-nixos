@@ -93,7 +93,8 @@ closed lid's key presses produce no input, offline A53 cpus 1..7
 (cpu0 stays), power the A72 cluster down if it was up (the performance
 power mode can leave it online — docs/power-modes.md), stop the
 heavyweight services that were running
-(gemwl/LXQt, pipewire/wireplumber/pipewire-pulse), and take wifi down
+(the current panel owner — display-manager/GDM for GNOME, gemini-gemshell,
+legacy gemwl — plus pipewire/wireplumber/pipewire-pulse), and take wifi down
 fast (`ip link set <iface> down` + kill wpa_supplicant/dhcpcd — the
 CONSYS chip STAYS powered; the WMT `echo off` teardown stalls ~29 s
 and the RemainAfterExit wifi units have no ExecStop, so stopping them

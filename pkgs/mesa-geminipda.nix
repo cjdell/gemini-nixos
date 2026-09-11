@@ -20,7 +20,8 @@
 # Why a thin override and not a bespoke build: the 2026-09-10 dual-vendor
 # incident. With hardware.graphics on (nixpkgs default) glvnd got TWO
 # mesa ICDs — the nixpkgs 26.2.2 vendor and the fork's 25.0.7 one — and
-# cosmic-comp ended up with libgallium-25.0.7 AND libgallium-26.2.2
+# cosmic-comp (and other compositors) ended up with libgallium-25.0.7
+# AND libgallium-26.2.2
 # loaded in one process, unable to import buffers between them
 # ("import for wrong devices"), falling back to a CPU composition path.
 # One version, one ICD, one driver is the fix; keeping the delta a thin
@@ -31,7 +32,7 @@
 # Wiring: config/gemini.nix sets hardware.graphics.package to this
 # derivation, so /run/opengl-driver (and its 50_mesa.json ICD) is the
 # patched build and no /etc/glvnd fork manifest exists any more. The
-# nested gemwl/Phosh/LXQt stack also consumes it as `mesaGeminipda` for
+# gemwl/gemshell stack also consumes it as `mesaGeminipda` for
 # both EGL and GBM (libgbm-external=false bundles libgbm, exactly like
 # the old fork, so those packages keep their single-mesa contract).
 { pkgs }:
@@ -69,7 +70,7 @@ in
     (lib.mesonOption "vulkan-layers" "")
     # Bundle libgbm (and gbm.pc/gbm.h) rather than using the separate
     # mesa-libgbm package: keeps `mesaGeminipda` self-contained for
-    # wlroots/phoc/gemwl and the browser GBM_BACKENDS_PATH, on the SAME
+    # wlroots/gemwl and the browser GBM_BACKENDS_PATH, on the SAME
     # 26.2.2 base as the EGL driver.
     (lib.mesonBool "libgbm-external" false)
   ];

@@ -36,13 +36,12 @@ layout were reclaimed into it — see
   pairs it with **panfrost** on the Mali-T880. GDM auto-logs in, the
   GNOME app suite is installed, and a clean boot comes up with zero
   failed units.
-- **Multiple desktop sessions** — GNOME, COSMIC and niri are
-  co-installed GDM Wayland sessions (one owns the panel per boot), plus
-  the custom Rust **gemshell** compositor (its own system service, with
-  an in-process egui settings panel since 2026-09-12) and a
-  console-only mode; `gemcli session set gnome|cosmic|niri|gemshell|console`.
-  The older nested **Phosh** and **LXQt** desktops remain buildable
-  alternatives/rollback.
+- **Multiple desktop sessions** — vanilla **GNOME** (GDM, the default)
+  and the custom Rust **gemshell** compositor (its own system service,
+  with an in-process egui settings panel since 2026-09-12) are
+  co-installed, plus a console-only mode;
+  `gemcli session set gnome|gemshell|console`. COSMIC, niri and the
+  older nested **Phosh**/**LXQt** desktops were removed 2026-09-12.
 - **Wi-Fi** — internal MT6630 CONSYS (`wlan0`, with the factory NVRAM
   MAC preserved) plus USB dongles (RTL8821CU), managed by
   **NetworkManager**, with a smartphone-like autoconnect loop that
@@ -122,7 +121,7 @@ generation explicitly.
 | `modules/hardware-soc-mediatek-mt6797.nix` | Out-of-tree MT6797 SoC fragment (upstreaming = phase 6) |
 | `services/` | Device services and desktop sessions (see the table below) |
 | `config/gemini.nix` | Stage-2 system configuration (headless base + g_ether SSH, device services, Mesa, GNOME default, on-device Nix) |
-| `pkgs/` | In-repo package forks/pins: `mesa-geminipda`, `wlroots-geminipda`, `labwc-geminipda`, `phoc-geminipda`, `gemwl`, `gemcli`, `gemdemo`, `gemini-exodus`, `gemini-firmware`, `gemini-xkeyboard-config`, … |
+| `pkgs/` | In-repo package forks/pins: `mesa-geminipda`, `wlroots-geminipda`, `gemwl` (legacy), `gemcli`, `gemdemo`, `gemini-exodus`, `gemini-firmware`, `gemini-xkeyboard-config`, … |
 | `patches/` | The tracked Mesa panfrost (T880 polygon-list) patch |
 | `bin/` | Host/device tooling: build/deploy, flash/repartition, recovery, repo sync — see `AGENTS.md` |
 | `docs/` | Design notes, bring-up receipts and the dated session log (see "Documentation") |
@@ -164,8 +163,7 @@ the operational cheat sheet is in `AGENTS.md`.
 | [docs/disaster-recovery/](docs/disaster-recovery/) | Full-flash-erase restore playbook, image ledger + sha256, gather checklist, drills |
 | [docs/gnome-feasibility.md](docs/gnome-feasibility.md) | Why vanilla GNOME needed a KMS driver, and the GPU-acceleration receipts |
 | [docs/desktop-plumbing.md](docs/desktop-plumbing.md) | DE-agnostic plumbing: battery/UPower, backlight, audio/speakers, touch |
-| [docs/desktop-selection.md](docs/desktop-selection.md) | GNOME/COSMIC/niri/console session selector |
-| [docs/phosh.md](docs/phosh.md) | The nested Phosh mobile-shell design |
+| [docs/desktop-selection.md](docs/desktop-selection.md) | GNOME/gemshell/console session selector |
 | [docs/bluetooth-bringup.md](docs/bluetooth-bringup.md), [docs/bluetooth-a2dp.md](docs/bluetooth-a2dp.md) | MT6630 CONSYS Bluetooth port + the A2DP stutter/crackle fix |
 | [docs/power-sleep.md](docs/power-sleep.md), [docs/power-modes.md](docs/power-modes.md), [docs/power-states.md](docs/power-states.md) | Sleep/wake, A72 power modes, reboot/poweroff |
 | [docs/gemcli.md](docs/gemcli.md) | Rust device-control CLI + migration/parity plan |

@@ -1,12 +1,18 @@
-# Vanilla GNOME on the Gemini PDA — feasibility (why it is not the Phosh/LXQt kind of change)
+# Vanilla GNOME on the Gemini PDA — feasibility (the KMS path)
 
-Last updated: 2026-09-10. Status: ✅ **ON GLASS — GNOME is the default desktop,
+Last updated: 2026-09-12. Status: ✅ **ON GLASS — GNOME is the default desktop,
 GPU-accelerated**. Verified 2026-09-10 on the device (generation 66): the
 geminipda-drm KMS device binds, mutter selects it as primary from the
 built-in DSI panel, and renders through **panfrost via Mesa kmsro**
 (`kmscube` on card0 → `Mali-T880 (Panfrost)`). GNOME survives a clean
 reboot with zero failed units. The on-glass checks and receipts are at the
 end of this doc.
+
+> **2026-09-12 update:** the nested Phosh and LXQt desktops (and the
+> COSMIC/niri GDM sessions) were removed from the project. GNOME,
+> `gemshell` and the fbcon console are the supported set now; references
+> below to Phosh/LXQt as a rollback are historical. The KMS work and the
+> GNOME receipts remain current.
 
 Background: GNOME 50 (the pinned nixpkgs' `mutter`/`gnome-shell` **50.4**)
 cannot run on the pre-KMS graphics stack at all, which is why the kernel
@@ -210,11 +216,12 @@ rollback. Only one desktop stack drives the screen at a time.
 
 The **standard NixOS modules** — `services.desktopManager.gnome` +
 `services.displayManager.gdm` + autologin — rather than a bespoke session.
-It force-disables gemwl/phosh/LXQt (mutually exclusive), keeps this repo's
-custom PipeWire (`services.pipewire.enable = lib.mkForce false`; the custom
-`pipewire.service` still satisfies GNOME), loads panfrost after
+It force-disables the legacy gemwl compositor (mutually exclusive), keeps
+this repo's custom PipeWire (`services.pipewire.enable = lib.mkForce false`; the
+custom `pipewire.service` still satisfies GNOME), loads panfrost after
 `gemini-gpu-poweron` (gemwl used to do this), and sets the gemini xkb
-layout. Option: `services.gnomeDesktop.enable` (**default false**).
+layout. Option: `services.gnomeDesktop.enable` (**default true** in
+`config/gemini.nix`).
 
 **Rendering: GPU-accelerated via Mesa `kmsro` (corrected 2026-09-10).** An
 earlier draft of this doc claimed GNOME could only run software-rendered.

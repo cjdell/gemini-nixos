@@ -26,18 +26,12 @@
 #
 # withDrmBackend: the drm backend is OFF by default (gemwl never uses it
 # — this device has no KMS/DRM scanout; the LCD is the LK framebuffer).
-# labwc 0.8.3, however, compiles wlr_drm_lease_v1 unconditionally, and
-# wlroots only installs wlr_drm_lease_v1.h / backend/drm.h when the drm
-# backend feature is on (types/meson.build + include/meson.build), so
-# labwc needs a drm-enabled wlroots BUILD (its headers) even though it
-# runs nested (WLR_BACKENDS=wayland) and never opens a DRM device. The
-# labwc variant is a separate store path (services/lxqt.nix passes
-# withDrmBackend = true) and ALSO builds the gbm allocator
-# (-Dallocators=gbm, mesonFlags) — labwc's nested outputs allocate client
-# buffers through it on the panfrost render node; gemwl keeps the trimmed
-# build. Userspace only — no kernel DRM drivers are involved and the LCD
-# core rule (LK-initialized panel) is untouched: the drm backend is never
-# instantiated here. [2026-09-07, allocators note 2026-09-08]
+# With the nested labwc/Phosh sessions removed (2026-09-12) no caller
+# passes withDrmBackend=true any more; the option is retained for a
+# possible future DRM-capable nested compositor (it also builds the gbm
+# allocator). Userspace only — no kernel DRM drivers are involved and the
+# LCD core rule (LK-initialized panel) is untouched: the drm backend is
+# never instantiated here. [2026-09-07, allocators note 2026-09-08]
 #
 # gles2 renderer consequences (verified against wlroots-0.18.2
 # meson.build while writing this):
@@ -84,8 +78,9 @@
   # mesa 25.0.7 geminipda fork (gbm + EGL ICD provider; must be the
   # fork, NOT nixpkgs mesa — see pkgs/mesa-geminipda.nix)
 , mesaGeminipda
-  # true: build the drm backend too (labwc 0.8.3 header requirement — see
-  # the header comment). gemwl's build keeps the default (no drm).
+  # true: build the drm backend too (currently unused — see the header;
+  # retained for a possible DRM-capable nested compositor). gemwl's build
+  # keeps the default (no drm).
 , withDrmBackend ? false
 }:
 
@@ -167,15 +162,14 @@ stdenv.mkDerivation (finalAttrs: {
     "-Dcolor-management=disabled"
     "-Dexamples=false"
   ] ++ lib.optionals withDrmBackend [
-    # -Dallocators=gbm: the gbm allocator is REQUIRED by labwc at runtime
-    # — its nested (wayland-backend) outputs allocate client buffers on
-    # the panfrost render node (/dev/dri/renderD128) via libgbm. The
-    # meson 'allocators' option defaults to ['auto'] and mesonAutoFeatures
-    # = disabled resolves 'auto' to [] (no allocator compiled) — first
-    # on-glass run failed: "Skipping gbm allocator: disabled at
-    # compile-time" / "unable to create allocator" (2026-09-08). gemwl's
-    # trimmed build does NOT get this (it never allocates buffers through
-    # wlr_allocator — its own gemfb output path).
+    # -Dallocators=gbm: the gbm allocator is REQUIRED by nested full
+    # wlroots compositors — their wayland-backend outputs allocate client
+    # buffers on the panfrost render node (/dev/dri/renderD128) via
+    # libgbm. The meson 'allocators' option defaults to ['auto'] and
+    # mesonAutoFeatures = disabled resolves 'auto' to [] (no allocator
+    # compiled). gemwl's trimmed build does NOT get this (it never
+    # allocates buffers through wlr_allocator — its own gemfb output
+    # path). [was the labwc requirement until 2026-09-12]
     "-Dallocators=gbm"
   ];
 
@@ -190,9 +184,9 @@ stdenv.mkDerivation (finalAttrs: {
       wlroots 0.18.2 built for the Gemini PDA desktop path: libinput
       backend + gles2 renderer + libseat session only (no drm/x11/xwayland/
       vulkan) by default; withDrmBackend=true additionally builds the drm
-      backend (labwc 0.8.3 needs its headers, though it runs nested and
-      never opens a DRM device). Exactly the library version gemwl.c was
-      verified against on the device (Debian libwlroots-0.18-dev).
+      backend for a DRM-capable nested compositor (currently unused).
+      Exactly the library version gemwl.c was verified against on the
+      device (Debian libwlroots-0.18-dev).
       pkg-config module: wlroots-0.18. Do NOT use with the pin's newer
       nixpkgs wlroots.
     '';

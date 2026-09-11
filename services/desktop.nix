@@ -12,9 +12,11 @@
 #                   renders the Wayland scene graph GPU-direct (shadow
 #                   dma-buf + compute blit), unbinds fbcon while it runs.
 #                   With no -s startup client it idles (empty scene)
-#                   until its client connects — since 2026-09-07 that
-#                   client is the NESTED LXQt session (services/lxqt.nix:
-#                   labwc 0.8.3 -> lxqt-session/panel/pcmanfm-qt/...).
+#                   until its client connects. [The nested LXQt session
+#                   that used to be that client was removed 2026-09-12;
+#                   gemwl is now force-disabled by services/gnome.nix and
+#                   services/gemshell.nix and kept as the legacy nested
+#                   compositor / fallback.]
 #                   The tinytest/tinytest-anim/wlegltst smoke clients stay
 #                   in the gemwl package for manual/headless compositor
 #                   checks (tinytest-anim's dangling-listener crash fixed
@@ -38,18 +40,13 @@
 # FIRST GL client of the boot, and the Mali-T880 tiler can come out of a
 # cold boot in a "bad state" — the first client whose tiler batches exceed
 # 1024 px in one axis drops the region beyond 1024 px (black band). The
-# nested LXQt session (labwc's full-output compositing) is now that first
-# client and plausibly DOES absorb it. Whether kernel #329 still exhibits
-# this (observed on #284 + Mesa 25.0.7 debug, 2026-09-02) is an on-glass
-# question to answer at the first LXQt boot; if it bands, add a
-# throwaway full-frame warmup as the first GL client Before=gemwl
-# (pattern: GeminiPDA build/rootfs-files/gpu-warmup/,
-# PAN_MESA_DEBUG=noafbc kept).
+# nested LXQt session that used to absorb it is gone (2026-09-12); if this
+# legacy compositor is ever re-enabled, add a throwaway full-frame warmup
+# as the first GL client Before=gemwl (pattern: GeminiPDA
+# build/rootfs-files/gpu-warmup/, PAN_MESA_DEBUG=noafbc kept).
 # Serial console (ttyS0) is unaffected by the fbcon unbind — the NixOS
 # bring-up/debug path stays available while the compositor owns the fb.
-#                     once verified.
-# To fall back to the console-only boot: systemctl disable gemwl
-# lxqt-nested.
+# To fall back to the console-only boot: systemctl disable gemwl.
 #
 # Packages: gemwl (the compositor + tinytest clients, pkgs/gemwl.nix)
 # and wlroots-geminipda (pkgs/wlroots-geminipda.nix, the pinned 0.18.2
@@ -100,10 +97,9 @@ in
       Type = "simple";
       # gemwl stays ROOT (2026-09-09): it opens /dev/gemfb (0600 root,
       # no udev rule) and unbinds fbcon by writing
-      # /sys/class/vtconsole/vtcon*/bind — both root-only. The DESKTOP
-      # SESSIONS (lxqt-nested/phosh-nested) run as the cjdell user
-      # instead (config/gemini.nix users.users.cjdell), so this runtime
-      # dir must let them in:
+      # /sys/class/vtconsole/vtcon*/bind — both root-only. Desktop
+      # sessions run as the cjdell user instead (config/gemini.nix
+      # users.users.cjdell), so this runtime dir must let them in:
       #   - RuntimeDirectoryMode 0755 (was 0700): cjdell can traverse
       #     /run/gemwl to reach the wayland socket;
       #   - UMask=0111: wl_display_add_socket_auto creates wayland-0
@@ -135,8 +131,8 @@ in
         "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
       ];
       # -t 90: output transform (panel is physically landscape, fb is
-      # portrait). No -s: the nested LXQt session (services/lxqt.nix) is
-      # the client; gemwl idles black until it connects.
+      # portrait). No -s: gemwl idles black until a client connects (the
+      # nested sessions were removed 2026-09-12).
       ExecStart = "${gemwl}/bin/gemwl -t 90";
       Restart = "on-failure";
       RestartSec = "2";

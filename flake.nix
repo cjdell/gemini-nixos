@@ -9,15 +9,15 @@
 # nixpkgs is pinned BY THIS FLAKE (below), not by MNX's npins, since
 # 2026-09-08 — to the nixos-unstable CHANNEL snapshot dc5d91f84032
 # (26.11pre1068949, cut 2026-09-07), whose FULL aarch64 closure hydra
-# built and published (qtbase/qtwayland/lxqt-*/systemd/pipewire/…
+# built and published (qtbase/qtwayland/systemd/pipewire/…
 # narinfos all 200, verified 2026-09-08). Under the old npins rev
 # (0bb7ec54c848) those compiled outputs were 404 for x86_64 AND aarch64
-# (base closure only — glibc 200, qtbase 404), so Qt6/LXQt compiled
+# (base closure only — glibc 200, qtbase 404), so Qt6 compiled
 # from source every time. The only remaining local compiles are the
-# custom drvs: patched mesa (nixpkgs 26.2.2 + T880 delta), wlroots/labwc/gemwl pins, the
+# custom drvs: patched mesa (nixpkgs 26.2.2 + T880 delta), wlroots/gemwl pins, the
 # kernel, gemini-firmware. The CROSS toplevel model (x86_64 host,
 # buildSystem=x86_64-linux) is ABANDONED — it hit the nixpkgs cross
-# walls (Qt6CoreTools missing for the lxqt scope, etc.; see
+# walls (Qt6CoreTools missing for the desktop scope, etc.; see
 # docs/handover-2026-09-07-lxqt-native.md). Native aarch64 drvs hash-
 # match nothing cross-built (no shared store paths with pre-merge gens).
 #
@@ -138,35 +138,11 @@
       gemwl = eval.pkgs.callPackage ./pkgs/gemwl.nix {
         inherit wlroots;
       };
-      # labwc 0.8.3 pinned against the wlroots 0.18.2 line (nixpkgs'
-      # labwc is 0.20/0.20-wlroots — too new for this stack). Hosts the
-      # nested LXQt session (services/lxqt.nix). labwc 0.8.3 compiles
-      # wlr_drm_lease_v1 unconditionally, which requires a
-      # drm-backend-enabled wlroots BUILD (header only — labwc runs
-      # nested and never opens a DRM device; see pkgs/wlroots-
-      # geminipda.nix withDrmBackend).
-      labwc = eval.pkgs.callPackage ./pkgs/labwc-geminipda.nix {
-        wlroots = eval.pkgs.callPackage ./pkgs/wlroots-geminipda.nix {
-          mesaGeminipda = mesa;
-          withDrmBackend = true;
-        };
-      };
-      # phoc 0.54.0 (nixpkgs phoc) with its wlroots 0.19 rebuilt
-      # against the fork gbm — the Phosh desktop's nested compositor
-      # (services/phosh.nix; same callPackage args, shared store path).
-      phoc = eval.pkgs.callPackage ./pkgs/phoc-geminipda.nix {
-        mesaGeminipda = mesa;
-      };
-      # phosh 0.54.0 + squeekboard (nixpkgs, as-is — pure Wayland/GTK
-      # clients; standalone build/iteration targets for the phosh
-      # desktop).
-      phosh = eval.pkgs.phosh;
-      squeekboard = eval.pkgs.squeekboard;
       # gemini xkb symbols (layout "gemini", UK default / us variant;
       # config/xkb/symbols/gemini, vendored byte-identical from
-      # GeminiPDA) as an xkbcommon include dir — wired into the gemwl +
-      # lxqt-nested units via XKB_CONFIG_EXTRA_PATH (services/desktop.nix,
-      # services/lxqt.nix). Standalone here for keymap checks
+      # GeminiPDA) as an xkbcommon include dir — wired into the gemwl and
+      # gemshell units via XKB_CONFIG_EXTRA_PATH (services/desktop.nix,
+      # services/gemshell.nix). Standalone here for keymap checks
       # (xkbcli compile-keymap --layout gemini -I <dir>).
       geminiXkb = eval.pkgs.callPackage ./pkgs/gemini-xkb.nix { };
 
@@ -244,10 +220,6 @@
         mesa    = mesa;   # geminipda panfrost fork (Mali-T880, dma-buf import)
         wlroots = wlroots; # wlroots 0.18.2 pin (gemwl's library; R2)
         gemwl   = gemwl;   # GPU-direct fb compositor + tinytest clients
-        labwc   = labwc;   # 0.8.3 nested compositor (pinned wlroots 0.18.2)
-        phoc    = phoc;    # 0.54.0 nested compositor for Phosh (fork-gbm wlroots 0.19)
-        phosh   = phosh;   # 0.54.0 mobile shell (nixpkgs, nested on phoc)
-        squeekboard = squeekboard; # OSK for phosh (sm.puri.OSK0)
         gemini-xkb = geminiXkb; # xkb layout include dir (XKB_CONFIG_EXTRA_PATH)
         gemini-xkeyboard-config = geminiXkeyboardConfig; # + registry entry (XKB_CONFIG_ROOT, GNOME)
         # Rust device-control CLI (script-parity ports; in the rootfs via

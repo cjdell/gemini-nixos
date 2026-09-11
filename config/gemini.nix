@@ -2,17 +2,15 @@
 #
 # Phase 0/1/3 scope: a headless NixOS that boots from the `linux`
 # partition and is reachable over the g_ether USB network (10.15.19.82).
-# Phase 4 (preview): the GPU desktop is now in-tree too — gemwl (custom
-# wlroots 0.18 compositor, pkgs/gemwl.nix + pkgs/wlroots-geminipda.nix)
-# is wired as services/desktop.nix and auto-starts at boot (console-
-# less fb desktop; serial console unaffected). Since 2026-09-07 the
-# desktop payload was the nested LXQt session (services/lxqt.nix: labwc
-# 0.8.3 on the pinned wlroots 0.18.2 + nixpkgs lxqt 2.4, the verified
-# GeminiPDA stack); since 2026-09-09 the DEFAULT desktop is Phosh
-# (services/phosh.nix: phoc 0.54.0 nested the same way — the module
-# defaults flipped so phosh boots by default and LXQt is the
-# alternative; docs/phosh.md). `systemctl disable gemwl phosh-nested`
-# = console boot.
+# Desktop: vanilla GNOME on the geminipda-drm KMS device is the DEFAULT
+# (services/gnome.nix, 2026-09-10); the native Rust gemshell compositor
+# is the co-installed alternative selected per boot by the desktop
+# marker (`gemcli session set`), and the fbcon console is the last
+# fallback. The nested gemwl/LXQt and Phosh desktops, the COSMIC session
+# and niri were REMOVED 2026-09-12 — GNOME + gemshell + console are the
+# supported set. (gemwl/services/desktop.nix remains in-tree but is
+# force-disabled by the GNOME/gemshell modules; it has no session client
+# since the nested sessions were removed.)
 { config, lib, pkgs, ... }:
 let
   # Mesa 25.0.7 + geminipda panfrost fork (see pkgs/mesa-geminipda.nix
@@ -51,24 +49,11 @@ in
     # pkgs/wlroots-geminipda.nix). Auto-starts at boot; disable with
     # `systemctl disable gemwl` for a console-only boot.
     ../services/desktop.nix
-    # LXQt (Wayland) desktop nested inside gemwl — labwc 0.8.3 (pinned
-    # against wlroots 0.18.2) hosting the nixpkgs lxqt 2.4 session
-    # (panel, pcmanfm-qt desktop, qterminal, audio GUIs). The verified
-    # GeminiPDA desktop stack as NixOS services (2026-09-07); the
-    # ALTERNATIVE desktop since 2026-09-09 (services.lxqtNested.enable
-    # now defaults false — phosh is the default).
-    ../services/lxqt.nix
-    # Phosh (mobile shell) desktop nested inside gemwl — phoc 0.54.0 on
-    # wlroots 0.19 (fork-gbm override, pkgs/phoc-geminipda.nix) hosting
-    # the nixpkgs phosh 0.54.0 shell; GPU-accelerated through the same
-    # fork-mesa chain as LXQt. The DEFAULT desktop since 2026-09-09
-    # (services.phoshDesktop.enable defaults true; LXQt off).
-    ../services/phosh.nix
     # DE-agnostic desktop plumbing (2026-09-10): UPower battery/AC
     # status, brightness sysfs access + standard control CLIs
     # (brightnessctl; volume is wpctl via audio.nix) — the services
-    # layer so ANY desktop's own controls work (phosh today, LXQt/
-    # gemwl later). docs/desktop-plumbing.md.
+    # layer so ANY desktop's own controls work (GNOME today).
+    # docs/desktop-plumbing.md.
     ../services/plumbing.nix
     # Power modes (2026-09-10): power-profiles-daemon + the GNOME Power
     # Mode selector, bridged to the A72 cluster — "performance" onlines
@@ -82,17 +67,17 @@ in
     # nested shell is enabled. NOT the GNOME session/shell — that still
     # needs a DRM/KMS device (docs/gnome-feasibility.md).
     ../services/gnome-apps.nix
-    # Vanilla GNOME desktop on the KMS device (2026-09-10, default OFF):
+    # Vanilla GNOME desktop on the KMS device (2026-09-10, DEFAULT ON):
     # the standard NixOS GNOME + GDM modules, which need the geminipda-drm
-    # kernel driver (/dev/dri/card0). Mutually exclusive with gemwl/phosh/
-    # LXQt, which it force-disables. docs/gnome-feasibility.md.
+    # kernel driver (/dev/dri/card0). Mutually exclusive with gemwl, which
+    # it force-disables. docs/gnome-feasibility.md.
     ../services/gnome.nix
     # Desktop/session selector (2026-09-10; +gemshell 2026-09-11): a
-    # persistent marker (/var/lib/gemini/desktop) picks which GDM session
-    # auto-logs in (gnome, cosmic or niri), whether the native Rust
-    # compositor (gemshell) owns the panel, or whether to stay on the
-    # fbcon console. They are ALL co-installed; only one owns the panel
-    # per boot. `gemcli session set gnome|cosmic|niri|gemshell|console`.
+    # persistent marker (/var/lib/gemini/desktop) picks whether the GNOME
+    # GDM session auto-logs in, whether the native Rust compositor
+    # (gemshell) owns the panel, or whether to stay on the fbcon console.
+    # They are ALL co-installed; only one owns the panel per boot.
+    # `gemcli session set gnome|gemshell|console`.
     # docs/desktop-selection.md.
     ../services/desktop-select.nix
     # gemshell — the native Rust Wayland compositor as a boot session
@@ -138,30 +123,9 @@ in
   # 2026-09-10 (kmscube on card0 -> OpenGL ES 3.1, renderer
   # "Mali-T880 (Panfrost)"). services/gnome.nix runs
   # services.desktopManager.gnome + GDM and force-disables the nested
-  # gemwl/phosh/LXQt stack, so exactly one desktop owns the panel.
+  # gemwl stack, so exactly one desktop owns the panel.
   # Evidence + on-glass receipts: docs/gnome-feasibility.md.
   services.gnomeDesktop.enable = true;
-
-  # ---- COSMIC: co-installed session, selected at boot (2026-09-10) ----
-  # COSMIC 1.6 registers its Wayland session with the display manager
-  # (services.displayManager.sessionPackages), so GDM offers it next to
-  # GNOME. This does NOT replace GNOME and does not auto-start: the
-  # desktop-select marker chooses which one GDM auto-logs into (default
-  # gnome). Both render on the same geminipda-drm KMS device via Mesa
-  # kmsro -> panfrost. COSMIC is unverified on glass; see
-  # docs/desktop-selection.md. Disable with
-  # services.desktopManager.cosmic.enable = false.
-  services.desktopManager.cosmic.enable = true;
-
-  # ---- niri: co-installed session, selected at boot (2026-09-11) ------
-  # niri 26.04 (scrollable-tiling Wayland compositor) registers its
-  # session with the display manager (programs.niri -> providedSessions
-  # ["niri"]), so GDM offers it next to GNOME/COSMIC. It does NOT replace
-  # them and does not auto-start: the desktop-select marker chooses which
-  # one GDM auto-logs into. It renders on the same geminipda-drm KMS
-  # device via Mesa kmsro -> panfrost. Disable with
-  # programs.niri.enable = false. docs/desktop-selection.md.
-  programs.niri.enable = true;
 
   # Selector fallback when /var/lib/gemini/desktop is absent (fresh
   # install); `gemcli session set` overrides it persistently.
@@ -244,9 +208,8 @@ in
 
   # cjdell = the DEFAULT user of the device (2026-09-09; replaces the
   # original placeholder `gemini` account): the console getty autologins
-  # as cjdell, and the DESKTOP sessions (LXQt services/lxqt.nix, Phosh
-  # services/phosh.nix) run as cjdell — HOME=/home/cjdell, session
-  # configs seeded there by services/scripts/start-lxqt-nested, the
+  # as cjdell, and the DESKTOP session (GNOME via GDM; the gemshell
+  # compositor system service) runs as cjdell — HOME=/home/cjdell, the
   # audio session (services/audio.nix) under the same user so the
   # desktop can reach its sockets. Passwordless sudo comes from the
   # wheel NOPASSWD rule below — that is what makes "desktop user but
@@ -257,9 +220,8 @@ in
     isNormalUser = true;
     uid = 1000; # gemini's old uid (the account replaces it; home is new)
     description = "Default Gemini PDA user (desktop + console)";
-    # [added 2026-09-10] phosh's lockscreen PAM-authenticates the session
-    # user — a locked (passwordless) account can never unlock (phosh
-    # gen59 on glass showed the passcode pad against a locked account).
+    # [added 2026-09-10] the desktop lock screen PAM-authenticates the
+    # session user — a locked (passwordless) account can never unlock.
     # Passcode chosen by the user: 0000 (same hash the device has since
     # 2026-09-10; yescrypt). Single-user trusted PDA — the ssh key below
     # and passwordless sudo are the real admin paths.
@@ -290,11 +252,7 @@ in
   # root, getty autologin gemini). NixOS's inherited default already
   # resolves to /run/current-system/sw/bin/bash (bash-interactive in the
   # system profile — verified on glass gen9), but pin the store path so
-  # the choice never depends on profile composition. The desktop session
-  # (services/lxqt.nix) additionally exports SHELL to the same binary so
-  # terminal apps (qterminal) spawn bash rather than /bin/sh (a systemd
-  # system service has no SHELL env; qterminal falls back to sh).
-  # [2026-09-08]
+  # the choice never depends on profile composition. [2026-09-08]
   users.defaultUserShell = "${pkgs.bashInteractive}/bin/bash";
 
   services.openssh.enable = true;
@@ -385,18 +343,18 @@ in
   #   enabled below.
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ];
-    # RAM-bound mobile builds (3.6 GiB total, ~1-2 GiB free with the
-    # LXQt desktop up): bound the concurrent compilers. Normal on-device
+    # RAM-bound mobile builds (3.6 GiB total, ~1-2 GiB free with a
+    # desktop up): bound the concurrent compilers. Normal on-device
     # switches are config-glue + cache.nixos.org substitutions (the
     # pinned nixpkgs rev IS the hydra-built channel snapshot — golden
     # rule 9), so they are quick; the custom drvs (mesa fork, kernel,
-    # wlroots/labwc/gemwl, firmware, gemcli) only compile when their
+    # wlroots/gemwl, firmware, gemcli) only compile when their
     # sources change — long on the A72/A53 mix, prefer the host
     # deploy.sh loop for those.
     max-jobs = 2;
     cores = 2;
-    # Trusted single-user root PDA (same trust model as the root LXQt
-    # session): sandbox buys nothing here and risks lean-mobile-kernel
+    # Trusted single-user root PDA (same trust model as the rest of the
+    # device): sandbox buys nothing here and risks lean-mobile-kernel
     # namespace edge cases; store writes are daemon-mediated either way.
     sandbox = false;
   };
@@ -413,8 +371,8 @@ in
   # with the SAME rev the flake pins (dc5d91f84032 — cache-healthy by
   # construction, package versions match the running system). nixPath
   # drives the login-shell NIX_PATH; belt+braces: the same list as the
-  # nix.conf `nix-path` so non-login contexts (device-ssh.sh, the LXQt
-  # system-service session) resolve <nixpkgs> too. [2026-09-08]
+  # nix.conf `nix-path` so non-login contexts (device-ssh.sh, the
+  # gemshell system-service session) resolve <nixpkgs> too. [2026-09-08]
   nix.nixPath = [
     "nixpkgs=/nix/var/nix/profiles/per-user/root/channels/nixpkgs"
     "nixos-config=/etc/nixos/configuration.nix"
@@ -492,7 +450,7 @@ in
   # libglvnd supplies the client libs (libEGL.so.1 / libGLESv2.so.2) that
   # dispatch to it. This replaced the old setup (hardware.graphics
   # unintendedly ON *and* a fork /etc ICD), where glvnd loaded BOTH mesa
-  # 26.2.2 and the 25.0.7 fork in one process — cosmic-comp had
+  # 26.2.2 and the 25.0.7 fork in one process — a compositor had
   # libgallium-25.0.7 + libgallium-26.2.2 loaded at once and could not
   # import buffers between them ("import for wrong devices"). Receipts:
   # docs/handover-2026-09-10-gnome-perf-touch.md, docs/library-deltas.md.
@@ -514,10 +472,8 @@ in
   # built with NO wayland EGL platform (-Dplatforms=) so browser GL had
   # no display path at all — pkgs/mesa-geminipda.nix now builds
   # surfaceless,wayland; (2) the fork libgbm needs GBM_BACKENDS_PATH to
-  # find dri_gbm.so (browser glxtest GPU probe) — set session-wide in
-  # services/lxqt.nix. Firefox must be DESKTOP-launched (session env).
-  # Session-side bits (session PATH for bare-name launch, NIXOS_OZONE_WL
-  # for chrome's ozone/wayland auto-flags) live in services/lxqt.nix.
+  # find dri_gbm.so (browser glxtest GPU probe). Firefox must be
+  # DESKTOP-launched (session env).
   environment.systemPackages = [
     pkgs.libglvnd
     # --no-sandbox (2026-09-08, comment updated 2026-09-09): chrome was

@@ -21,7 +21,7 @@
 #
 # [changed 2026-09-10] CONNECTIVITY MANAGER = NetworkManager by default
 # (services.geminiWifi.useNetworkManager). The DE status bars / wifi
-# pickers (phosh quick settings, GNOME, LXQt via nm-applet/nm-tray, …)
+# pickers (GNOME, nm-applet/nm-tray, …)
 # all talk org.freedesktop.NetworkManager; the old bring-up stack drove
 # wlan0 with a standalone wpa_supplicant + dhcpcd (`wifi` CLI +
 # gemini-wifi-auto), which no desktop can show or control. NM owns

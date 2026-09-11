@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Audio Volume
-GenericName=Volume Control
-Comment=Adjust sound volume (PipeWire/PulseAudio)
-Icon=audio-volume-high
-Exec=pavucontrol-qt
-Terminal=false
-Categories=Qt;AudioVideo;Audio;

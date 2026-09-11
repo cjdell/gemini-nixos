@@ -18,8 +18,8 @@
 # drops large NARs — HTTP 206 — so never build directly on the Pi for
 # cache fetches). `--fallback`: substitute from cache.nixos.org — since
 # the 2026-09-08 repin the pinned nixpkgs rev IS the hydra-built channel
-# snapshot dc5d91f84032, so the Qt6/LXQt closure fetches; the custom
-# drvs (mesa-geminipda fork, wlroots/labwc/gemwl pins, kernel) are NOT
+# snapshot dc5d91f84032, so the Qt6 closure fetches; the custom
+# drvs (mesa-geminipda fork, wlroots/gemwl pins, kernel) are NOT
 # on any cache — they compile on the builder.
 #
 # GC hygiene (rule 0): every deployed toplevel is pinned with

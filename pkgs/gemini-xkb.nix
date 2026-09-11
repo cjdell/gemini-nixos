@@ -6,8 +6,8 @@
 # build/rootfs-files/xkb/symbols/gemini instead).
 #
 # Why a separate package: the desktop keymaps are compiled by xkbcommon
-# (libxkbcommon) inside gemwl (pkgs/gemwl.nix) and the nested labwc
-# (pkgs/labwc-geminipda.nix), and xkbcommon resolves symbols from its
+# (libxkbcommon) inside gemwl (pkgs/gemwl.nix) and the gemshell
+# compositor (pkgs/gemshell), and xkbcommon resolves symbols from its
 # include path. The nixpkgs xkeyboard-config tree (the compiled-in
 # XKB_CONFIG_ROOT) does not carry "gemini" — without it both compositors
 # log XKB-338 and fall back to the default US keymap (Fn = Alt, no £).
@@ -20,7 +20,7 @@
 # Consumers (the units that export XKB_CONFIG_EXTRA_PATH=$out):
 #   services/desktop.nix  — gemwl.service (compiles layout "gemini" by
 #                           default, gemwl.c xkb_rule_names)
-#   services/lxqt.nix     — lxqt-nested.service (labwc 0.8.3 reads
+#   services/gemshell.nix — gemini-gemshell.service (reads
 #                           XKB_DEFAULT_LAYOUT; set to "gemini")
 { lib, stdenvNoCC }:
 

@@ -34,8 +34,8 @@ let
   gemcli = pkgs.callPackage ../pkgs/gemcli.nix { };
   # gemdemo — the minimal GLES 3.1 + ALSA template (docs/gemdemo.md). In
   # the rootfs closure so it is available on-glass without a separate copy;
-  # run it from the LXQt/labwc session or on gemwl (needs the Wayland
-  # compositor running + the audio card up).
+  # run it from the desktop session (needs the Wayland compositor running
+  # + the audio card up).
   gemdemo = pkgs.callPackage ../pkgs/gemdemo.nix { };
   # gemini-exodus — GEMINI: EXODUS (Director's Cut): the cinematic
   # spacesynth + GPU stress test (docs/gemini-exodus.md). In the rootfs
@@ -291,7 +291,8 @@ in
   # while the kernel stays up — backlight off FIRST (instant press
   # feedback), keyboard matrix + touch unbound (the closed lid presses
   # the keys — unbound they generate nothing), A53 cpus 1-7 offline,
-  # heavyweight services stopped (gemwl/LXQt, pipewire), wifi iface
+  # heavyweight services stopped (the current panel owner, pipewire),
+  # wifi iface
   # down + daemons stopped (the CONSYS chip stays powered — the WMT
   # `echo off` teardown stalls ~29 s, too slow for the button path;
   # wake re-associates via `wifi auto`). mt6351-keys itself stays

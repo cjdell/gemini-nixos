@@ -1,12 +1,12 @@
 # Desktop/system plumbing — battery + power status on the standard
-# buses, so ANY desktop environment (Phosh today, LXQt/gemwl tomorrow,
-# a future GNOME/KDE session) gets power state without gemini-specific
+# buses, so ANY desktop environment (GNOME today, gemshell, or a future
+# KDE session) gets power state without gemini-specific
 # glue. Design + receipts: docs/desktop-plumbing.md.
 #
 # WHAT THIS MODULE OWNS (all DE-agnostic, all on the system bus):
 #
 #   - UPower (org.freedesktop.UPower): the daemon every DE shell reads
-#     for battery/AC state. Phosh's top-bar battery icon, LXQt's panel
+#     for battery/AC state. GNOME's power panel, a shell's top-bar
 #     battery widget, GNOME's power panel … all speak UPower; nothing
 #     gemini-specific speaks to it.
 #   - The battery data itself comes from a Battery-type power_supply
@@ -20,8 +20,8 @@
 #     no logind session, so the standard logind SetBrightness route
 #     rejects them and uaccess never tags their devices. chmod from udev
 #     is the standard runtime answer (same trick Android/others use on
-#     sysfs); phosh's brightness manager (backlight-sysfs backend) and
-#     brightnessctl both write the file directly.
+#     sysfs); GNOME's brightness handling and brightnessctl both write
+#     the file directly.
 #   - brightnessctl on PATH (the standard sysfs backlight CLI; volume
 #     side is wpctl — shipped with wireplumber, services/audio.nix).
 #
@@ -44,7 +44,7 @@ in
       default = true;
       description = ''
         Enable the DE-agnostic desktop plumbing: UPower (battery/AC
-        status for phosh/LXQt/…), brightness sysfs access and the
+        status for any desktop shell), brightness sysfs access and the
         standard control CLIs. Harmless on a console-only boot; disable
         only for a minimal headless profile.
       '';
@@ -71,7 +71,7 @@ in
 
     services.udev.extraRules = ''
       # Gemini backlight access for the session-less desktop (2026-09-10):
-      # phosh/LXQt run as systemd system services as cjdell — no logind
+      # the desktop runs as a systemd system service as cjdell — no logind
       # session exists, so uaccess tagging never applies and the logind
       # SetBrightness D-Bus route is unavailable. chmod the sysfs attrs
       # on add (sysfs honours the inode mode on open; the kernel cannot

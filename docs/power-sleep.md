@@ -1,6 +1,6 @@
 # Power sleep on the Gemini PDA — investigation + the silver-button sleep/wake
 
-**Last updated:** 2026-09-11 (systemd suspend disabled; GNOME auto-suspend pinned off)
+**Last updated:** 2026-09-12 (desktop-aware light sleep: GDM/GNOME, gemshell; removed-session references dropped)
 
 Scope: how to make the unit draw as little battery current as possible,
 and the silver side button (KEY_SLEEP, mt6351-keys) as device sleep/wake.
@@ -83,15 +83,20 @@ worst case total, nothing blocks on the wifi chip):
    Per-core A53 offline is the safe PSCI path (the cl2-down receipts);
    the A53 *cluster* power-down (below) is not wired.
 4. **Heavyweight services stopped** (only those actually running, the
-   list is recorded): `gemwl.service` + `phosh-nested.service` (the
-   default desktop since 2026-09-10) + `lxqt-nested.service` (the GPU
-   desktop), `pipewire/wireplumber/pipewire-pulse` (audio). `sshd` +
+   list is recorded): the current panel owner — `display-manager.service`
+   (GDM, i.e. the GNOME session; stopping GDM ends cjdell's
+   `gnome-session` and `start` auto-logins it again, verified on glass
+   2026-09-12), `gemini-gemshell.service` (the native compositor), or
+   legacy `gemwl.service` — plus the audio session
+   (`pipewire/wireplumber/pipewire-pulse`). `sshd` +
    `gemini-battery-guard` + `gemini-sleepd` STAY (control link, the
-   safety daemon, the wake button). **[fixed 2026-09-10]**
-   `phosh-nested.service` was missing from `SERVICES` — a sleep left
-   phoc + the session running against a stopped gemwl (the observed
-   "phosh not usable after the silver button"), so it is now stopped
-   and restarted with the rest.
+   safety daemon, the wake button). **[2026-09-12]** the stop-list is now
+   desktop-agnostic and no longer names the removed
+   `phosh-nested`/`lxqt-nested` units; it stops and re-starts whichever
+   panel owner is actually active. (History: `phosh-nested.service` had
+   been missing from `SERVICES` — a sleep left phoc + the session running
+   against a stopped gemwl, the observed "phosh not usable after the
+   silver button".)
 5. **Wifi down — fast**: `ip link set <iface> down` + kill
    wpa_supplicant + the iface's dhcpcd (legacy stack). The CONSYS chip
    itself stays powered (radio firmware idles): the WMT `echo off`

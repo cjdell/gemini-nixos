@@ -28,14 +28,16 @@ silkscreen deltas.
 ## NixOS side — how the desktop consumes it
 
 `console.keyMap` (VT) is a separate map (`config/keymaps/gemini-uk.map`).
-The **desktop** (gemwl + nested labwc/LXQt) compiles its keymap with
+The **desktop** (gemwl, GNOME via `XKB_CONFIG_ROOT`, and the gemshell
+compositor) compiles its keymap with
 xkbcommon from rules — layout `gemini` — so `symbols/gemini` must be on
 xkbcommon's include path:
 
 - `pkgs/gemini-xkb.nix` packages this tree (`$out/symbols/gemini`).
-- `services/desktop.nix` (gemwl) + `services/lxqt.nix` (labwc) set
-  `XKB_CONFIG_EXTRA_PATH=<that store dir>`; labwc additionally gets
-  `XKB_DEFAULT_LAYOUT=gemini`.
+- `services/desktop.nix` (gemwl) + `services/gemshell.nix` (native
+  compositor) set `XKB_CONFIG_EXTRA_PATH=<that store dir>` + `XKB_DEFAULT_LAYOUT=gemini`;
+  GNOME needs the fuller `pkgs/gemini-xkeyboard-config.nix` via
+  `XKB_CONFIG_ROOT` (it validates against the xkb registry).
 
 Without it xkbcommon logs `XKB-338 Couldn't find file "symbols/gemini"`
 and both compositors fall back to the default (US) keymap — Fn behaves as
@@ -43,4 +45,4 @@ Alt (`<RALT>` = Alt_R, no level3) and `shift+3` = `#` instead of `£`
 (observed on glass gen9, 2026-09-08). Verify on glass:
 `xkbcli compile-keymap --layout gemini` (if `xkbcli` is on the device) or
 a typing test; journal `xkbcommon: ERROR` absence in `-u gemwl` /
-`-u lxqt-nested` and labwc's "Found layout Gemini English (UK)" line.
+`-u gemini-gemshell` and the compositors' "Found layout Gemini English (UK)" line.

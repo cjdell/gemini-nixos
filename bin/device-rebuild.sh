@@ -16,7 +16,7 @@
 # the hydra-built nixos-unstable channel snapshot (golden rule 9), so
 # its closure substitutes from cache.nixos.org over the device's wifi /
 # g_ether NAT; only the custom drvs (mesa-geminipda fork, the kernel,
-# wlroots/labwc/gemwl pins, gemini-firmware, gemcli, make_ext4fs-shim)
+# wlroots/gemwl pins, gemini-firmware, gemcli, make_ext4fs-shim)
 # and the config glue compile locally when changed — long on the A72/A53
 # mix, prefer the host loop (bin/deploy.sh) for those. Store writes go
 # through the socket-activated nix-daemon: /nix/store is bind-mounted ro

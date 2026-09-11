@@ -13,7 +13,7 @@
 #   - the hci0 controller module (hci_stp) loaded at boot, ordered
 #     after the internal-wifi CONSYS bring-up (mtk_wcn + chip pwr-on).
 #   - bluetoothctl/btmgmt/hciconfig/hcitool on PATH (CLI).
-#   - blueman (GUI manager + tray applet) for the LXQt session.
+#   - blueman (GUI manager + tray applet) for the desktop session.
 #
 # OPTION NAME: the nixpkgs option at this pin (dc5d91f84032) is
 # `hardware.bluetooth`, NOT `services.bluetooth` — the services.*
@@ -83,10 +83,9 @@
 
   # ---- GUI tools ----------------------------------------------
   # blueman = the GTK manager (blueman-manager) + tray applet
-  # (blueman-applet; autostarted in the LXQt session via its shipped
-  # etc/xdg/autostart/blueman.desktop — see services/lxqt.nix, which
-  # puts blueman on the session XDG_CONFIG_DIRS/PATH when bluetooth is
-  # enabled). CLI tools (bluetoothctl/btmgmt/hciconfig/hcitool) come
+  # (blueman-applet; autostarted in desktop sessions via its shipped
+  # etc/xdg/autostart/blueman.desktop). CLI tools
+  # (bluetoothctl/btmgmt/hciconfig/hcitool) come
   # from the bluez package hardware.bluetooth puts in systemPackages.
   # blueman here too so the manager is runnable from an ssh shell
   # without the desktop.

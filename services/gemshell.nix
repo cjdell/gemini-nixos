@@ -1,11 +1,11 @@
 # gemshell desktop — the native Rust compositor as a boot session.
 #
-# The gemshell compositor (pkgs/gemshell.nix) is the fourth panel owner,
-# alongside the GDM sessions (GNOME/COSMIC/niri) and the fbcon console —
-# but it is NOT a GDM session: it is a SYSTEM service (User=cjdell) that
-# owns /dev/dri/card0 directly, exactly like the nested gemwl stack did
-# (no logind session, no display manager). Selection is by the SAME
-# persistent marker as everything else (docs/desktop-selection.md):
+# The gemshell compositor (pkgs/gemshell.nix) is one of the panel owners,
+# alongside the GDM GNOME session and the fbcon console — but it is NOT a
+# GDM session: it is a SYSTEM service (User=cjdell) that owns
+# /dev/dri/card0 directly, exactly like the nested gemwl stack did (no
+# logind session, no display manager). Selection is by the SAME persistent
+# marker as everything else (docs/desktop-selection.md):
 #
 #   /var/lib/gemini/desktop = gemshell
 #     -> gemini-desktop-apply creates /run/gemini-console
@@ -36,8 +36,8 @@ let
   # The mesa fork (T880 delta) — the compositor's ICD + DRI driver.
   mesa = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
   gemshell = pkgs.callPackage ../pkgs/gemshell.nix { mesa = mesa; };
-  # DejaVu (the fontconfig default on this device; fonts.packages in the
-  # GNOME/LXQt/Phosh modules) — the compositor's UI font.
+  # DejaVu (the fontconfig default on this device; fonts.packages in
+  # the GNOME module) — the compositor's UI font.
   fonts = pkgs.dejavu_fonts;
   # xkbcommon include dir with symbols/gemini (Fn = level-3 shift); the
   # compositor reads XKB_CONFIG_EXTRA_PATH + XKB_DEFAULT_LAYOUT when it
@@ -46,7 +46,7 @@ let
   # gemdemo — the GL-client smoke test (docs/gemshell.md checklist 6).
   gemdemo = pkgs.callPackage ../pkgs/gemdemo.nix { };
   # The mesa fork's libgbm has NO baked backend path and honors only
-  # GBM_BACKENDS_PATH (the LXQt/Phosh receipt, 2026-09-08) — point it at
+  # GBM_BACKENDS_PATH (the system-service receipt, 2026-09-08) — point it at
   # the fork's lib/gbm so gbm_create_device("/dev/dri/card0") loads the
   # SAME backend the /run/opengl-driver ICD uses.
   mesaGeminipda = pkgs.callPackage ../pkgs/mesa-geminipda.nix { };
@@ -61,9 +61,9 @@ in
         model: it is inert unless the desktop marker
         /var/lib/gemini/desktop says `gemshell`, resolved at boot by
         gemini-desktop-apply; `gemcli session set gemshell`).
-        Mutually exclusive at RUNTIME with the GDM sessions (same
+        Mutually exclusive at RUNTIME with the GDM GNOME session (same
         sentinel mechanism); at BUILD time it force-disables the nested
-        gemwl/phosh/LXQt stack like services/gnome.nix does.
+        gemwl stack like services/gnome.nix does.
       '';
     };
 
@@ -88,7 +88,7 @@ in
       ];
       wants = [ "gemini-gpu-poweron.service" ];
       # The mode gate: starts ONLY in gemshell marker mode (the apply
-      # service created the sentinel). In gnome/cosmic/niri/console mode
+      # service created the sentinel). In gnome/console mode
       # the condition fails and GDM (or nothing) owns the panel.
       unitConfig.ConditionPathExists = "/run/gemini-console";
       serviceConfig = {
@@ -188,13 +188,11 @@ in
       };
     };
 
-    # ---- Replace the nested stack (same as gnome.nix) ----------------
+    # ---- Replace the nested gemwl stack (same as gnome.nix) ----------
     # gemshell owns the panel; gemwl owns /dev/gemfb and the nested
-    # sessions own gemwl's socket. Force them off so the two models can
-    # never fight over the scanout.
+    # sessions that used to connect to it are gone. Force gemwl off so
+    # the two models can never fight over the scanout.
     systemd.services.gemwl.enable = lib.mkForce false;
-    services.phoshDesktop.enable = lib.mkForce false;
-    services.lxqtNested.enable = lib.mkForce false;
 
     # Keep the custom PipeWire (services/audio.nix), same as gnome.nix.
     services.pipewire.enable = lib.mkForce false;

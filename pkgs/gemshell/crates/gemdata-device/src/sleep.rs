@@ -49,9 +49,10 @@
 //!      offlines hung the device (2026-09-10q). The recorded state
 //!      restores it on wake. [A72 handling added 2026-09-10]
 //!   3b. offline A53 cpus 1..7 (cpu0 must run the kernel).
-//!   4. stop the heavyweight services that were running: gemwl +
-//!      lxqt-nested (the GPU desktop), pipewire/wireplumber/pipewire-pulse
-//!      (audio). sshd + gemini-battery-guard + gemini-sleepd STAY.
+//!   4. stop the heavyweight services that were running: the current
+//!      panel owner (display-manager/GDM for GNOME, gemini-gemshell, or
+//!      legacy gemwl) + pipewire/wireplumber/pipewire-pulse (audio).
+//!      sshd + gemini-battery-guard + gemini-sleepd STAY.
 //!   5. wifi down: `ip link set <iface> down`; legacy additionally kills
 //!      wpa_supplicant + dhcpcd; NM mode leaves NM's supplicant alone
 //!      (the CONSYS chip itself stays powered — see above).
@@ -85,15 +86,23 @@ const STATE_FILE: &str = "/run/gemcli-sleep.state";
 const DEBOUNCE_MS: u64 = 1000;
 
 /// Heavyweight services stopped on sleep (only those actually running
-/// are stopped; wake starts exactly the stopped set). sshd + the
-/// battery guard + gemini-sleepd itself are never in this list. The
-/// wifi *units* are deliberately not here (RemainAfterExit oneshots —
-/// stopping them does not stop wifi); wifi is handled separately via
-/// the interface + daemons (§wifi).
+/// are stopped; wake starts exactly the stopped set). The desktop-aware
+/// part is the first three entries — whichever session
+/// /var/lib/gemini/desktop selects:
+///   - GNOME    -> display-manager.service (stopping GDM ends the cjdell
+///                 gnome-session; `start` auto-logins it again, verified
+///                 on glass 2026-09-12);
+///   - gemshell -> gemini-gemshell.service;
+///   - legacy gemwl -> gemwl.service (no session client since the nested
+///                 LXQt/Phosh sessions were removed 2026-09-12).
+/// Plus the audio session. sshd + the battery guard + gemini-sleepd
+/// itself are never in this list. The wifi *units* are deliberately not
+/// here (RemainAfterExit oneshots — stopping them does not stop wifi);
+/// wifi is handled separately via the interface + daemons (§wifi).
 const SERVICES: &[&str] = &[
-    "gemwl.service",
-    "phosh-nested.service", // default desktop since 2026-09-10 (was missing: a sleep left phoc/session running against a stopped gemwl)
-    "lxqt-nested.service",
+    "display-manager.service", // GNOME via GDM (the default panel owner)
+    "gemini-gemshell.service", // native compositor session
+    "gemwl.service",           // legacy nested compositor (if ever active)
     "pipewire.service",
     "wireplumber.service",
     "pipewire-pulse.service",

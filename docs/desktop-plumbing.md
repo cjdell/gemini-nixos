@@ -1,5 +1,10 @@
 # Desktop plumbing for the Gemini PDA — UPower, NetworkManager, backlight, touch
 
+> **2026-09-12:** the nested Phosh/LXQt desktops (and COSMIC/niri) were
+> removed; GNOME, `gemshell` and the console are the supported set. The
+> plumbing layer is deliberately DE-agnostic and unchanged, so
+> Phosh/LXQt-specific notes below are now historical.
+
 Last updated: 2026-09-11. Status: 🟡 implemented; **gen62 deployed
 2026-09-10 — NM/upower/backlight verified on glass** (see §Verification
 checklist); the battery icon is the one item left: it needs the new
@@ -38,7 +43,7 @@ volume/brightness keys bound in mutter — see §Volume.
 hardware, so gnome-shell auto-created the OSK regardless of the a11y
 toggle) — see §"On-screen keyboard".
 "make every desktop environment just work" layer: the system services
-that Phosh (default desktop), LXQt (alternative), GNOME or KDE would
+that GNOME, gemshell or KDE would
 all consume through the standard D-Bus APIs, with zero gemini-specific
 glue in the shells.
 
@@ -136,7 +141,7 @@ charger-only, no coulomb counter on any i2c bus; Android's MTK
   time-based policy needs energy data the supply does not have.
 
 On-glass check: `cat /sys/class/power_supply/bq25890-battery-0/type`
-→ `Battery`; `upower -d` shows a battery device; phosh top bar shows %
+→ `Battery`; `upower -d` shows a battery device; the GNOME top bar shows %
 + charging bolt; unplug AC → status flips within a poll tick.
 
 ### Wi-Fi: NetworkManager takes over from the standalone stack
@@ -171,7 +176,7 @@ wifi.nix now defaults `services.geminiWifi.useNetworkManager = true`:
   either way for diagnostics).
 
 On-glass check: `nmcli dev status` shows wlan0; `nmcli con up "The
-Lab"`; phosh quick settings lists networks; unplug USB-C host link →
+Lab"`; GNOME quick settings lists networks; unplug USB-C host link →
 wifi stays up.
 
 #### Smart autoconnect — prefer the strongest known network (2026-09-11)
@@ -203,17 +208,17 @@ Band note: the loop ranks raw signal, so at close range it prefers the
 
 ### Backlight access (session-less desktop problem)
 
-Why not the standard path: phosh's brightness control and
+Why not the standard path: a compositor's brightness control and
 gnome-settings-daemon's use logind `Session.SetBrightness`; both fail
-when the session is a systemd **system service** (our desktop model —
-no logind session, no uaccess tag). The kernel cannot express wider
+when the session is a systemd **system service** (the gemwl-era desktop
+model — no logind session, no uaccess tag). The kernel cannot express wider
 modes on sysfs attrs at build time (`VERIFY_OCTAL_PERMISSIONS` refuses
 write bits for group/other — an earlier kernel-delta approach failed
 the build on exactly that, 2026-09-10), so the standard runtime fix is
 a udev rule (`services/plumbing.nix`) that chmods
 `/sys/class/backlight/%k/{brightness,bl_power}` to 0666 on add. Sysfs
 honours the inode mode at open(2); no kernel change needed. Phosh's
-own brightness manager has a sysfs backend and writes the file
+own brightness manager had a sysfs backend that wrote the file
 directly; `brightnessctl` (installed) is the CLI. Root's `backlight`
 CLI (gemini-pda-utils) remains the devmem fallback / console path.
 
@@ -225,7 +230,7 @@ the LCD boost is on that PWM; the desktop sliders/`brightnessctl` now
 drive it. The Fn+B/N keys are also wired to gnome-shell's
 `screen-brightness-*` bindings (see §Volume); GNOME 50 moved screen
 backlight handling into mutter/gnome-shell, so under GNOME it is a
-CSD/`Meta.Backlight` path, not phosh's sysfs backend. The udev RUN rule
+CSD/`Meta.Backlight` path, not the legacy sysfs backend. The udev RUN rule
 fires on device *add* — after a live deploy
 of the rule the device must be re-added, either a reboot or
 `udevadm trigger --action=add /sys/devices/platform/backlight/backlight/backlight`

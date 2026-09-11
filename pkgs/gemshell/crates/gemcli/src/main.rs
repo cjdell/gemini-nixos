@@ -118,7 +118,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ProfileCmd,
     },
-    /// Desktop/session selection (GNOME / COSMIC / console) — the
+    /// Desktop/session selection (GNOME / gemshell / console) — the
     /// persistent boot marker read by gemini-desktop-apply.service.
     /// See services/desktop-select.nix + docs/desktop-selection.md.
     Session {
@@ -279,9 +279,9 @@ enum SessionCmd {
     Status,
     /// List the selectable modes
     List,
-    /// Persist the boot session (gnome|cosmic|niri|gemshell|console)
+    /// Persist the boot session (gnome|gemshell|console)
     Set {
-        #[arg(value_parser = ["gnome", "cosmic", "niri", "gemshell", "console"])]
+        #[arg(value_parser = ["gnome", "gemshell", "console"])]
         mode: String,
         /// Apply now (AccountsService / console sentinel) without rebooting
         #[arg(long)]

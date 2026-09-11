@@ -7,8 +7,9 @@
 #   session on XDG_RUNTIME_DIR=/run/gemwl-audio — the same layout as the
 #   proven Debian units. [changed 2026-09-09] The session user is
 #   cjdell (the device's default desktop user, config/gemini.nix
-#   users.users.cjdell), NOT root: the desktop sessions (lxqt.nix /
-#   phosh.nix) run as cjdell and must reach the sound server's sockets
+#   users.users.cjdell), NOT root: the desktop session (GNOME via GDM,
+#   or the gemshell system service) runs as cjdell and must reach the
+#   sound server's sockets
 #   (/run/gemwl-audio, owned by cjdell via systemd RuntimeDirectory +
 #   User= chown). /dev/snd* access comes from cjdell's `audio` group.
 #   The only loss vs root: no realtime scheduling (no rtkit here —
