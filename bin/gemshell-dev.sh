@@ -100,7 +100,11 @@ stop() {
 }
 
 case "${1:-run}" in
-    run) run ;;
+    # Forward extra env (space-separated KEY=VAL) + settle seconds so
+    # callers can e.g. open the launcher and screenshot it:
+    #   bash bin/gemshell-dev.sh run "GEMSHELL_OPEN_LAUNCHER=1 \
+    #     GEMSHELL_SCREENSHOT=/tmp/x.png GEMSHELL_SCREENSHOT_DELAY_MS=5000" 9
+    run) run "${2:-}" "${3:-5}" ;;
     shot) shot "${2:-}" ;;
     logs) logs ;;
     status) status ;;

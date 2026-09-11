@@ -1,6 +1,6 @@
 # gemshell — the native Gemini PDA Wayland compositor + desktop shell
 
-Last updated: 2026-09-12
+Last updated: 2026-09-11
 
 A custom, Rust-based, Wayland-native desktop for the Gemini PDA: the
 `gemshell` compositor (KMS + Mesa OpenGL, a handful of shell services)
@@ -20,6 +20,38 @@ iteration; it opens the settings panel by default). Host check:
 confirm the orientation/rotation direction + touch calibration** (the
 2026-09-12 present() fix corrected a left-right mirror; see Orientation).
 Full receipt: session-log 2026-09-11 "gemshell ON GLASS" + 2026-09-12.
+
+### 2026-09-11 glass-report fix batch
+
+A user report from the glass (on the pre-egui build, plus several
+issues still present at HEAD) drove one batch of fixes; all build- and
+host-verified, deploy pending:
+
+- **Text (the real root cause).** `common/font.rs` advanced the pen by
+  `h_advance_unscaled(id) * px` — raw font units (≈600) × 26 ≈ **16 000
+  px per glyph**. `Op::Text` therefore showed only its first character
+  and `Op::TextCentered` placed the pen thousands of px off-screen, so
+  the launcher title/labels, the Close button and the whole status bar
+  were blank. Fix: the SCALED advance via
+  `ab_glyph::ScaleFont::h_advance` (`face.as_scaled(px)`). The
+  2026-09-12 raster-origin fix was necessary but not sufficient.
+- **SVG app icons.** `common/icons.rs` now decodes SVG app icons with
+  `resvg` (text support off) lazily, per used icon; SVGs are indexed by
+  name at startup and rendered on first request. Adwaita/GNOME/COSMIC
+  ship app icons as SVG only, so before this every non-PNG app (most of
+  the 168 `.desktop` entries) fell back to a blank letter tile.
+- **Launcher** — scroll clamp sign/limit were wrong (see Input model),
+  the `*= 0.8` decay snapped the grid back to the top, taps inside the
+  LauncherScroll gesture were ignored, and there was no way to close
+  the drawer. Fixed + added a Close button (tap outside also closes).
+- **Idle CPU** — the main loop re-rendered every 16 ms even when
+  nothing changed (≈60 % of a core). It now renders only when `dirty`:
+  0 timeout when a frame is due, the remainder of the ~60 Hz interval
+  while a frame is in flight, and a 1 s idle tick so the status/clock
+  channel (which cannot wake `poll`) is still drained.
+- **Brightness + output selection** — new Display tab (brightness
+  slider); the Audio tab now lists the `gemini_speakers` filter sink as
+  "Built-in Speakers" next to "Headphones / Jack" (see Settings panel).
 
 ## Orientation (landscape product / portrait fb)
 
@@ -159,9 +191,13 @@ bottom.
 ## Architecture (compositor)
 
 Single thread, one `poll()` loop over: the wayland display fd, the
-gbm device fd (flip events), the two evdev nodes (keyboard, touch),
-with a 16 ms timeout. No async runtime, no threads in the hot path
-(one background thread polls status: battery/wifi/bt/volume).
+gbm device fd (flip events), the two evdev nodes (keyboard, touch).
+No async runtime, no threads in the hot path (one background thread
+polls status: battery/wifi/bt/volume). Frame pacing is dirty-driven:
+0 while a frame is due, the remainder of the 16 ms/60 Hz interval
+while one is in flight, and a 1 s idle tick so the status channel is
+still drained (there is no eventfd for it). It does NOT re-render
+when nothing changed (2026-09-11).
 
 - **Display path** — `/dev/dri/card0` (geminipda-drm, the LK
   framebuffer as DRM/KMS; single fixed mode 1080×2160 portrait, XRGB8888
@@ -224,11 +260,14 @@ with a 16 ms timeout. No async runtime, no threads in the hot path
   running app (icon or letter tile, title under it, running dot).
   Tap = focus + bring its workspace to front; tap the focused one again
   = hide (minimize); the focused app shows a highlight bar.
-- **Launcher**: full-screen app grid (icons + names, 1-finger scroll),
-  built from the XDG desktop dirs (`/usr/share/applications`,
+- **Launcher**: full-screen app grid (icons + names, 1-finger scroll,
+  clamped to the real content height so every row is reachable), built
+  from the XDG desktop dirs (`/usr/share/applications`,
   `/home/cjdell/.local/share/applications`, `/root/.local/share/…`).
   Tap launches (Exec= parsing, `%u %U %f` stripped, `Terminal=`/
-  `NoDisplay=` respected).
+  `NoDisplay=` respected); a Close button (top-right) or a tap outside
+  a tile closes the drawer. App icons are PNG or SVG
+  (`common/icons.rs`).
 - **App switcher** (Fn+Tab / 2-finger up-swipe): center row of running
   apps, Tab cycles, release activates; 2-finger up-swipe = next app.
 
@@ -329,7 +368,14 @@ no CPU rasterization:
 - Screens: **Wi-Fi** (radio toggle, network cards with signal/security,
   Connect / password dialog, Disconnect), **Bluetooth** (power, known
   devices, Connect, scan), **Audio** (volume slider, mute, output/sink
-  radio list → `set_default_sink`).
+  radio list → `set_default_sink`), **Display** (brightness slider →
+  `set_brightness`, Fn-key hint). The Audio list includes the
+  L/R-correcting `gemini_speakers` filter node as **Built-in Speakers**
+  next to the hardware **Headphones / Jack** sink; `wpctl status` only
+  shows the filter under its node name, so the provider resolves
+  `node.description` + the filter default through `wpctl inspect` and
+  selects by numeric id. The amp itself follows the default sink in
+  `gemini-speakerd`, so picking a sink is enough.
 - Fonts: `GEMSHELL_FONT` (DejaVu on device) is registered first with
   egui's bundled fonts as fallback, so text never disappears.
 - Open with the status-bar gear / wifi / bt / speaker zones;
@@ -342,6 +388,15 @@ yields raster-local pixel coordinates, but the code subtracted
 `bounds.min` again, pushing every glyph above the baseline out of its
 raster — the all-blank text. The atlas build now uses the coordinates
 directly. (The chrome text in `ui.rs` uses the same fixed atlas.)
+
+**2026-09-11 advance fix (the other half of "no text").** The same
+module computed the pen advance as `h_advance_unscaled(id) * px` — raw
+font units (~600) × px size = ~16 000 px per glyph. Every `Op::Text`
+rendered only its first character and every `Op::TextCentered` string
+was centred ~10 000 px off-screen. The atlas now stores
+`face.as_scaled(px).h_advance(id)` and `Font::text_width` is correct, so
+chrome/launcher text lays out properly. This is verified by a nested
+screenshot (title/Close/labels all present).
 
 ## Session wiring
 

@@ -5,6 +5,93 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — gemshell glass-report fixes (TEXT root cause, SVG icons, launcher, ~60%→0.2% idle CPU, brightness/audio) + gen44
+
+User report from the glass (against the pre-egui build from the device
+clone at `2cd9b6f`, 2026-09-10; several issues persisted at HEAD): most
+app icons missing and no text; impossible to reveal new apps or close
+the app drawer; tapping icons did nothing; gemshell burning ~60 % of a
+core; the settings app had no brightness or speaker/headphone
+selection; Fn brightness/volume dead. All six addressed; deployed
+(gen44) and verified on glass. (The entry below is headed 2026-09-12
+but its commits are 2026-09-11 15:48 — that header date is a day ahead
+of git.)
+
+**1. No text — the real root cause (a HEAD bug).** `common/font.rs`
+advanced the pen with `h_advance_unscaled(id) * px`. ab_glyph's
+unscaled advance is in FONT UNITS (≈600 for DejaVu), so ×26 gave
+**~16 000 px per glyph**: `Op::Text` rendered only its first character
+and `Op::TextCentered` (launcher title/labels, Close, battery %) put
+the pen ~10 000 px off-screen — the whole chrome and every app label
+was invisible. The 2026-09-12 fix had corrected the raster *origin* but
+not the *advance*. Fix: `face.as_scaled(px).h_advance(id)`
+(`ab_glyph::ScaleFont`). Nested screenshot after the fix: title 238 px,
+Close 240 px, label row 661 px of text ink (was 0).
+
+**2. Missing icons — SVG support.** Adwaita/Pop/COSMIC ship app icons
+as SVG only (Adwaita 50 has no PNG app icons at all); `icons.rs` only
+decoded PNG, so most of the 168 `.desktop` apps fell back to a blank
+letter tile. Added an SVG name index at startup + lazy per-icon decode
+via `resvg` (`default-features = false`, no text engine; `raster-images`
+off, so SVGs with embedded bitmaps skip just that node —
+`resvg::image: Images decoding was disabled` in the journal). Device
+logs "20 PNG + 514 SVG icons indexed"; on-glass launcher screenshot:
+8480 unique colours, icons for GNOME/COSMIC apps present.
+
+**3. Launcher unusable.** Scroll clamp was `clamp(-600, 0)` while
+`tile_y = START_Y - scroll` and a swipe-up drove scroll *positive*, so
+it was clamped straight back to 0; the `*= 0.8` decay then snapped the
+grid to the top on release, so no row past ~3 was reachable. Clamp is
+now `[0, content_h - H]`, the decay is gone, and `launcher_scroll` is
+kept out of `animating()` (a scrolled list must not hold the frame
+clock at 60 Hz). Taps inside the LauncherScroll gesture were dropped in
+`touch_up`; they now hit-test (icons launch), and a Close button
+(top-right) or a tap outside a tile closes the drawer.
+
+**4. Idle CPU ~60 % → ~0.2 %.** The main loop re-rendered every 16 ms
+forever (`timeout = 0 if dirty else 16`, and dirty was re-set on every
+frame completion). Now it renders only when dirty: timeout 0 when a
+frame is due, the remaining 16 ms while a frame is in flight, and a 1 s
+idle tick so the status channel (which cannot wake `poll`) is still
+drained. `run_egui`'s `dirty` is intentionally cleared by the frame
+completion (egui repaints on input, not at 60 Hz). Device measured
+1 tick / 6 s = 0.2 % of one core, both with the panel closed and open.
+
+**5. Settings: brightness + speaker/headphone.** New **Display** tab
+with a brightness slider (`set_brightness`). The Audio sink parser only
+read the `Sinks:` block, so `gemini_speakers` (the L/R-correcting
+virtual sink, listed by `wpctl status` under **Filters** tagged
+`[Audio/Sink]`) never appeared; it now parses both blocks, resolves
+`node.description` + the default through `wpctl inspect`, and selects
+by numeric id. The device offers "Built-in Speakers" and
+"Headphones / Jack"; `gemini-speakerd` flips the amp, so picking the
+sink is enough (verified with `wpctl set-default 34` on the device).
+
+**6. Fn brightness/volume.** No compositor bug: the `gemini` layout
+puts `XF86MonBrightnessDown/Up` on AB05/AB06 and `XF86Audio*` on
+AB03/AB04 at level 3 (Mod5), and `handle_key` already matches them
+(`xkbcli how-to-type` confirms the mapping). The dead keys were a
+symptom of the old build / the missing text.
+
+Also: `util::env_flag` so `GEMSHELL_*`=0/empty/false means OFF
+(`GEMSHELL_OPEN_SETTINGS=0` used to open the panel); new
+`GEMSHELL_OPEN_LAUNCHER` for launcher screenshots;
+`bin/gemshell-dev.sh run` now forwards its env/settle args (the `run`
+case ignored them, so the first on-device launcher screenshot silently
+got no `GEMSHELL_SCREENSHOT`).
+
+Verification: `bin/gemshell-host-check.sh` 30 tests pass; x86_64 nested
+screenshots; on-device launcher screenshot pulled from the transient
+unit (title/Close/labels + 8480-colour icons); idle CPU 0.2 %. Deployed
+host → device: toplevel
+`zamkh57b2p9w93nqsmzgqc7x01xallq5-nixos-system-gemini-26.11pre-git`
+(gen44, `system-44-link`), gemshell
+`lf1zy4xsz1p19nmyxagi3bs097p523h7-gemshell-0.1.0`; kernel/mesa unchanged,
+no boot.img flash. Left safe: para unchanged, installed service active.
+Next: human look at the glass (icons/text, launcher scroll + close, Fn
+brightness/volume, settings Display/Audio), RSS measurement, and the
+touch direction/calibration already owed.
+
 ## 2026-09-12 — gemshell rework: egui UI (hardware-tessellated), `gemdata` abstraction, shared gemcli impl, mirror + blank-text fixes
 
 User report from the glass: gemshell is left-right mirrored (top/bottom
