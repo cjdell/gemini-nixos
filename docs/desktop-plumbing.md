@@ -308,8 +308,9 @@ gemini-specific part.
 
 ### DOSBox-X: scancode apps never see the Fn layer [2026-09-11]
 
-Symptom: in DOSBox-X the gemini-specific keys come out wrong and every
-Fn combination (Fn+1..0 = F1..F10, Fn+C/V/T volume, …) does nothing.
+Symptom: in DOSBox-X the gemini-specific keys come out wrong and the
+whole Fn layer is missing — in particular there is **no way to type `:`
+or `\`** (both are Fn keys), and Fn+1..0 do not give F1..F10.
 
 Cause — two halves of the same design fact, already documented above
 for mutter: the host's whole keyboard contract lives in the `gemini`
@@ -350,10 +351,33 @@ is symlink-joined through. The wrapper does two things:
   loads any mapper file it finds **instead of** its built-in defaults
   (`MAPPER_Init()` → `if (!MAPPER_LoadBinds()) CreateDefaultBinds();`),
   so the file must reproduce the whole default binding set, not just the
-  additions. It adds a second binding to each F-key event:
-  `key_f1 "key 58" "key 30 mod2"` — i.e. **mod2 (RALT = Fn) + the
-  number scancode → F1**, so Fn+1..0 produce real DOS F1..F10 while an
-  external keyboard's F-keys still work.
+  additions.
+
+The mapper's Gemini overlay (generated; all host scancodes are SDL):
+
+- **`key_ralt` is dropped.** Fn is kernel `KEY_RIGHTALT` and the default
+  map turns it into the guest's right-Alt; a held guest Alt makes the
+  guest keyboard layout skip its normal/shift planes (`layout_key` uses
+  the AltGr planes only, and the FreeDOS UK file has almost none), so
+  Fn+key produced wrong or no characters. Erasing the bind sends no
+  guest key for Fn — it is now purely a mapper modifier (`mod2`). The
+  Gemini has a **separate physical Alt** (`KEY_LEFTALT`, matrix (4,1),
+  DTS line `MATRIX_KEY(4,1,KEY_LEFTALT)`), still bound via `key_lalt`,
+  so nothing is lost.
+- **Fn+key → the symbol** the `gemini` XKB layout puts at level 3 on
+  that key (`config/xkb/symbols/gemini`), e.g. Fn+3=`\`, Fn+O=`:`,
+  Fn+K=`@`, Fn+L=`;`, Fn+1=`|`, Fn+2=`#`. Symbols that live on the guest
+  layout's *shift* plane get an extra `key_lshift "key N mod2"` bind
+  emitted **before** the character bind (activation is in file order, so
+  guest Shift is already down), e.g. `key_lshift "key 52 mod2"` +
+  `key_semicolon "key 52 mod2"` makes Fn+`'` produce `:`.
+- **F1..F10 are the gemini XKB *level 4* (Shift+Fn)** of the number row
+  (`config/xkb/symbols/gemini:51‑60`), so they are bound
+  `key_f1 "key 30 mod2 mod3"` … i.e. **mod2+mod3 (Fn+Shift) + the
+  number scancode**, matching the labels. An external keyboard's own
+  F-keys still work via the untouched default binds.
+- Fn+C/V drive DOSBox-X's mixer (`voldown`/`volup`). The other Fn media
+  keys have no DOS equivalent and are left unmapped.
 
 Regenerate the mapper when the flake's dosbox-x pin moves:
 `bin/gen-dosbox-x-mapper.sh <src>/src/gui/sdl_mapper.cpp \
@@ -374,25 +398,30 @@ Receipts / gotchas (2026-09-11):
   so `chmod` matters — the mapper GUI must be able to save).
   `DOSBOX_X_GEMINI_MAPPER_RESET=1` re-seeds (backing up the old file);
   an existing mapper without the Fn binds prints a one-line warning.
-- Fn also *is* Alt (RALT is bound to mapper `mod2` and to the guest's
-  right-Alt in the default map), so Fn+1 reaches the guest as Alt+F1.
-  The Gemini has no separate Alt, so this is the deliberate trade — DOS
-  games keep an Alt key; drop the `key_ralt`/`mod_2` binds if a game
-  objects.
-- The XF86 media layer (Fn+C/V/T/B/N/Q/W/E) is **not** covered: DOS has
-  no media-key scancodes. F-keys are the DOS-relevant part; media keys
-  would have to be bound to DOSBox-X's own mixer/handler events.
-- Still unwrappable by DOSBox-X: symbols the Gemini puts only on level 3
-  (Fn+K=`@`, Fn+L=`;`) cannot be expressed because DOSBox-X never sees
-  the level.
+- Fn is now a pure mapper modifier (no guest Alt). The physical Alt
+  still reaches the guest via `key_lalt`, so DOS games keep an Alt key.
+- **Verified on x86_64** by injecting keys into the real binary under
+  Xvfb (`xdotool` + a DOS COM that reads INT 16h and echoes the ASCII):
+  Fn+1→`|`, Fn+2→`#`, Fn+3→`\`, Fn+5→`<`, Fn+6→`>` all produced the
+  expected character. Note `xdotool keydown Alt_R` on Xvfb emits **both**
+  a host LALT (scancode 226) and RALT (230) event, and the extra LALT
+  hits the default `key_lalt` bind → guest Alt → symbols disappear; the
+  test had to drop that one bind. On the Gemini, Fn is RALT only, so
+  this artifact does not occur (checked with `-keydbg`, which logs every
+  SDL event's scancode/sym/mod).
+- The XF86 media layer (Fn+C/V/T/B/N/Q/W/E) is only partly covered:
+  Fn+C/V drive the mixer, the rest have no DOS scancode and are left
+  unmapped (they fall through to the plain letter).
+- Earlier (wrong) attempt: the first mapper bound Fn+1..0 directly to
+  F1..F10, which *stole* the number row's level-3 symbols (`\`=Fn+3
+  became F3), so `:`/`\` stayed unreachable. The correct mapping is
+  Fn+number = symbol, Shift+Fn+number = F-key.
 
-Status: 🟡 deployed to glass as **gen 19** (2026-09-11, rev `48d64b9`) —
-the wrapper + `.desktop` are live and a headless run as the desktop user
-logs the UK layout and seeds the mapper. The mapper *load* path was
-verified with the x86_64 binary (strace + UK log).
-⬜ interactive on-glass test owed: launch from the app grid, confirm Fn+1
-gives F1 in a DOS program and Shift+3 gives `£` (needs a human at the
-keyboard or an evdev-injection harness).
+Status: 🟡 corrected overlay deployed (**gen 20**, 2026-09-11): Fn+key ⇒
+symbol (`:` `\` `|` `@` …), Shift+Fn+number ⇒ F1..F10. The overlay was
+verified against the real binary on x86_64 (see above) and the mapper
+load/UK table verified on the device; ⬜ the final interactive on-device
+click-through (type `:` and `\` in a DOS prompt) is owed.
 
 ### Speakers: L/R swap + amp/headphone toggle (2026-09-10)
 
