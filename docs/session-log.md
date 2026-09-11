@@ -56,10 +56,23 @@ completely missing, then to set it up on the device with a solution.
   GUI cannot save. (3) Fn is also the only Alt, so Fn+1 reaches the guest
   as Alt+F1 — deliberate trade. Media keys are not DOS scancodes and are
   not covered.
-- **Pending.** ⬜ interactive on-glass test: launch DOSBox-X from the
-  GNOME app grid and confirm Fn+1 ⇒ F1 in a DOS program and Shift+3 ⇒
-  `£`. (Root cause + load path verified; the Fn bind needs a human at
-  the keyboard or an evdev-injection harness.)
+- **Pending.** ⬜ the final interactive on-device click-through: launch
+  DOSBox-X from the GNOME app grid and type `:` (Fn+O or Fn+`) and `\`
+  (Fn+3) at a DOS prompt. The overlay itself was verified against the
+  real binary on x86_64 (Fn+1..3/5/6 → `| # \ < >`), and the device run
+  confirms the UK table + mapper seed/auto-upgrade.
+- **Second round (user follow-up: "no way to type `:` and `\`").** The
+  gen-19 overlay bound Fn+1..0 to F1..F10 and so STOLE the number row's
+  level-3 symbols (`\` = Fn+3 → F3) — exactly the user's complaint. Fix:
+  Fn+number = symbol, F1..F10 = **Shift+Fn+number** (XKB level 4).
+  Also discovered with `-keydbg`: the default `key_ralt` bind turns Fn
+  into guest right-Alt, and a held guest Alt makes the guest layout skip
+  its normal/shift planes (`layout_key` uses AltGr planes only; FreeDOS
+  UK `UK.KEY` has almost none) — so `key_ralt` is now dropped and Fn is a
+  pure mapper `mod2`. The Gemini's separate physical Alt (`KEY_LEFTALT`,
+  DTS `MATRIX_KEY(4,1,KEY_LEFTALT)`) keeps working via `key_lalt`.
+  Wrapper now auto-upgrades a stale mapper (marker `key_semicolon "key 52
+  mod2"`), backing up the old file. Commits `c740786` + wrapper; gen 21.
 
 ## 2026-09-11 — Headphones selection still played the speakers: gemini-speakerd's wpctl parse was dead (fixed + on glass, gen 17)
 

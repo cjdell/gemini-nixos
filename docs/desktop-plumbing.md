@@ -347,7 +347,10 @@ is symlink-joined through. The wrapper does two things:
   user `-set`, or `DOSBOX_X_GEMINI_NO_UK=1`) so the base/Shift layer
   matches the UK silkscreen;
 - seeds a **complete** mapper file (`config/dosbox-x/
-  mapper-dosbox-x.map`) into the user config dir on first run. DOSBox-X
+  mapper-dosbox-x.map`) into the user config dir on first run, and
+  **auto-upgrades** an existing one that lacks the Gemini marker
+  (`key_semicolon "key 52 mod2"`), keeping a dated `.pre-gemini.*`
+  backup. DOSBox-X
   loads any mapper file it finds **instead of** its built-in defaults
   (`MAPPER_Init()` → `if (!MAPPER_LoadBinds()) CreateDefaultBinds();`),
   so the file must reproduce the whole default binding set, not just the
@@ -396,8 +399,8 @@ Receipts / gotchas (2026-09-11):
   and logs `DOS keyboard layout loaded with main language code UK for
   layout uk`. The wrapper seeds the file 0644 (the store copy is 0444,
   so `chmod` matters — the mapper GUI must be able to save).
-  `DOSBOX_X_GEMINI_MAPPER_RESET=1` re-seeds (backing up the old file);
-  an existing mapper without the Fn binds prints a one-line warning.
+  `DOSBOX_X_GEMINI_MAPPER_RESET=1` forces a re-seed; a stale file without
+  the marker is upgraded automatically (backup kept).
 - Fn is now a pure mapper modifier (no guest Alt). The physical Alt
   still reaches the guest via `key_lalt`, so DOS games keep an Alt key.
 - **Verified on x86_64** by injecting keys into the real binary under
@@ -417,11 +420,12 @@ Receipts / gotchas (2026-09-11):
   became F3), so `:`/`\` stayed unreachable. The correct mapping is
   Fn+number = symbol, Shift+Fn+number = F-key.
 
-Status: 🟡 corrected overlay deployed (**gen 20**, 2026-09-11): Fn+key ⇒
-symbol (`:` `\` `|` `@` …), Shift+Fn+number ⇒ F1..F10. The overlay was
-verified against the real binary on x86_64 (see above) and the mapper
-load/UK table verified on the device; ⬜ the final interactive on-device
-click-through (type `:` and `\` in a DOS prompt) is owed.
+Status: 🟡 corrected overlay deployed (**gen 21**, 2026-09-11) — the
+wrapper seeds/upgrades the mapper automatically: Fn+key ⇒ symbol (`:`
+`\` `|` `@` …), Shift+Fn+number ⇒ F1..F10. The overlay was verified
+against the real binary on x86_64 (see above) and the mapper load/UK
+table + auto-upgrade verified on the device; ⬜ the final interactive
+on-device click-through (type `:` and `\` in a DOS prompt) is owed.
 
 ### Speakers: L/R swap + amp/headphone toggle (2026-09-10)
 
