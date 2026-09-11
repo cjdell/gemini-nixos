@@ -54,6 +54,7 @@ extern "C" {
 const EGL_PLATFORM_GBM_MESA: u32 = 0x31D7;
 const EGL_SURFACE_TYPE: u32 = 0x3031;
 const EGL_PBUFFER_BIT: u32 = 0x0001;
+const EGL_WINDOW_BIT: u32 = 0x0002;
 const EGL_OPENGL_ES_API: u32 = 0x30A0;
 const EGL_OPENGL_ES3_BIT: c_int = 0x00004000;
 const EGL_RENDERABLE_TYPE: c_int = 0x3095;
@@ -305,6 +306,7 @@ pub struct Renderer {
     pub height: u32,
     display: EGLDisplay,
     context: EGLContext,
+    /// surfaceless (EGL_NO_SURFACE) — see the attrs comment above
     surface: EGLSurface,
     program: u32,
     a_pos: c_int,
@@ -363,11 +365,17 @@ impl Renderer {
         // must be handed a gbm surface, and a bare device returns a
         // NULL/invalid surface — the EGL_MESA_platform_gbm spec, and the
         // reason gemwl never used EGL window surfaces at all.)
+        // The GBM platform has NO pbuffer surface type (only gbm-window
+        // surfaces) — asking for EGL_PBUFFER_BIT was the 0x3004
+        // (EGL_BAD_MATCH) from eglChooseConfig (on glass, 2026-09-11).
+        // We render into a GL FBO anyway, so the config just needs to be
+        // renderable; the context is created surfaceless (makeCurrent
+        // with EGL_NO_SURFACE, legal in EGL 1.5).
         let mut attrs = [
             EGL_RENDERABLE_TYPE,
             EGL_OPENGL_ES3_BIT,
             EGL_SURFACE_TYPE as c_int,
-            EGL_PBUFFER_BIT as c_int,
+            EGL_WINDOW_BIT as c_int,
             EGL_NONE,
         ];
         let display = unsafe { eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA, gbm_device, std::ptr::null()) };
@@ -416,15 +424,10 @@ impl Renderer {
                 eglGetError()
             }));
         }
-        let surface = unsafe { eglCreatePbufferSurface(display, &config, 1, 1) };
-        if surface.is_null() {
-            return Err(format!(
-                "eglCreatePbufferSurface failed (error 0x{:x})",
-                unsafe { eglGetError() }
-            ));
-        }
-        if unsafe { eglMakeCurrent(display, surface, surface, context) } != EGL_TRUE {
-            return Err(format!("eglMakeCurrent failed (error 0x{:x})", unsafe {
+        // Surfaceless context (no pbuffer on the GBM platform): the FBO
+        // is the render target; present() is the compute blit.
+        if unsafe { eglMakeCurrent(display, std::ptr::null_mut(), std::ptr::null_mut(), context) } != EGL_TRUE {
+            return Err(format!("eglMakeCurrent(surfaceless) failed (error 0x{:x})", unsafe {
                 eglGetError()
             }));
         }
@@ -488,7 +491,7 @@ impl Renderer {
             height,
             display,
             context,
-            surface,
+            surface: std::ptr::null_mut(),
             program,
             a_pos,
             a_uv,
@@ -1149,7 +1152,9 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             eglMakeCurrent(self.display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
-            eglDestroySurface(self.display, self.surface);
+            if !self.surface.is_null() {
+                eglDestroySurface(self.display, self.surface);
+            }
             eglDestroyContext(self.display, self.context);
             eglTerminate(self.display);
         }
