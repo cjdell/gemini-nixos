@@ -5,6 +5,61 @@ Hardware/boot ground truth lives in the sibling project
 (`/home/cjdell/Projects/GeminiPDA/docs/session-log.md`) — cross-reference
 when a session touches device behaviour. Latest entry first.
 
+## 2026-09-11 — Desktop cleanup: LXQt, Phosh, COSMIC, niri removed; light sleep made desktop-aware; device store GC'd
+
+Ask: "remove lxqt, phosh and cosmic from the project, then GC the Nix
+store on the device. also make sure the sleep mode is correct for the
+currently running desktop environment", followed by "remove niri too".
+
+**Support set is now GNOME + `gemshell` + fbcon console.** Removed:
+`services/lxqt.nix`, `services/phosh.nix`, `config/lxqt/`,
+`services/scripts/{start-lxqt-nested,start-phosh-shell,prepare-phosh-session}`,
+`pkgs/labwc-geminipda.nix`, `pkgs/phoc-geminipda.nix`,
+`docs/phosh.md`, the `services.desktopManager.cosmic.enable` and
+`programs.niri.enable` blocks in `config/gemini.nix`, and the flake's
+`labwc`/`phoc`/`phosh`/`squeekboard` outputs. `services/desktop-select.nix`
+and `gemcli session` now enum `gnome|gemshell|console` (session.rs,
+clap value-parser); `docs/desktop-selection.md` rewritten around the
+three modes. `services/gnome.nix`/`services/gemshell.nix` still
+force-disable the legacy `gemwl` compositor, which is now the only
+in-tree nested (session-less) compositor.
+
+**Sleep fix.** `gemdata-device/src/sleep.rs` `SERVICES` was still the
+removed `gemwl.service` + `phosh-nested.service` + `lxqt-nested.service`
+list. It now stops the LIVE panel owner — `display-manager.service`
+(GNOME via GDM), `gemini-gemshell.service`, or legacy `gemwl.service` —
+plus the three PipeWire units. `gemcli sleep status` reports the running
+set and the marker/desktop is no longer consulted (the units are
+authoritative).
+
+**On glass (gen 54, `05b9a07`, toplevel
+`bw374jj8g4ph317d8saqlw7bwf2nrx3j-nixos-system-gemini-26.11pre-git`):**
+deployed with `bin/deploy.sh deploy` (no reflash; `display-manager` NOT
+restarted — running GNOME session preserved, 0 failed units). Then a
+full silver-button-equivalent cycle: `gemcli sleep on` → backlight off,
+A53 1..7 offline, inputs unbound, **`display-manager.service` stopped**
+(the running cjdell gnome-session ended), PipeWire stopped, wifi wlan0
+down, state ASLEEP; `gemcli sleep off` → everything restored, GDM
+restarted and **auto-logged cjdell back into gnome-shell** (session 2,
+`gnome-shell-50.4` running, 0 failed units), backlight restored to 9 %.
+So light sleep is correct for the currently-running GNOME desktop.
+
+**Device GC:** `bash /root/gemini-nixos/bin/device-rebuild.sh gc` →
+`nix-env --delete-generations old` (54 → only gen 54 left) +
+`nix-collect-garbage -d`: **3553 store paths, 3.1 GiB freed**; store now
+**15 G used / 43 G free (25 %)** on p27. Device repo clone pushed to
+`05b9a07` (`bin/device-repo.sh push`) so on-device `nixos-rebuild`
+matches.
+
+Docs updated: `docs/desktop-selection.md` (3 modes + removal record),
+`docs/power-sleep.md` (desktop-aware stop-list), `README.md`, `AGENTS.md`,
+`docs/gnome-feasibility.md`, `docs/desktop-plumbing.md`,
+`docs/mobile-nixos-port-feasibility.md`, `docs/gemcli.md`,
+`docs/gemshell.md`, `config/xkb/README.md`.
+
+Next: the gemshell on-glass pass after the 2026-09-12 rework is still
+owed (docs/gemshell.md); no other follow-up from this change.
+
 ## 2026-09-11 — Wi-Fi: smartphone-like autoconnect (never give up + prefer strongest known network)
 
 Ask: "the device is struggling to connect to the wifi network" → then
