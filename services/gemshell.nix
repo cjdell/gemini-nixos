@@ -110,6 +110,17 @@ in
           # not exist on NixOS; the compositor's fallback walk covers
           # /run/current-system/sw/share/fonts too).
           "GEMSHELL_FONT=${fonts}/share/fonts/truetype/DejaVuSans.ttf"
+          # The DRI driver dir. CRITICAL (discovered on glass 2026-09-11):
+          # mesa 26's GBM/EGL platform (platform_drm.c) finds the GL
+          # driver through libgbm's DRI backend (gbm_dri.c), which
+          # dlopens ${driver}_dri.so from DRI_DRIVER_DIR → XDG_DATA_DIRS/dri
+          # → /usr/lib/dri — NONE of which exist on NixOS, so the GBM
+          # display initialised with ZERO configs (eglChooseConfig
+          # EGL_BAD_MATCH) and the ICD was never reached. Must point at
+          # the FORK's dri dir (mesa-geminipda, the T880 delta) —
+          # /run/opengl-driver's is the stock mesa and would mismatch the
+          # fork's libEGL_mesa ICD.
+          "DRI_DRIVER_DIR=${mesa}/lib/dri"
           # Keymap: the gemini layout (Fn = level-3) via the symbols dir.
           "XKB_CONFIG_EXTRA_PATH=${geminiXkb}"
           "XKB_DEFAULT_LAYOUT=gemini"
