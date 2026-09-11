@@ -33,12 +33,14 @@ use common::util;
 // ---------------------------------------------------------------------------
 // geometry + theme
 
-const W: i32 = 1080;
-const H: i32 = 2160;
+// Landscape window (the shell's logical scene is 2160x1080; this is a
+// comfortable, slightly-smaller panel window).
+const W: i32 = 1600;
+const H: i32 = 940;
 const STRIDE: i32 = W * 4;
-const HEADER_H: i32 = 132;
-const TAB_H: i32 = 120;
-const ROW_H: i32 = 140;
+const HEADER_H: i32 = 120;
+const TAB_H: i32 = 104;
+const ROW_H: i32 = 128;
 const PAD: i32 = 28;
 
 type Rgb = [u8; 3];

@@ -40,8 +40,12 @@ use wayland::{
 static SHOT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // scene geometry
-pub const W: u32 = 1080;
-pub const H: u32 = 2160;
+// LOGICAL scene = LANDSCAPE (the Gemini is a landscape clamshell). The
+// LK framebuffer is a PORTRAIT 1080x2160 buffer; present() counter-rotates
+// this scene into it (gemwl does the same with WL_OUTPUT_TRANSFORM_90) and
+// touch is un-rotated in input.rs. See docs/gemshell.md "Orientation".
+pub const W: u32 = 2160;
+pub const H: u32 = 1080;
 pub const STATUS_H: f32 = 44.0;
 pub const TASKBAR_H: f32 = 88.0;
 pub const TITLEBAR_H: f32 = 40.0;
@@ -1323,8 +1327,8 @@ impl Compositor {
             app_id: String::new(),
             x,
             y,
-            w: 540.0,
-            h: 960.0,
+            w: 1000.0,
+            h: 700.0,
             buffer: None,
             workspace: self.ws_target as u32,
             minimized: false,

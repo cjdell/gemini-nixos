@@ -248,11 +248,26 @@ const COPY_CS: &str = r#"
 layout(local_size_x = 16, local_size_y = 8) in;
 layout(rgba8, binding = 0) uniform highp writeonly image2D dst;
 layout(binding = 1) uniform highp sampler2D src;
-uniform ivec2 fbSize;
+uniform ivec2 fbSize;   // destination (LK fb) size
+uniform ivec2 srcSize;  // source (logical scene) size
+uniform int rotation;   // 0/90/180/270 (counter-rotation of the panel)
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (p.x >= fbSize.x || p.y >= fbSize.y) return;
-    imageStore(dst, p, texelFetch(src, p, 0).bgra);
+    // Map the fb pixel back to a scene texel (inverse of the panel
+    // counter-rotation; see docs/gemshell.md "Orientation").
+    ivec2 s;
+    if (rotation == 90) {
+        s = ivec2(p.y, fbSize.x - 1 - p.x);
+    } else if (rotation == 180) {
+        s = ivec2(srcSize.x - 1 - p.x, srcSize.y - 1 - p.y);
+    } else if (rotation == 270) {
+        s = ivec2(fbSize.y - 1 - p.y, p.x);
+    } else {
+        s = p;
+    }
+    if (s.x < 0 || s.y < 0 || s.x >= srcSize.x || s.y >= srcSize.y) return;
+    imageStore(dst, p, texelFetch(src, s, 0).bgra);
 }
 "#;
 
@@ -373,6 +388,14 @@ pub struct Renderer {
     cprog: u32,
     c_src: c_int,
     c_size: c_int,
+    c_srcsize: c_int,
+    c_rot: c_int,
+    /// Present rotation into the LK fb, degrees (0/90/180/270).
+    /// The LK fb is a PORTRAIT 1080x2160 buffer while the product is a
+    /// landscape clamshell; gemwl uses WL_OUTPUT_TRANSFORM_90 for the
+    /// same reason (geminipda-drm defaults to panel-orientation LEFT_UP).
+    /// Override with GEMSHELL_ROTATE for on-glass calibration.
+    rotation: i32,
     eglCreateImageKHR: EglCreateImageFn,
     glEGLImageTargetTexture2DOES: GlEglImageTargetFn,
 }
@@ -624,6 +647,12 @@ impl Renderer {
             cprog: 0,
             c_src: -1,
             c_size: -1,
+            c_srcsize: -1,
+            c_rot: -1,
+            rotation: std::env::var("GEMSHELL_ROTATE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90),
             eglCreateImageKHR,
             glEGLImageTargetTexture2DOES,
         };
@@ -712,7 +741,7 @@ impl Renderer {
         // FIRST tiler draw into a fresh fullscreen-size target rasterizes
         // only ~1024x1024 — warm the FBO so the first real frame is
         // clean. (Harmless no-op on non-panfrost hosts.)
-        tiler_warmup(self.fbo);
+        tiler_warmup(self.fbo, self.width, self.height);
         Ok(())
     }
 
@@ -772,6 +801,8 @@ impl Renderer {
         self.cprog = p;
         self.c_src = loc("src");
         self.c_size = loc("fbSize");
+        self.c_srcsize = loc("srcSize");
+        self.c_rot = loc("rotation");
         self.fb_fd = fb_fd;
         self.fb_image = fb_image;
         Ok(())
@@ -1193,6 +1224,8 @@ impl Renderer {
             glUseProgram(self.cprog);
             glUniform1i(self.c_src, 1);
             glUniform2i(self.c_size, FB_W as c_int, FB_H as c_int);
+            glUniform2i(self.c_srcsize, self.width as c_int, self.height as c_int);
+            glUniform1i(self.c_rot, self.rotation);
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, self.fbo_tex);
             glBindImageTexture(
@@ -1275,7 +1308,7 @@ fn fb_image_attrs(fb_fd: c_int) -> [c_int; 13] {
 /// into a fresh fullscreen-size target clips to ~1024x1024; a
 /// throwaway full-frame draw into the FBO makes the first real frame
 /// clean.
-fn tiler_warmup(fbo: u32) {
+fn tiler_warmup(fbo: u32, width: u32, height: u32) {
     let wvs = CString::new("attribute vec2 pos; void main(){ gl_Position=vec4(pos,0.0,1.0); }").unwrap();
     let wfs = CString::new("precision mediump float; void main(){ gl_FragColor=vec4(0,0,0,1); }").unwrap();
     unsafe {
@@ -1302,7 +1335,7 @@ fn tiler_warmup(fbo: u32) {
         // Warm the REAL scene FBO (the exact target the first frame
         // uses) — its attachment stays in place.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, FB_W as c_int, FB_H as c_int);
+        glViewport(0, 0, width as c_int, height as c_int);
         glClearColor(0.0, 0.0, 0.0, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(prog);

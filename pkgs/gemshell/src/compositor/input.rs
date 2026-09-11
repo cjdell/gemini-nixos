@@ -161,6 +161,7 @@ pub struct Input {
     slot_x: [f32; MAX_SLOTS],
     slot_y: [f32; MAX_SLOTS],
     slot_down: [bool; MAX_SLOTS],
+    touch_rotate: i32,
     cur_slot: usize,
     x_range: AbsRange,
     y_range: AbsRange,
@@ -374,6 +375,7 @@ impl Input {
             slot_x: [0.0; MAX_SLOTS],
             slot_y: [0.0; MAX_SLOTS],
             slot_down: [false; MAX_SLOTS],
+            touch_rotate: touch_rotate_env(),
             cur_slot: 0,
             x_range: xr,
             y_range: yr,
@@ -405,6 +407,7 @@ impl Input {
             slot_x: [0.0; MAX_SLOTS],
             slot_y: [0.0; MAX_SLOTS],
             slot_down: [false; MAX_SLOTS],
+            touch_rotate: touch_rotate_env(),
             cur_slot: 0,
             x_range: AbsRange { min: 0.0, max: 1079.0 },
             y_range: AbsRange { min: 0.0, max: 2159.0 },
@@ -568,27 +571,25 @@ impl Input {
             match (ev.etype, ev.code) {
                 (EV_ABS, ABS_MT_SLOT) => self.cur_slot = ev.value as usize % MAX_SLOTS,
                 (EV_ABS, ABS_MT_POSITION_X) => {
-                    self.slot_x[self.cur_slot] =
-                        self.norm(ev.value as f32, self.x_range) * scene_w;
+                    // Store NORMALISED 0..1; the scene mapping (which
+                    // includes the portrait-panel/landscape-scene
+                    // rotation) is applied below.
+                    self.slot_x[self.cur_slot] = self.norm(ev.value as f32, self.x_range);
                 }
                 (EV_ABS, ABS_MT_POSITION_Y) => {
-                    self.slot_y[self.cur_slot] =
-                        self.norm(ev.value as f32, self.y_range) * scene_h;
+                    self.slot_y[self.cur_slot] = self.norm(ev.value as f32, self.y_range);
                 }
                 (EV_ABS, ABS_MT_TRACKING_ID) => {
                     let s = self.cur_slot;
+                    let (x, y) = self.touch_to_scene(s, scene_w, scene_h);
                     if ev.value >= 0 && !self.slot_down[s] {
                         self.slot_down[s] = true;
-                        out.push(Event::TouchDown {
-                            id: s as u32,
-                            x: self.slot_x[s],
-                            y: self.slot_y[s],
-                        });
+                        out.push(Event::TouchDown { id: s as u32, x, y });
                     } else if ev.value < 0 && self.slot_down[s] {
                         self.slot_down[s] = false;
                         out.push(Event::TouchUp { id: s as u32 });
                     }
-                    frame = Some((s, self.slot_x[s], self.slot_y[s]));
+                    frame = Some((s, x, y));
                 }
                 (EV_SYN, SYN_REPORT) => {
                     if let Some((s, x, y)) = frame.take() {
@@ -599,6 +600,23 @@ impl Input {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Map a slot's normalised panel coordinates to logical scene
+    /// coordinates, applying the panel counter-rotation. The LK fb (and
+    /// therefore the NT36772 evdev range) is PORTRAIT 1080x2160 while the
+    /// logical scene is landscape; `rotate` mirrors the display present
+    /// rotation (`GEMSHELL_TOUCH_ROTATE`, default 90). See
+    /// docs/gemshell.md "Orientation".
+    fn touch_to_scene(&self, slot: usize, scene_w: f32, scene_h: f32) -> (f32, f32) {
+        let nx = self.slot_x[slot].clamp(0.0, 1.0);
+        let ny = self.slot_y[slot].clamp(0.0, 1.0);
+        match self.touch_rotate {
+            90 => (ny * scene_w, (1.0 - nx) * scene_h),
+            180 => ((1.0 - nx) * scene_w, (1.0 - ny) * scene_h),
+            270 => ((1.0 - ny) * scene_w, nx * scene_h),
+            _ => (nx * scene_w, ny * scene_h),
         }
     }
 
@@ -657,6 +675,20 @@ impl Input {
         }
         (out[0], out[1], out[2])
     }
+}
+
+/// Touch counter-rotation: `GEMSHELL_TOUCH_ROTATE` (default: the same
+/// value as `GEMSHELL_ROTATE`, i.e. 90 — the panel is portrait-mounted).
+fn touch_rotate_env() -> i32 {
+    if let Ok(v) = std::env::var("GEMSHELL_TOUCH_ROTATE") {
+        if let Ok(n) = v.parse() {
+            return n;
+        }
+    }
+    std::env::var("GEMSHELL_ROTATE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(90)
 }
 
 /// Build an xkb keymap from RMLVO (`XKB_DEFAULT_RULES`/`_OPTIONS` env +
