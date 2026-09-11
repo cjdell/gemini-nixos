@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::common::util::xdg_data_dirs;
+
 #[derive(Clone, Debug)]
 pub struct App {
     pub name: String,
@@ -57,18 +59,17 @@ fn parse_entry(path: &PathBuf) -> Option<App> {
     })
 }
 
-/// Scan the standard dirs; returns apps sorted by name (case-insens.).
+/// Scan the XDG application dirs; returns apps sorted by name
+/// (case-insens.). Highest-precedence dir wins a given app name.
 pub fn scan(home: &str) -> Vec<App> {
-    let dirs = [
-        format!("{home}/.local/share/applications"),
-        "/usr/local/share/applications".to_string(),
-        "/usr/share/applications".to_string(),
-    ];
+    let dirs: Vec<PathBuf> = xdg_data_dirs(home)
+        .into_iter()
+        .map(|d| d.join("applications"))
+        .collect();
     let mut seen: HashMap<String, ()> = HashMap::new();
     let mut out = Vec::new();
-    // later dirs are more general — scan general first so user/desktop
-    // files override by name (first-wins below)
-    for dir in dirs.iter().rev() {
+    // Highest precedence first; first match of a name wins.
+    for dir in dirs.iter() {
         let Ok(rd) = std::fs::read_dir(dir) else { continue };
         for e in rd.flatten() {
             let p = e.path();

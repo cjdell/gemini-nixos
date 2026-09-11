@@ -34,6 +34,9 @@ use wayland::{
     WmBaseData, XdgPopupData, XdgSurfaceData, XdgToplevelData,
 };
 
+/// GEMSHELL_SCREENSHOT fired once (see render_frame).
+static SHOT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // scene geometry
 pub const W: u32 = 1080;
 pub const H: u32 = 2160;
@@ -1660,6 +1663,17 @@ impl Compositor {
         self.renderer.replay(&self.font, &ops);
         if let Err(e) = self.renderer.present() {
             log::error!("present: {e}");
+        }
+        // One-shot screenshot for on-glass verification:
+        // GEMSHELL_SCREENSHOT=/path writes the first frame as a PNG.
+        if !SHOT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(path) = std::env::var("GEMSHELL_SCREENSHOT") {
+                SHOT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+                match self.renderer.screenshot(&path) {
+                    Ok(()) => log::info!("screenshot written: {path}"),
+                    Err(e) => log::error!("screenshot: {e}"),
+                }
+            }
         }
         self.send_frame_callbacks();
     }

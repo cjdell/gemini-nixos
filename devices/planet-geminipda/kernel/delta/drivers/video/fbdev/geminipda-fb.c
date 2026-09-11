@@ -272,11 +272,22 @@ static int gemfb_end_cpu_access(struct dma_buf *db, enum dma_data_direction dir)
 	return 0;
 }
 
-/* Optional user-space mapping (debugging); WC like the fbdev path. */
+/* Optional user-space mapping (debugging); WC like the fbdev path.
+ *
+ * Bound the mapping to the VMA length: the original always remapped the
+ * WHOLE gemfb_size starting at vma->vm_start, so a mmap() shorter than
+ * the region wrote page tables past vm_end (and, worse, `gemfb_size` may
+ * exceed the visible fb). On glass 2026-09-11 a CPU mmap+read of this
+ * dma-buf via gemshell's debug screenshot hung the system until the WDT
+ * reset it — this bound is the guard (the path is otherwise unused). */
 static int gemfb_mmap(struct dma_buf *db, struct vm_area_struct *vma)
 {
+	unsigned long size = vma->vm_end - vma->vm_start;
+
+	if (vma->vm_pgoff != 0 || size > gemfb_size)
+		return -EINVAL;
 	return remap_pfn_range(vma, vma->vm_start, gemfb_base >> PAGE_SHIFT,
-				gemfb_size, pgprot_noncached(vma->vm_page_prot));
+			       size, pgprot_noncached(vma->vm_page_prot));
 }
 
 static void gemfb_release(struct dma_buf *db)

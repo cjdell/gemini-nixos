@@ -114,8 +114,14 @@ struct AbsInfo {
 }
 
 fn eviocgabs(code: u16) -> u64 {
-    // _IOC(_IOC_READ, EVIOC=0x15, nr, sizeof(struct input_absinfo)=24)
-    (0x40u64 << 28) | (24u64 << 16) | (0x15u64 << 8) | code as u64
+    // EVIOCGABS(abs) = _IOR('E', 0x40 + abs, struct input_absinfo) —
+    // linux/input.h. _IOC(_IOC_READ=2, 'E'=0x45, 0x40+abs, size=24).
+    // The first cut had the direction (0x40<<28 = _IOC_WRITE), type
+    // (0x15 instead of 'E') and nr (abs instead of 0x40+abs) all wrong,
+    // so the ioctl silently failed and abs_range fell back to the
+    // hard-coded 0..1079 / 0..2159 defaults (which happened to match the
+    // NT36772, masking the bug). Fixed 2026-09-11.
+    (2u64 << 30) | (24u64 << 16) | (0x45u64 << 8) | (0x40 + code as u64)
 }
 
 /// An input event the compositor acts on.
@@ -244,8 +250,9 @@ pub fn find_nodes() -> (Option<String>, Option<String>, String, String) {
     }
 }
 
-/// The EVIOCGBIT(type) capability bitmap (64 bits) for an evdev fd.
-/// EVIOCGBIT = _IOW('E', 0x20, int[32]) = 0x80084500.
+/// Open an evdev node read-only.
+/// (EVIOCGBIT(ev,len) = _IOC(_IOC_READ, 'E', 0x20+ev, len); we classify
+/// devices from the sysfs capabilities/ files instead, see find_nodes.)
 fn open_ro(path: &str) -> Result<std::os::raw::c_int, String> {
     use std::os::unix::ffi::OsStrExt;
     let fd = unsafe {

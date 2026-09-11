@@ -64,11 +64,10 @@ pub struct IconSet {
 const SIZES: [u32; 4] = [128, 64, 48, 32];
 
 fn icon_dirs(home: &str) -> Vec<PathBuf> {
-    vec![
-        PathBuf::from(format!("{home}/.local/share/icons")),
-        PathBuf::from("/usr/local/share/icons"),
-        PathBuf::from("/usr/share/icons"),
-    ]
+    crate::common::util::xdg_data_dirs(home)
+        .into_iter()
+        .map(|d| d.join("icons"))
+        .collect()
 }
 
 /// Find an icon by name: <root>/<theme>/hicolor or <theme>/<size>x<size>/
@@ -84,7 +83,10 @@ pub fn load(home: &str) -> IconSet {
             if !theme.is_dir() {
                 continue;
             }
-            for size in SIZES.iter().rev() {
+            // Largest first: first-wins below, so a 128px icon beats a
+            // 32px one. (The old `.rev()` made the SMALLEST win —
+            // 2026-09-11.)
+            for size in SIZES.iter() {
                 let dir = theme.join(format!("{size}x{size}")).join("apps");
                 let Ok(entries) = std::fs::read_dir(&dir) else { continue };
                 for e in entries.flatten() {

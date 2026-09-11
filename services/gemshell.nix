@@ -137,6 +137,11 @@ in
           # session (services/audio.nix), same redirection GNOME uses.
           "PULSE_SERVER=unix:/run/gemwl-audio/pulse/native"
           "PIPEWIRE_RUNTIME_DIR=/run/gemwl-audio"
+          # The launcher scans $HOME/.local/share/applications (and the
+          # XDG_DATA_DIRS entries below) — HOME was UNSET, so the
+          # scanner fell back to /root and found 0 apps (and the icons
+          # too). The service user's real home.
+          "HOME=/home/${cfg.user}"
           # Apps launched from the launcher need $SHELL + a sane PATH
           # (the system-profile bin dir carries the app binaries).
           "SHELL=${pkgs.bashInteractive}/bin/bash"

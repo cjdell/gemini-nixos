@@ -33,6 +33,32 @@ pub fn which(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// The XDG data base directories, highest precedence first:
+/// `$XDG_DATA_HOME` (default `$HOME/.local/share`) then every
+/// colon-separated `$XDG_DATA_DIRS` entry (default
+/// `/usr/local/share:/usr/share`).
+///
+/// NixOS puts the system profile at `/run/current-system/sw/share`
+/// via XDG_DATA_DIRS — there is no `/usr/share/applications`, so the
+/// old hard-coded scan found zero `.desktop` files (on glass
+/// 2026-09-11: "0 apps from .desktop files").
+pub fn xdg_data_dirs(home: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| std::path::PathBuf::from(home).join(".local/share"));
+    out.push(data_home);
+    match std::env::var_os("XDG_DATA_DIRS") {
+        Some(v) if !v.is_empty() => out.extend(std::env::split_paths(&v)),
+        _ => {
+            out.push(std::path::PathBuf::from("/usr/local/share"));
+            out.push(std::path::PathBuf::from("/usr/share"));
+        }
+    }
+    out
+}
+
 /// Local time (hour, minute) — no chrono (the device runs UTC; the
 /// settings app is expected to be used with the system clock = UTC
 /// until a tz is picked; `time.timeZone` applies to glibc-aware tools,

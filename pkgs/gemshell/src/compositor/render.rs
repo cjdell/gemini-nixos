@@ -21,7 +21,13 @@ use std::os::raw::{c_char, c_int, c_void};
 type EGLDisplay = *mut c_void;
 type EGLContext = *mut c_void;
 type EGLSurface = *mut c_void;
-type EGLConfig = c_void;
+// EGLConfig is an opaque HANDLE (a pointer in Mesa), not the pointed-to
+// object. Declaring it as `c_void` (1 byte) made `[EGLConfig; 64]` a
+// 64-byte array while eglChooseConfig wrote 64 * 8 bytes of handles into
+// it — stack corruption, the SEGV right after "config selected"
+// (2026-09-11). It also made the eglCreateContext argument the address
+// of the slot rather than the handle.
+type EGLConfig = *mut c_void;
 
 extern "C" {
     fn eglInitialize(d: EGLDisplay, major: *mut c_int, minor: *mut c_int) -> u32;
@@ -35,7 +41,7 @@ extern "C" {
     ) -> u32;
     fn eglCreateContext(
         d: EGLDisplay,
-        config: *mut EGLConfig,
+        config: EGLConfig,
         share_context: EGLContext,
         attrib_list: *const c_int,
     ) -> EGLContext;
@@ -92,9 +98,14 @@ const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
 const GL_TEXTURE0: u32 = 0x84C0;
 const GL_TEXTURE1: u32 = 0x84C1;
 const GL_WRITE_ONLY: u32 = 0x88B9;
-const GL_RGBA8: u32 = 0x8D53;
-const GL_FRAMEBUFFER_BARRIER_BIT: u32 = 0x00000020;
-const GL_COMPUTE_SHADER: u32 = 0x8DA2;
+// Values re-audited against the Khronos headers 2026-09-11 (these four
+// were also hallucinated: GL_RGBA8 0x8D53 (is 0x8058), the framebuffer
+// barrier 0x20 (is 0x400), compute shader 0x8DA2 (is 0x91B9) and
+// GL_BLEND 0x0BE0 (is 0x0BE2 — 0xBE0 is GL_BLEND_DST, so glEnable
+// silently failed and NOTHING alpha-blended).
+const GL_RGBA8: u32 = 0x8058;
+const GL_FRAMEBUFFER_BARRIER_BIT: u32 = 0x00000400;
+const GL_COMPUTE_SHADER: u32 = 0x91B9;
 // The LK framebuffer geometry (geminipda-fb.c receipts, verified on
 // glass 2026-08-31 / gemwl 2026-09-01): 1080x2160 portrait, 1088-px
 // (4352-byte) row pitch — the trailing 8 px/row are never scanned out.
@@ -116,7 +127,7 @@ const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
 const GL_TEXTURE_WRAP_S: u32 = 0x2802;
 const GL_TEXTURE_WRAP_T: u32 = 0x2803;
 const GL_CLAMP_TO_EDGE: u32 = 0x812F;
-const GL_BLEND: u32 = 0x0BE0;
+const GL_BLEND: u32 = 0x0BE2;
 const GL_ONE: u32 = 1;
 const GL_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
 const GL_SRC_ALPHA: u32 = 0x0302;
@@ -202,6 +213,7 @@ extern "C" {
     fn glDeleteFramebuffers(n: c_int, f: *const u32);
     fn glDeleteShader(s: u32);
     fn glDeleteProgram(p: u32);
+    fn glReadPixels(x: c_int, y: c_int, w: c_int, h: c_int, format: u32, ty: u32, data: *mut c_void);
 }
 
 // EGL/GL extension entry points — NOT exported by libglvnd (verified
@@ -418,12 +430,13 @@ impl Renderer {
         }
         // Diagnostic (added 2026-09-11, the 0x3004 hunt): how many
         // configs does this display have AT ALL, and what do they say?
-        // (eglGetConfigAttribute is NOT exported by libglvnd either —
-        // runtime-resolved, like the other EGL ext entry points.)
+        // (eglGetConfigAttrib is NOT exported by libglvnd's libEGL —
+        // runtime-resolved, like the other EGL ext entry points. Note the
+        // real name is Attr, not Attribute.)
         type GetConfigAttrFn = Option<unsafe extern "C" fn(EGLDisplay, *const c_void, c_int, *mut c_int) -> u32>;
         let get_config_attr: GetConfigAttrFn = unsafe {
             std::mem::transmute(eglGetProcAddress(
-                b"eglGetConfigAttribute\0".as_ptr() as *const c_char,
+                b"eglGetConfigAttrib\0".as_ptr() as *const c_char,
             ))
         };
         let mut all: [EGLConfig; 64] = unsafe { std::mem::zeroed() };
@@ -435,14 +448,15 @@ impl Renderer {
             if ok_all == EGL_TRUE {
                 for (i, cfg) in all.iter().take(nall as usize).enumerate() {
                     let (mut rt, mut st, mut r) = (0i32, 0i32, 0i32);
-                    unsafe { get_config_attr(display, cfg, EGL_RENDERABLE_TYPE, &mut rt) };
-                    unsafe { get_config_attr(display, cfg, EGL_SURFACE_TYPE as c_int, &mut st) };
-                    unsafe { get_config_attr(display, cfg, EGL_RED_SIZE, &mut r) };
+                    unsafe { get_config_attr(display, *cfg, EGL_RENDERABLE_TYPE, &mut rt) };
+                    unsafe { get_config_attr(display, *cfg, EGL_SURFACE_TYPE as c_int, &mut st) };
+                    unsafe { get_config_attr(display, *cfg, EGL_RED_SIZE, &mut r) };
                     log::info!("  config[{i}]: renderable_type=0x{rt:x} surface_type=0x{st:x} red={r}");
                 }
             }
         }
-        let mut config: EGLConfig = unsafe { std::mem::zeroed() };
+        log::info!("selecting config (ES3 renderable + window surface type)...");
+        let mut config: EGLConfig = std::ptr::null_mut();
         let mut nconf = 0i32;
         if unsafe {
             eglChooseConfig(
@@ -459,11 +473,12 @@ impl Renderer {
                 eglGetError()
             }));
         }
+        log::info!("config selected (n={nconf})");
         let mut ctx_attrs = [EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE];
         let context = unsafe {
             eglCreateContext(
                 display,
-                &config as *const c_void as *mut c_void,
+                config,
                 std::ptr::null_mut(),
                 ctx_attrs.as_ptr(),
             )
@@ -473,6 +488,7 @@ impl Renderer {
                 eglGetError()
             }));
         }
+        log::info!("context created");
         // Surfaceless context (no pbuffer on the GBM platform): the FBO
         // is the render target; present() is the compute blit.
         if unsafe { eglMakeCurrent(display, std::ptr::null_mut(), std::ptr::null_mut(), context) } != EGL_TRUE {
@@ -480,12 +496,14 @@ impl Renderer {
                 eglGetError()
             }));
         }
+        log::info!("context current (surfaceless)");
 
         // --- GL ---
         gl::load_with(|name| unsafe {
             let c = CString::new(name).unwrap();
             eglGetProcAddress(c.as_ptr()) as *const c_void
         });
+        log::info!("GL entry points loaded");
 
         let version = unsafe { glGetString(GL_VERSION) };
         let version = if version.is_null() {
@@ -497,13 +515,24 @@ impl Renderer {
         log::info!("GL: {version}");
 
         let program = build_program(VERT, FRAG)?;
+        log::info!("main program built");
+        // ATTRIBUTES need glGetAttribLocation, uniforms glGetUniformLocation
+        // — the first cut used the uniform query for aPos/aUv too, so both
+        // came back -1, every glEnableVertexAttribArray(-1) raised
+        // GL_INVALID_VALUE and NO geometry was drawn (the scene stayed the
+        // clear colour; found via the GEMSHELL_SCREENSHOT readback
+        // 2026-09-11).
+        let attr = |name: &str| unsafe {
+            glGetAttribLocation(program, CString::new(name).unwrap().as_ptr())
+        };
         let loc = |name: &str| unsafe {
             glGetUniformLocation(program, CString::new(name).unwrap().as_ptr())
         };
-        let a_pos = loc("aPos");
-        let a_uv = loc("aUv");
+        let a_pos = attr("aPos");
+        let a_uv = attr("aUv");
         let u_res = loc("uRes");
         let u_color = loc("uColor");
+
 
         let mut vbo = 0u32;
         unsafe { glGenBuffers(1, &mut vbo) };
@@ -569,11 +598,13 @@ impl Renderer {
         if !glyph_pixels.is_empty() {
             r.glyph_tex = r.make_texture(glyph_size, glyph_size, glyph_pixels)?;
         }
+        log::info!("base textures created (glyph {glyph_size}px)");
 
         // --- GPU-direct present target (the gemwl chain, on glass
         // 2026-09-01/09-10): scene FBO + /dev/gemfb LK-fb import + the
         // compute copy. ---
         let fb_fd = open_gemfb()?;
+        log::info!("gemfb opened (fd={fb_fd})");
         let attrs = fb_image_attrs(fb_fd);
         let fb_image = unsafe {
             (r.eglCreateImageKHR)(
@@ -590,7 +621,9 @@ impl Renderer {
                 unsafe { eglGetError() }
             ));
         }
+        log::info!("LK fb dma-buf imported as EGLImage");
         r.init_present(fb_fd, fb_image)?;
+        log::info!("GPU-direct present target ready");
         Ok(r)
     }
 
@@ -605,6 +638,7 @@ impl Renderer {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as c_int);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as c_int);
         }
+        log::info!("LK fb image bound to texture {fb_tex}");
         self.fb_tex = fb_tex;
 
         // The scene FBO: a plain RGBA8 fullscreen texture. (gemwl's shadow
@@ -654,7 +688,9 @@ impl Renderer {
         let cs = unsafe { glCreateShader(GL_COMPUTE_SHADER) };
         let src = CString::new(COPY_CS).unwrap();
         unsafe {
-            glShaderSource(cs, 1, src.as_ptr() as *const *const c_char, std::ptr::null());
+            // Array-of-pointers, same as build_program (see the note there).
+            let sp = src.as_ptr();
+            glShaderSource(cs, 1, &sp, std::ptr::null());
             glCompileShader(cs);
         }
         let mut ok = 0i32;
@@ -1045,6 +1081,32 @@ impl Renderer {
         self.win_tex.get(&id).map(|t| t.0)
     }
 
+    /// Read the scene FBO back and write it as a PNG (debug/
+    /// verification — `GEMSHELL_SCREENSHOT=/path`, see the compositor).
+    /// glReadPixels returns rows bottom-up, so flip to top-down for PNG.
+    pub fn screenshot(&self, path: &str) -> Result<(), String> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut buf = vec![0u8; w * h * 4];
+        unsafe {
+            glBindFramebuffer(GL_FRAMEBUFFER, self.fbo);
+            glReadPixels(
+                0,
+                0,
+                self.width as c_int,
+                self.height as c_int,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            );
+        }
+        let mut flipped = vec![0u8; buf.len()];
+        for y in 0..h {
+            let src = (h - 1 - y) * w * 4;
+            flipped[y * w * 4..(y + 1) * w * 4].copy_from_slice(&buf[src..src + w * 4]);
+        }
+        write_png(path, self.width, self.height, &flipped)
+    }
+
     /// Present the frame: compute-blit the scene FBO texture into the
     /// LK framebuffer (the gemwl chain — zero CPU pixel movement, no
     /// KMS, no page flip; the panel scans the LK OVL memory directly).
@@ -1075,6 +1137,17 @@ impl Renderer {
     }
 }
 
+/// Encode an RGBA8 pixel buffer as a PNG.
+fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().map_err(|e| e.to_string())?;
+    writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Open /dev/gemfb and export the LK framebuffer as a dma-buf fd
 /// (GEMFB_IOC_EXPORT; geminipda-fb.c — the gemwl access path).
 fn open_gemfb() -> Result<c_int, String> {
@@ -1083,15 +1156,22 @@ fn open_gemfb() -> Result<c_int, String> {
     if fd < 0 {
         return Err(format!("open /dev/gemfb: {}", std::io::Error::last_os_error()));
     }
-    let mut out: c_int = 0;
-    let rc = unsafe { libc::ioctl(fd, GEMFB_IOC_EXPORT as _, &mut out as *mut c_int) };
-    if rc != 0 {
-        let e = std::io::Error::last_os_error();
-        unsafe { libc::close(fd) };
-        return Err(format!("GEMFB_IOC_EXPORT: {e}"));
+    // The driver RETURNS the dma-buf fd as the ioctl result (it ignores
+    // the arg; geminipda-fb.c gemfb_ioctl + gemwl.c:1500
+    // `int dma_fd = ioctl(gfd, GEMFB_IOC_EXPORT)`). The old code expected
+    // the fd in the pointer arg, so it treated the positive return as an
+    // error and reported a stale errno (ENOENT from the render-node
+    // fallback opens).
+    let dma_fd = unsafe { libc::ioctl(fd, GEMFB_IOC_EXPORT as _) };
+    unsafe { libc::close(fd) };
+    if dma_fd < 0 {
+        return Err(format!(
+            "GEMFB_IOC_EXPORT: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    log::info!("gemfb: LK fb dma-buf exported (fd {out})");
-    Ok(out)
+    log::info!("gemfb: LK fb dma-buf exported (fd {dma_fd})");
+    Ok(dma_fd)
 }
 
 /// The EGL_EXT_image_dma_buf_import attribute list for the LK fb
@@ -1123,10 +1203,13 @@ fn tiler_warmup(fbo: u32) {
     let wfs = CString::new("precision mediump float; void main(){ gl_FragColor=vec4(0,0,0,1); }").unwrap();
     unsafe {
         let vs = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vs, 1, wvs.as_ptr() as *const *const c_char, std::ptr::null());
+        // Array-of-pointers (see build_program).
+        let vsp = wvs.as_ptr();
+        glShaderSource(vs, 1, &vsp, std::ptr::null());
         glCompileShader(vs);
         let fs = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fs, 1, wfs.as_ptr() as *const *const c_char, std::ptr::null());
+        let fsp = wfs.as_ptr();
+        glShaderSource(fs, 1, &fsp, std::ptr::null());
         glCompileShader(fs);
         let prog = glCreateProgram();
         glAttachShader(prog, vs);
@@ -1134,7 +1217,11 @@ fn tiler_warmup(fbo: u32) {
         glLinkProgram(prog);
         glDeleteShader(vs);
         glDeleteShader(fs);
-        let a_pos = glGetAttribLocation(prog, wvs.as_ptr());
+        // The attribute NAME, not the shader source (the old code passed
+        // wvs.as_ptr() — the whole source string — so the lookup returned
+        // -1 and the draw used attrib -1).
+        let attr_name = CString::new("pos").unwrap();
+        let a_pos = glGetAttribLocation(prog, attr_name.as_ptr());
         // Warm the REAL scene FBO (the exact target the first frame
         // uses) — its attachment stays in place.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -1163,7 +1250,13 @@ fn build_program(vert: &str, frag: &str) -> Result<u32, String> {
             let s = glCreateShader(ty);
             let c = CString::new(src).unwrap();
             let len = [c.as_bytes().len() as c_int];
-            glShaderSource(s, 1, c.as_ptr() as *const *const c_char, len.as_ptr());
+            // glShaderSource wants an ARRAY OF POINTERS to the strings
+            // (`const GLchar *const*`), not the string pointer itself.
+            // Passing `c.as_ptr()` directly made Mesa read the first 8
+            // bytes of the shader source as a pointer and dereference it
+            // — the on-glass SEGV right after "GL: ..." (2026-09-11).
+            let sp = c.as_ptr();
+            glShaderSource(s, 1, &sp, len.as_ptr());
             glCompileShader(s);
             let mut ok = 0i32;
             glGetShaderiv(s, GL_COMPILE_STATUS, &mut ok);
