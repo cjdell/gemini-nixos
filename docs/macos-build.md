@@ -224,9 +224,9 @@ watch, since the VM's disk image lives on it.
 
 ## Owed / next
 
-- **Nothing has been flashed from the Mac** — deliberately. The image
-  above is built and verified, not deployed (rule 5: a flash needs the
-  TWRP/para safety cycle).
+- ~~**Nothing has been flashed from the Mac**~~ [corrected 2026-09-25]
+  a second unit was installed from a Mac with the adb half below
+  (docs/session-log.md, 2026-09-25).
 - A `rootfs`/`toplevel` build from the Mac (`bash bin/build.sh start rootfs`).
 - **The mac flash workflow** (later, explicitly out of scope on
   2026-09-17): darwin branches for `bin/device-ssh.sh`,
@@ -234,3 +234,16 @@ watch, since the VM's disk image lives on it.
   adb + LAN-ssh half, with the adb/reboot mechanism from the 2026-09-12
   analysis. `bin/macos/` is the natural home for the mac-only pieces;
   the darwin devshell already carries adb.
+  **[2026-09-25] adb half started** (second unit: cellular Gemini, macOS
+  27.0 arm64, bash 3.2): `bin/boot-switch.sh` and `bin/flash-nixos.sh`
+  re-exec into the darwin devshell when `adb` **or `timeout`** is missing
+  (a Mac may have adb from Homebrew but never GNU `timeout`); on Darwin
+  `lsusb` is optional (no macOS usbutils — MediaTek charging/download
+  modes read as `offline`); `flash-nixos.sh` no longer dies on bash 3.2's
+  empty-array `set -u` error and no longer calls GNU-only `stat -c`; every
+  `boot`/`rootfs`/`restore` write is now read back on the device and
+  compared by SHA-256 (`verify_part`). Checked with a fake adb (file-backed
+  partitions, a deliberately corrupted write is caught), then used for a
+  real install: `boot`, `rootfs`, `boot-nixos` from the Mac, both writes
+  verified (docs/session-log.md, 2026-09-25). `bin/device-ssh.sh` and the g_ether→TWRP hop
+  (`lsusb 18d1:4ee2`) are untouched.

@@ -56,14 +56,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # adb/lsusb live in the flake devshell (bare host PATH has no adb —
 # AGENTS.md rule 7). Re-exec once inside `nix develop` when missing;
 # the flag prevents an infinite re-exec if the devshell lacks the tool.
-if ! command -v adb >/dev/null 2>&1 || ! command -v lsusb >/dev/null 2>&1; then
+# On macOS there is no lsusb at all (nixpkgs usbutils is Linux-only), so
+# there it is optional: without it the MediaTek charging/download modes
+# (poc/preloader/brom) read as `offline`; adb states are unaffected.
+need_lsusb=1
+[ "$(uname -s)" = Darwin ] && need_lsusb=0
+if ! command -v adb >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1 ||
+   { [ "$need_lsusb" = 1 ] && ! command -v lsusb >/dev/null 2>&1; }; then
   if [ -z "${GEMINI_DEVSH_REEXEC:-}" ]; then
     export GEMINI_DEVSH_REEXEC=1
     cd "$ROOT"
     exec nix develop --command bash "bin/boot-switch.sh" "$@"
   fi
-  echo "!! adb/lsusb not found even inside the devshell — does the flake devShell" >&2
-  echo "   carry android-tools + usbutils? (flake.nix, devShells.x86_64-linux.default)" >&2
+  echo "!! adb/timeout/lsusb not found even inside the devshell — does the flake devShell" >&2
+  echo "   carry android-tools + coreutils + usbutils (Linux)? (flake.nix / flake-macos.nix)" >&2
   exit 1
 fi
 
@@ -164,10 +170,30 @@ ensure_twrp() {
   return 1
 }
 
+# ---- read-back check ----------------------------------------------------------
+# verify_part IMAGE PARTITION — read the first <size of IMAGE> bytes of the
+# by-name partition back on the device and compare SHA-256 with the host
+# file. Exits non-zero on any mismatch or read failure.
+host_sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | awk '{print $1}'; }
+verify_part() {
+  local img="$1" part="$2" size want got
+  size=$(wc -c < "$img" | tr -d ' ')
+  want=$(host_sha256 "$img")
+  echo ">> read-back: first $size bytes of $part vs $(basename "$img")..."
+  got=$(timeout 1800 adb shell "dd if=$P/$part bs=1M 2>/dev/null | head -c $size | sha256sum" \
+        | tr -d '\r' | awk '{print $1}') || true
+  if [ "$got" != "$want" ]; then
+    echo "!! read-back MISMATCH on $part: host $want, device ${got:-<no output>}" >&2
+    exit 1
+  fi
+  echo ">> read-back OK: $part sha256 $want"
+}
+
 # ---- helpers ----------------------------------------------------------------
 backup_para() {
   if [ ! -f "$PARA_BACKUP" ]; then
     echo ">> backing up para -> $PARA_BACKUP (first write this session)"
+    mkdir -p "$(dirname "$PARA_BACKUP")" # fresh checkout: no stock-dump/ yet
     adb_sh "dd if=$P/para of=/tmp/para.bin bs=512 count=1 conv=fsync" >/dev/null
     adb_q pull /tmp/para.bin "$PARA_BACKUP" >/dev/null
   fi
@@ -226,6 +252,7 @@ cmd_flash() {
   echo ">> flashing $img -> boot (16 MiB partition)"
   adb_q push "$img" /tmp/new-boot.img >/dev/null
   adb_sh "dd if=/tmp/new-boot.img of=$P/boot bs=1M conv=fsync" >/dev/null
+  verify_part "$img" boot
   echo ">> flashed. Restore with: boot-switch.sh restore (backup kept in $BOOT_BACKUP_DIR)"
   if [ "$target" = android ]; then
     echo ">> rebooting into the flashed image (clears para)..."
@@ -245,6 +272,7 @@ cmd_restore() {
   echo ">> restoring $bak -> boot"
   adb_q push "$bak" /tmp/restore-boot.img >/dev/null
   adb_sh "dd if=/tmp/restore-boot.img of=$P/boot bs=1M conv=fsync" >/dev/null
+  verify_part "$bak" boot
   echo ">> restored. TWRP default kept (para untouched)."
 }
 

@@ -67,14 +67,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # adb lives in the flake devshell (bare host PATH has no adb — AGENTS.md
 # rule 7). Re-exec once inside `nix develop` when missing; the flag
 # prevents an infinite re-exec if the devshell lacks the tool.
-if ! command -v adb >/dev/null 2>&1; then
+# `timeout` too: a Mac has no GNU coreutils outside the darwin devshell
+# (flake-macos.nix), even when adb is on its PATH.
+if ! command -v adb >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
   if [ -z "${GEMINI_DEVSH_REEXEC:-}" ]; then
     export GEMINI_DEVSH_REEXEC=1
     cd "$ROOT"
     exec nix develop --command bash "bin/flash-nixos.sh" "$@"
   fi
-  echo "!! adb not found even inside the devshell — does the flake devShell" >&2
-  echo "   carry android-tools? (flake.nix, devShells.x86_64-linux.default)" >&2
+  echo "!! adb/timeout not found even inside the devshell — does the flake devShell" >&2
+  echo "   carry android-tools + coreutils? (flake.nix / flake-macos.nix devShells)" >&2
   exit 1
 fi
 
@@ -220,13 +222,32 @@ twrp_dd_part() { # devnode src-dest-label  (image already pushed to /tmp on devi
   adb_sh "dd if=$1 of=$P/$2 bs=1M conv=fsync"
 }
 
+# ---- read-back check ----------------------------------------------------------
+# verify_part IMAGE PARTITION — read the first <size of IMAGE> bytes of the
+# by-name partition back on the device and compare SHA-256 with the host
+# file. Exits non-zero on any mismatch or read failure.
+host_sha256() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | awk '{print $1}'; }
+verify_part() {
+  local img="$1" part="$2" size want got
+  size=$(wc -c < "$img" | tr -d ' ')
+  want=$(host_sha256 "$img")
+  echo ">> read-back: first $size bytes of $part vs $(basename "$img")..."
+  got=$(timeout 1800 adb shell "dd if=$P/$part bs=1M 2>/dev/null | head -c $size | sha256sum" \
+        | tr -d '\r' | awk '{print $1}') || true
+  if [ "$got" != "$want" ]; then
+    echo "!! read-back MISMATCH on $part: host $want, device ${got:-<no output>}" >&2
+    exit 1
+  fi
+  echo ">> read-back OK: $part sha256 $want"
+}
+
 # ---- commands --------------------------------------------------------------
 cmd_status() {
   echo "device state : $(state)"
   for f in "$BOOT_IMG_DEFAULT" "$ROOTFS_IMG_DEFAULT"; do
     if [ -f "$f" ]; then
       printf 'artifact      : %s  (%s, %s)\n' "$f" "$(du -h "$f" | cut -f1)" \
-        "$(stat -c%y "$f" | cut -d. -f1)"
+        "$(date -r "$f" '+%Y-%m-%d %H:%M:%S')"
     else
       printf 'artifact      : %s  (MISSING — build with nix build .#packages.x86_64-linux.default)\n' "$f"
     fi
@@ -267,8 +288,9 @@ cmd_rootfs() {
   # ~8 GB (GNOME closure) and does NOT fit TWRP's ~1.9 GiB /tmp tmpfs.
   # Unmount first so TWRP cannot flush stale data over the image.
   adb_sh "umount /data 2>/dev/null; umount /sdcard 2>/dev/null; umount /cache 2>/dev/null; umount $P/$TARGET_PART 2>/dev/null; sync; true" >/dev/null
-  say "streaming rootfs -> $P/$TARGET_PART ($(stat -c%s "$img") bytes; several minutes)..."
+  say "streaming rootfs -> $P/$TARGET_PART ($(wc -c < "$img" | tr -d ' ') bytes; several minutes)..."
   timeout 3600 adb shell "dd of=$P/$TARGET_PART bs=1M conv=fsync" < "$img"
+  verify_part "$img" "$TARGET_PART"
   say "rootfs flashed. Device is in TWRP (para sticky)."
 }
 
@@ -332,7 +354,9 @@ for a in "$@"; do
     *) args+=("$a") ;;
   esac
 done
-set -- "${args[@]}"
+# ${args[@]+…}: bash 3.2 (macOS /bin/bash) treats an empty array as
+# unset under `set -u`.
+set -- ${args[@]+"${args[@]}"}
 
 case "${1:-}" in
   status)      cmd_status ;;

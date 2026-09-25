@@ -5751,3 +5751,30 @@ Next: big custom-drv compiles (kernel/mesa) stay on the host/Pi loop
 (deploy.sh) — the PDA compiles them only when their sources change
 (expect ~30+ min; RAM-bound 2×2 jobs; a zram/swapfile is the open
 improvement for desktop-up compiles). Cold-reboot check of gen30 owed.
+
+## 2026-09-25 — second unit installed from a Mac (bin/flash-nixos.sh via the darwin devshell; boot + rootfs flashed, first boot OK)
+
+Second unit: cellular Gemini (x25/x27), which ran Sailfish OS 4.6 on the
+Planet multi-boot layout (33 partitions; `linux` = p29, 57.5 GiB; `para`
+p2 all zeros, so NORMAL boots `boot`). Host: macOS 27.0 arm64, Nix installed
+with the official multi-user installer, adb + coreutils from
+`devShells.aarch64-darwin.default`. Images built on the same Mac with
+`bin/build.sh` (Apple `container` 0.12.3, VM image
+`rzmapp/nixos-vm:26.05.8772.5dfba6236110` — the `:26.05` tag is gone).
+
+- TWRP: Planet's `twrp_recovery.img` 3.2.3 (= this repo's pre-patch
+  `recovery.bin`), unpatched — the "Keep System Read only?" page just
+  needs "Keep Read Only". It enumerates as `18d1:D001`, not 4ee2; adb
+  state `recovery` works (USB-C orientation mattered on this unit).
+- `flash-nixos.sh boot`: backup of the old `boot` = the unit's original
+  (sha `e5684deb…`); boot.img (store `gman244d9x…`, 9,988,096 B) written,
+  **read back on the device and matched** (new `verify_part`).
+- `flash-nixos.sh rootfs`: 7,730,568,298 B streamed in 362 s
+  (20.4 MB/s), read back and matched (sha `dd7eaeb5…`).
+- `flash-nixos.sh boot-nixos` → kernel log on the lower third of the
+  panel, then the GNOME session ("Welcome to NixOS 26.11 (Zokor)").
+  ssh over Wi-Fi (macOS has no driver for the g_ether gadget): 6.6.0,
+  `/` = p29 grown to 56.5G, no failed units.
+- Per-unit settings (keys, Wi-Fi networks, this unit's factory Wi-Fi
+  record) came from an untracked `local.nix` (separate change); wlan0 uses
+  this unit's own factory MAC.
