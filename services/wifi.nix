@@ -79,16 +79,49 @@ let
   # /data/nvram/APCFG/APRDEB/WIFI (dmesg "[wlan]nvram_read: failed to
   # open!!"). writeShellScript keeps the unit file single-line; the
   # script embeds the firmware store path + the repo's profiles seed.
+  #
+  # Both sources are options (factoryNvram, profilesSeed
+  # below): the factory record is per-unit, so another Gemini sets its
+  # own record, or null to skip it. Defaults = this unit's files.
   wifiStateInstall = pkgs.writeShellScript "gemini-wifi-state-install" ''
     set -e
-    mkdir -p /data/nvram/APCFG/APRDEB
-    cp -f ${firmware}/nvram/WIFI /data/nvram/APCFG/APRDEB/WIFI
-    mkdir -p /etc/wifi
-    [ -e /etc/wifi/profiles.conf ] || cp ${../etc/wifi/profiles.conf} /etc/wifi/profiles.conf
+    ${lib.optionalString (cfg.factoryNvram != null) ''
+      mkdir -p /data/nvram/APCFG/APRDEB
+      cp -f ${cfg.factoryNvram} /data/nvram/APCFG/APRDEB/WIFI
+    ''}
+    ${lib.optionalString (cfg.profilesSeed != null) ''
+      mkdir -p /etc/wifi
+      [ -e /etc/wifi/profiles.conf ] || cp ${cfg.profilesSeed} /etc/wifi/profiles.conf
+    ''}
   '';
 in
 {
   options.services.geminiWifi = {
+    factoryNvram = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = "${firmware}/nvram/WIFI";
+      defaultText = lib.literalExpression ''"''${gemini-firmware}/nvram/WIFI"'';
+      description = ''
+        The unit's factory Wi-Fi record (APCFG/APRDEB/WIFI, 512 bytes:
+        MAC address + TX calibration), installed to
+        /data/nvram/APCFG/APRDEB/WIFI at boot for the gen3 driver. The
+        default is the record of the unit this repo was brought up on;
+        another Gemini should set its own (e.g. copied from its vendor
+        OS). null installs none: the driver then generates a MAC address
+        that changes on every power cycle (pkgs/gemini-firmware.nix).
+      '';
+    };
+
+    profilesSeed = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = ../etc/wifi/profiles.conf;
+      description = ''
+        Initial /etc/wifi/profiles.conf for the legacy `wifi` CLI (one
+        `ssid|psk` per line), copied only when the file is absent. null
+        seeds nothing.
+      '';
+    };
+
     useNetworkManager = lib.mkOption {
       type = lib.types.bool;
       # [changed 2026-09-10] NetworkManager owns wlan0/wlan1 (desktop

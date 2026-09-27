@@ -119,7 +119,13 @@
           { nixpkgs.buildPlatform = buildSystem; }
           configurationRevisionModule
           ./config/gemini.nix
-        ];
+        ]
+        # Optional per-unit settings (another Gemini's SSH keys, password,
+        # Wi-Fi networks and factory Wi-Fi record), kept out of Git by
+        # .gitignore. Only a `path:` evaluation sees an untracked file
+        # (bin/macos/build.sh builds `path:`); a `git+file:` one (plain
+        # `.#…` in a Git checkout) does not, so there nothing changes.
+        ++ (if builtins.pathExists ./local.nix then [ ./local.nix ] else [ ]);
       };
 
       inherit (eval) outputs;

@@ -26,3 +26,8 @@ hwparam.json
 
 # gemshell build artifacts
 pkgs/gemshell/target/
+
+# Per-unit settings for another Gemini (flake.nix: local.nix), and the
+# private files it points at (e.g. local/WIFI, the factory Wi-Fi record).
+/local.nix
+/local/

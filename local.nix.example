@@ -1,0 +1,63 @@
+# local.nix.example — per-unit settings for another Gemini (template).
+#
+# Copy to `local.nix` at the repo root (ignored by .gitignore, like
+# `local/` for the files it points at) and uncomment what your unit
+# needs. flake.nix appends local.nix to the configuration when it exists;
+# see docs/building.md "Building for another Gemini".
+#
+# WARNING: only a `path:` evaluation sees this untracked file. The macOS
+# build (bin/macos/build.sh) does. A `git+file:` evaluation does NOT:
+# `nix build .#…` or `nixos-rebuild --flake .` in a Git checkout, and so
+# bin/device-rebuild.sh on the device. Such a build silently brings back
+# config/gemini.nix's unit: its SSH key for root, `cjdell` with the
+# published passcode, SSH password login, its Wi-Fi networks and factory
+# Wi-Fi record.
+#
+# Everything here is world-readable in the Nix store of the build host and
+# the device (password hash, Wi-Fi passwords).
+{ lib, ... }:
+
+{
+  # ---- SSH: your key instead of the bring-up unit's -------------------
+  # users.users.root.openssh.authorizedKeys.keys = lib.mkForce [ "ssh-ed25519 AAAA… you@host" ];
+  # users.users.cjdell.openssh.authorizedKeys.keys = lib.mkForce [ "ssh-ed25519 AAAA… you@host" ];
+
+  # Key-only SSH (the default config accepts password logins).
+  # services.openssh.settings = {
+  #   PasswordAuthentication = false;
+  #   KbdInteractiveAuthentication = false;
+  # };
+
+  # ---- cjdell's password (GNOME login/lock screen) --------------------
+  # Default: the published passcode 0000. Generate a hash with
+  #   mkpasswd -m yescrypt > local/cjdell.hash
+  # ("!" instead of a hash locks the password; autologin and sudo still work).
+  # users.users.cjdell.hashedPassword =
+  #   lib.mkForce (lib.removeSuffix "\n" (builtins.readFile ./local/cjdell.hash));
+
+  # ---- Wi-Fi ----------------------------------------------------------
+  # Your networks instead of the bring-up unit's (NetworkManager profiles,
+  # same shape as in services/wifi.nix), and no seeded networks.
+  # networking.networkmanager.ensureProfiles.profiles = lib.mkForce (import ./local/wifi-networks.nix);
+  # services.geminiWifi.profilesSeed = null;
+
+  # Your unit's 512-byte factory Wi-Fi record (APCFG/APRDEB/WIFI: its MAC
+  # address and calibration), or null to install none.
+  # services.geminiWifi.factoryNvram = ./local/WIFI;
+
+  # ---- Internet over Wi-Fi without a USB NAT host ---------------------
+  # config/gemini.nix sets a static default gateway on usb0 (10.15.19.1,
+  # the host running bin/usb-tether-nat.sh). Without that host the route
+  # still outranks Wi-Fi's DHCP default, even with usb0 down: no internet,
+  # no network time. Drop it (usb0 keeps its address for link-local ssh):
+  # networking.defaultGateway = lib.mkForce null;
+
+  # ---- Time zone and locale -------------------------------------------
+  # config/gemini.nix pins Europe/London and en_GB for every category.
+  # time.timeZone = lib.mkForce "Europe/Helsinki";
+  # i18n.defaultLocale = lib.mkForce "en_US.UTF-8";
+  # i18n.extraLocaleSettings = lib.mkForce {
+  #   LC_TIME = "fi_FI.UTF-8";
+  #   LC_MEASUREMENT = "fi_FI.UTF-8";
+  # };
+}

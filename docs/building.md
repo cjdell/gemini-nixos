@@ -63,6 +63,45 @@ building blocks are `adb` (works from macOS; in the darwin devshell) and
 a LAN/Wi-Fi ssh path, since macOS has no driver for the device's USB
 RNDIS gadget (`0525:a4a2`) — see docs/macos-build.md.
 
+## Building for another Gemini: `local.nix` (added 2026-09-25)
+
+`config/gemini.nix` describes the unit this repo was brought up on: its
+operator SSH key, the `cjdell` password, its home Wi-Fi networks, and
+(`services/wifi.nix`) its factory Wi-Fi record — the 512-byte
+`APCFG/APRDEB/WIFI` file carrying that unit's MAC address and TX
+calibration. Another unit overrides these in an optional, untracked
+`local.nix` at the repo root, which `flake.nix` appends to the
+configuration when it exists (`.gitignore`: `/local.nix`, `/local/`).
+Example:
+
+```nix
+{ lib, ... }: {
+  users.users.root.openssh.authorizedKeys.keys = lib.mkForce [ "ssh-ed25519 …" ];
+  networking.networkmanager.ensureProfiles.profiles = lib.mkForce { };
+  services.geminiWifi.profilesSeed = null;           # no seeded networks
+  services.geminiWifi.factoryNvram = ./local/WIFI;    # this unit's record, or null
+}
+```
+
+Only a `path:` evaluation sees untracked files: the macOS build
+(`bin/macos/build.sh`) does; a `git+file:` one (`nix build .#…` or
+`nixos-rebuild --flake .#gemini` in a Git checkout) does not, and builds
+exactly what it built before. Without `local.nix` nothing changes.
+
+`local.nix.example` (added 2026-09-26) is a commented template covering
+the SSH key, key-only SSH, the `cjdell` password hash, Wi-Fi networks and
+record, dropping the usb0 default gateway when no host runs
+`bin/usb-tether-nat.sh` (otherwise it outranks the Wi-Fi route: no
+internet, no network time), and time zone/locale.
+
+**Warning:** because on-device rebuilds (`bin/device-rebuild.sh`,
+`nixos-rebuild switch --flake .` in the device's checkout) are
+`git+file:` evaluations, they ignore `local.nix` and put this unit's
+settings back: the root SSH key, `cjdell`/`0000` with SSH password
+login, its Wi-Fi networks and factory record. Until that is solved, a
+unit using `local.nix` should be updated by building on the host and
+flashing, not by rebuilding on the device.
+
 ## How the separation is organised
 
 | Piece | Scope |
