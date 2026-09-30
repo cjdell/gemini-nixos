@@ -84,6 +84,9 @@ in
     # (co-installed, marker-selected; inert unless the marker says
     # `gemshell`). docs/gemshell.md.
     ../services/gemshell.nix
+    # services.geminiKeyboard.variant — keycap print (uk/us) for the
+    # console keymap and GNOME.
+    ../services/keyboard.nix
   ];
 
   system.stateVersion = "26.11";
@@ -159,7 +162,12 @@ in
   # systemd-vconsole-setup loads it with kbd's loadkeys directly (the
   # device-only busybox .bkmap binary from the Debian rootfs is NOT
   # needed; loadkeys --validate passes on the text map).
-  console.keyMap = ./keymaps/gemini-uk.map;
+  # The map follows services.geminiKeyboard.variant (services/keyboard.nix;
+  # "uk" default = gemini-uk.map as before). [variant added 2026-09-26]
+  console.keyMap =
+    if config.services.geminiKeyboard.variant == "us"
+    then ./keymaps/gemini-us.map
+    else ./keymaps/gemini-uk.map;
 
   # Same parameters, declared on the NixOS side too. Inert while the
   # kernel enforces CONFIG_CMDLINE; this is the bridge for dropping

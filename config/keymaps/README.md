@@ -16,3 +16,28 @@ NixOS accepts the store path; the console module writes `KEYMAP=<path>` into
 `/etc/vconsole.conf` and systemd-vconsole-setup runs kbd's `loadkeys` on it
 (no busybox .bkmap binary needed). Sanity check:
 `loadkeys --validate gemini-uk.map` (kbd) passes.
+
+# gemini-us.map — US keycap print (added 2026-09-26)
+
+Not vendored: derived from `gemini-uk.map` above by changing only the
+keys where it differs from the xkb `gemini(us)` variant
+(`config/xkb/symbols/gemini`, Gemian's US deltas), plus Fn+4:
+
+| Key (kernel keycode) | gemini-uk.map (plain / Shift / Fn) | gemini-us.map |
+| --- | --- | --- |
+| 3 (4) | `3` / `£` / `\` | `3` / `#` / `£` |
+| 4 (5) | `4` / `$` / `$` | `4` / `$` / `€` (`U+20AC`) |
+| K (37) | Fn `@` | Fn `;` |
+| L (38) | Fn `;` | Fn `"` |
+| key left of Enter (40) | `'` / `~` / `:` | `\` / `\|` / `:` (Alt: `Meta_backslash`) |
+
+Keys 1, 2 and M already have the US assignments in `gemini-uk.map`
+(Shift+2 = `@`, Fn+1 = `~`, Fn+2 = `` ` ``, Fn+M = `'`) and are
+unchanged. Everything else is byte-identical to `gemini-uk.map`
+(`diff` shows only those lines).
+
+Selected by `services.geminiKeyboard.variant = "us"` (services/keyboard.nix).
+Checked on a US-print unit 2026-09-26: `loadkeys --parse` passes; loaded
+at runtime, every Shift/Fn symbol matches the keycaps. The kernel's
+built-in console font (TER16x32) has no `€` glyph and draws a box; the
+key does produce U+20AC.

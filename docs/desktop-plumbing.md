@@ -104,6 +104,43 @@ gap. **Deployed + verified on glass 2026-09-11 (gen 15):**
 and `locale` → every category `en_GB.UTF-8`; `gsettings get
 org.gnome.system.locale region` → `'en_GB.UTF-8'`.
 
+### Another keycap print or region [2026-09-26]
+
+Defaults are unchanged (UK keyboard, the settings above). Another unit
+sets two things:
+
+- **Keyboard:** `services.geminiKeyboard.variant = "us";`
+  (`services/keyboard.nix`; `"uk"` default). It selects the console
+  keymap `config/keymaps/gemini-us.map`, the GNOME input source
+  `gemini+us` (registered in `pkgs/gemini-xkeyboard-config.nix`, which
+  gnome-shell requires) with `XKB_DEFAULT_VARIANT=us` in the session.
+  gemshell is not covered and stays UK: its compositor
+  (`pkgs/gemshell/src/compositor/input.rs`) passes the layout to
+  xkbcommon explicitly, and xkbcommon applies `XKB_DEFAULT_VARIANT`
+  only when the layout is unset, so it needs a code change first.
+- **Region:** the standard `time.timeZone` / `i18n.*` options
+  (`lib.mkForce` over `config/gemini.nix`). GNOME's locked formats key
+  follows them: `services.gnomeDesktop.region` defaults to
+  `i18n.extraLocaleSettings.LC_TIME`, else `i18n.defaultLocale` (en_GB
+  here, as before). GNOME applies that one region to every format
+  category in the session, numbers included.
+
+The console `gemini-uk.map` is not purely UK: keys 1, 2 and M already
+carry the US assignments (Shift+2 = `@`, Fn+1 = `~`, Fn+2 = `` ` ``,
+Fn+M = `'`), while 3, K, L and the key left of Enter are UK; and Fn+4
+gives `$` where the xkb layout (and the keycap) has `€`. Left as
+vendored; `gemini-us.map` is built from it (see config/keymaps/README.md).
+
+**Verified on a US-print unit, 2026-09-26 (runtime `loadkeys`, text
+console):** every Shift/Fn symbol and the plain key left of Enter match
+the keycaps; Fn+4 produces `€` (bytes `e2 82 ac`), which the kernel's
+built-in console font (TER16x32) draws as a box. **Built into the
+rootfs and verified on glass the same night (Europe/Helsinki, en_US +
+fi_FI formats, `variant = "us"`):** console keymap as above; GNOME input
+source `[('xkb', 'gemini+us')]`, every Shift/Fn symbol correct in GNOME
+Console; `org.gnome.system.locale region` = `'fi_FI.UTF-8'`, Settings
+shows Formats "Suomi"; `locale` = the configured categories.
+
 ### Battery: no fuel gauge ⇒ voltage-derived capacity in the kernel
 
 The Gemini has **no fuel-gauge IC** (bring-up verified: the BQ25896 is

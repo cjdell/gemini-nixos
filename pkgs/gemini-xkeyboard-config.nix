@@ -27,6 +27,10 @@
 # -> "- layout: 'gemini'"; xkbcli compile-keymap --layout gemini
 #    --model pc105 --rules evdev.
 #
+# The `us` variant (symbols gemini(us)) is registered too, so GNOME
+# accepts the input source "gemini+us" (services/keyboard.nix).
+# [added 2026-09-26]
+#
 # Consumers: services/gnome.nix (XKB_CONFIG_ROOT in the session env).
 { lib, runCommand, xkeyboard-config, writeText }:
 
@@ -44,6 +48,21 @@ let
               <iso639Id>eng</iso639Id>
             </languageList>
           </configItem>
+          <variantList>
+            <variant>
+              <configItem>
+                <name>us</name>
+                <shortDescription>gem</shortDescription>
+                <description>English (US, Gemini PDA)</description>
+                <countryList>
+                  <iso3166Id>US</iso3166Id>
+                </countryList>
+                <languageList>
+                  <iso639Id>eng</iso639Id>
+                </languageList>
+              </configItem>
+            </variant>
+          </variantList>
         </layout>
   '';
 in

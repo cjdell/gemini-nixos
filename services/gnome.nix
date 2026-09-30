@@ -48,6 +48,11 @@ let
   # see the package header + docs/desktop-plumbing.md §"On-screen
   # keyboard").  Enabled + locked below via the system dconf DB.
   noOskExtension = pkgs.callPackage ../pkgs/gnome-extension-no-osk { };
+  # Keycap print (services/keyboard.nix): "uk" = the layout's default
+  # block, anything else is an xkb variant of `gemini`.
+  kbVariant = config.services.geminiKeyboard.variant;
+  xkbVariant = if kbVariant == "uk" then "" else kbVariant;
+  inputSource = if xkbVariant == "" then "gemini" else "gemini+${xkbVariant}";
 in
 {
   options.services.gnomeDesktop = {
@@ -102,6 +107,21 @@ in
         that away; it exists only to get a session up if kmsro ever fails
         to pair on glass.  Receipts + the on-glass check: docs/
         gnome-feasibility.md.
+      '';
+    };
+
+    region = lib.mkOption {
+      type = lib.types.str;
+      default = config.i18n.extraLocaleSettings.LC_TIME or config.i18n.defaultLocale;
+      defaultText = lib.literalExpression
+        "config.i18n.extraLocaleSettings.LC_TIME or config.i18n.defaultLocale";
+      example = "fi_FI.UTF-8";
+      description = ''
+        GNOME's regional formats (Settings -> Region & Language ->
+        Formats; dconf /system/locale/region, locked). Follows the
+        system locale by default, so setting i18n.* is enough: LC_TIME
+        if set, else i18n.defaultLocale. Note GNOME applies the region to
+        all format categories in the session (numbers included).
       '';
     };
   };
@@ -181,6 +201,8 @@ in
       XKB_CONFIG_ROOT = "${geminiXkeyboardConfig}/etc/X11/xkb";
       XKB_DEFAULT_LAYOUT = "gemini";
       XKB_DEFAULT_MODEL = "pc105";
+      # Keycap print (services/keyboard.nix); unset for the default (UK).
+      XKB_DEFAULT_VARIANT = lib.mkIf (xkbVariant != "") xkbVariant;
 
       # ---- Audio socket redirection (2026-09-10p) ------------------
       # services/audio.nix runs the ONE PipeWire/WirePlumber/pipewire-pulse
@@ -224,7 +246,7 @@ in
         settings = {
           "org/gnome/desktop/input-sources" = {
             sources = lib.gvariant.mkArray [
-              (lib.gvariant.mkTuple [ "xkb" "gemini" ])
+              (lib.gvariant.mkTuple [ "xkb" inputSource ])
             ];
           };
           # On-screen keyboard: the a11y toggle is off and locked.  The
@@ -249,8 +271,10 @@ in
           # '' while `dconf dump /` showed the orphan node.  Most schemas
           # derive the path from the id (hence input-sources above); this
           # one does not.
+          # [2026-09-26] value from cfg.region (default: the system
+          # locale, config/gemini.nix = en_GB as before).
           "system/locale" = {
-            region = "en_GB.UTF-8";
+            region = cfg.region;
           };
           # Enable the no-osk extension declaratively.  NixOS has no
           # first-class option for this (the nixpkgs GNOME doc: a GSettings
